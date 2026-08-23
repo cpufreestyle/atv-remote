@@ -1,0 +1,183 @@
+/* ATV Remote — 深色遥控器主题 */
+:root {
+  --bg: #0d0f14;
+  --card: #171a22;
+  --card2: #1d212b;
+  --line: #2a2f3c;
+  --text: #e8eaf0;
+  --muted: #8a91a3;
+  --accent: #4f8cff;
+  --accent2: #3a6fd8;
+  --danger: #e05555;
+  --ok: #37c97a;
+  --radius: 16px;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
+
+.app { max-width: 480px; margin: 0 auto; padding: 16px 14px 90px; }
+
+/* ---------- header ---------- */
+header { margin-bottom: 14px; }
+.brand { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.logo { font-size: 34px; }
+.brand h1 { font-size: 20px; margin: 0; letter-spacing: .5px; }
+.sub { color: var(--muted); font-size: 12.5px; margin-top: 3px; display: flex; align-items: center; gap: 6px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: #666; flex: none; }
+.dot.on  { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.dot.warn { background: #f0b03c; box-shadow: 0 0 8px #f0b03c; }
+.dot.off { background: #5a5f6d; }
+
+.conn { display: flex; gap: 8px; }
+input {
+  background: var(--card2); border: 1px solid var(--line); color: var(--text);
+  border-radius: 10px; padding: 10px 12px; font-size: 14px; outline: none; min-width: 0;
+}
+input:focus { border-color: var(--accent); }
+.conn input { flex: 1; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.chip {
+  background: var(--card2); border: 1px solid var(--line); color: var(--muted);
+  border-radius: 999px; padding: 4px 12px; font-size: 12.5px; cursor: pointer; user-select: none;
+}
+.chip:hover { color: var(--text); border-color: var(--accent); }
+.chip.active { color: #fff; border-color: var(--accent); background: var(--accent2); }
+
+/* ---------- 设备类型页签 ---------- */
+.devtabs { display: flex; gap: 8px; margin-bottom: 10px; }
+.devtab {
+  flex: 1; background: var(--card2); color: var(--muted); border: 1px solid var(--line);
+  border-radius: 12px; padding: 10px 0; font-size: 14px; cursor: pointer;
+}
+.devtab.on { color: #fff; background: var(--accent2); border-color: var(--accent); font-weight: 600; }
+.devpane { display: none; }
+.devpane.on { display: block; }
+
+/* ---------- Apple TV 列表 / 配对 ---------- */
+.atvrow {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  background: var(--card2); border: 1px solid var(--line); border-radius: 12px;
+  padding: 10px 12px; margin-top: 8px;
+}
+.atvname { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.atvip { color: var(--muted); font-size: 12px; margin-left: 6px; }
+.atvbtns { display: flex; gap: 6px; flex: none; }
+.atvbtns .btn { padding: 7px 12px; font-size: 13px; }
+.pairbox {
+  background: #20263a; border: 1px solid var(--accent); border-radius: 12px;
+  padding: 12px; margin-top: 10px;
+}
+.pairtitle { font-size: 13px; margin-bottom: 8px; color: #9ec1ff; }
+.badge {
+  background: var(--accent2); color: #cfe2ff; border-radius: 999px;
+  font-size: 11px; padding: 2px 10px; margin-left: 6px; font-weight: 400;
+}
+
+/* ---------- card ---------- */
+.card {
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 14px; margin-bottom: 14px;
+}
+.card h2 { font-size: 13.5px; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+
+/* ---------- tabs ---------- */
+.tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+.tab {
+  flex: 1; background: var(--card2); color: var(--muted); border: 1px solid var(--line);
+  border-radius: 10px; padding: 8px 0; font-size: 14px; cursor: pointer;
+}
+.tab.on { color: #fff; background: var(--accent2); border-color: var(--accent); }
+.tabpane { display: none; }
+.tabpane.on { display: block; }
+
+/* ---------- dpad ---------- */
+.dpad {
+  display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr);
+  gap: 8px; width: 246px; height: 246px; margin: 0 auto;
+}
+.dk {
+  background: var(--card2); border: 1px solid var(--line); color: var(--text);
+  border-radius: 18px; font-size: 22px; cursor: pointer; user-select: none;
+  transition: transform .05s, background .05s;
+}
+.dk:active, .dk.pressed { background: var(--accent2); border-color: var(--accent); transform: scale(.94); }
+.dk.ok { border-radius: 50%; font-size: 16px; font-weight: 700; color: var(--accent); margin: 6px; }
+.dk.ok:active, .dk.ok.pressed { color: #fff; }
+.dk.up    { grid-area: 1 / 2; }
+.dk.left  { grid-area: 2 / 1; }
+.dk.ok    { grid-area: 2 / 2; }
+.dk.right { grid-area: 2 / 3; }
+.dk.down  { grid-area: 3 / 2; }
+
+/* ---------- touchpad ---------- */
+#touchpad {
+  position: relative; height: 190px; background: var(--card2); border: 1px dashed var(--line);
+  border-radius: 14px; display: flex; align-items: center; justify-content: center;
+  touch-action: none; overflow: hidden;
+}
+#touchpad.dragging { border-color: var(--accent); background: #20263a; }
+.padhint { color: var(--muted); font-size: 12.5px; pointer-events: none; text-align: center; padding: 0 12px; }
+
+/* ---------- buttons ---------- */
+.brow { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; justify-content: center; }
+.brow:last-child { margin-bottom: 0; }
+.brow.center { justify-content: center; }
+.btn {
+  background: var(--card2); border: 1px solid var(--line); color: var(--text);
+  border-radius: 12px; padding: 11px 14px; font-size: 14px; cursor: pointer;
+  text-decoration: none; user-select: none; transition: transform .05s, background .05s;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.btn:hover { border-color: var(--accent); }
+.btn:active, .btn.pressed { background: var(--accent2); border-color: var(--accent); transform: scale(.95); }
+.btn.primary { background: var(--accent2); border-color: var(--accent); font-weight: 600; }
+.btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+.btn.big { font-size: 18px; min-width: 72px; }
+
+.inputrow { display: flex; gap: 8px; margin-bottom: 4px; }
+.inputrow input { flex: 1; }
+.hint { color: var(--muted); font-size: 12px; line-height: 1.7; margin: 8px 0 0; }
+.hint b { color: var(--accent); }
+
+/* ---------- apps ---------- */
+.apps .btn { min-width: 92px; }
+
+/* ---------- log & toast ---------- */
+#log {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+  background: rgba(13, 15, 20, .92); backdrop-filter: blur(8px);
+  border-top: 1px solid var(--line); color: var(--muted);
+  font-size: 12px; padding: 9px 16px; text-align: center;
+  max-width: 480px; margin: 0 auto;
+}
+#toast {
+  position: fixed; left: 50%; bottom: 54px; transform: translateX(-50%);
+  background: #2b1e1e; color: #ff9a9a; border: 1px solid var(--danger);
+  padding: 10px 18px; border-radius: 12px; font-size: 13px; z-index: 50;
+  max-width: 90vw; text-align: center;
+}
+#toast.info { background: #16202e; color: #9ec1ff; border-color: var(--accent); }
+
+/* ---------- modal ---------- */
+.modal {
+  position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 40;
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.modal .mbox { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 14px; max-width: 92vw; max-height: 92vh; overflow: auto; }
+.modal img { max-width: 100%; max-height: 70vh; border-radius: 10px; display: block; margin-bottom: 10px; }
+
+.hidden { display: none !important; }
+
+/* ---------- 手机安装引导 ---------- */
+#phoneInstall summary { cursor: pointer; font-size: 13.5px; color: var(--muted);
+  font-weight: 600; user-select: none; }
+#phoneInstall[open] summary { margin-bottom: 12px; }
+.steps { margin: 0; padding-left: 20px; color: var(--text); font-size: 13.5px; line-height: 1.8; }
+.steps a { color: var(--accent); }
+.steps .inputrow { margin: 8px 0 4px; }
+.steps .inputrow input { font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
+.qrbox { display: flex; align-items: center; gap: 12px; margin-top: 8px; color: var(--muted); font-size: 12px; }
+.qrbox img { width: 132px; height: 132px; background: #fff; border-radius: 8px; padding: 8px; }

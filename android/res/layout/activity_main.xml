@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0d0f14">
+
+    <WebView
+        android:id="@+id/webview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone"/>
+
+    <LinearLayout
+        android:id="@+id/setupPanel"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:padding="32dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="📺"
+            android:textSize="56sp"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/app_name"
+            android:textColor="#e8eaf0"
+            android:textSize="24sp"
+            android:textStyle="bold"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:layout_marginBottom="24dp"
+            android:gravity="center"
+            android:text="填 Mac 电脑的地址（Mac 上需已运行：\npython3 server.py --host 0.0.0.0）"
+            android:textColor="#8a91a3"
+            android:textSize="13sp"
+            android:lineSpacingExtra="4dp"/>
+
+        <EditText
+            android:id="@+id/urlInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="如 192.168.1.104:8300"
+            android:textColor="#e8eaf0"
+            android:textColorHint="#5a5f6d"
+            android:inputType="textUri"
+            android:imeOptions="actionGo"
+            android:padding="12dp"
+            android:background="#1d212b"/>
+
+        <Button
+            android:id="@+id/connectBtn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:padding="12dp"
+            android:text="连接电脑上的遥控器"
+            android:textSize="16sp"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="—— 或者 ——"
+            android:textColor="#5a5f6d"
+            android:textSize="13sp"/>
+
+        <Button
+            android:id="@+id/standaloneBtn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:padding="12dp"
+            android:text="🚀 独立模式（手机直连电视，无需电脑）"
+            android:textSize="15sp"/>
+
+        <TextView
+            android:id="@+id/statusLine"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:gravity="center"
+            android:textColor="#4f8cff"
+            android:textSize="13sp"/>
+
+        <Button
+            android:id="@+id/changeBtn"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:background="@android:color/transparent"
+            android:text="↻ 返回时点此更换服务器"
+            android:textColor="#4f8cff"
+            android:textSize="13sp"/>
+    </LinearLayout>
+</FrameLayout>

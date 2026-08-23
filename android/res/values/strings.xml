@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ATV Remote</string>
+    <string name="default_url">http://192.168.1.104:8300</string>
+    <string name="starting_engine">🚀 正在启动手机引擎（首次约需 5–20 秒）…</string>
+    <string name="engine_failed">⚠️ 手机引擎未就绪。可打开 Termux 手动运行: ~/atv-remote/start.sh</string>
+    <string name="need_termux">⚠️ 未安装 Termux 引擎。请先安装 F-Droid 版 Termux 并运行项目里的 termux-setup.sh（说明见电脑 ~/atv-remote/README.md）</string>
+</resources>

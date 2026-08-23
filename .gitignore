@@ -1,0 +1,26 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# 运行时产物（含 Apple TV 配对凭据，勿提交）
+state.json
+server.log
+*.log
+
+# Mac 构建产物
+mac/ATVRemote
+mac/ATVRemote.app/
+mac/AppIcon.iconset/
+mac/AppIcon.icns
+mac/AppIcon_1024.png
+mac/ic_launcher_fg_432.png
+
+# Android 构建产物
+android/build/
+android/ATVRemote.apk
+android/ATVRemote.apk.idsig
+android/debug.keystore
+
+# 系统
+.DS_Store
