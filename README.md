@@ -96,7 +96,7 @@ swift make_icon.swift        # 生成 mac/AppIcon_1024.png 和 mac/ic_launcher_f
 
 1. Mac 上启动服务（`python3 server.py`，默认已开放局域网；当前已后台运行）
 2. 把 `android/ATVRemote.apk` 传到手机（微信/AirDroid/USB 均可），点击安装（允许"未知来源"）
-3. 首次打开填 Mac 地址（已预填 `http://192.168.1.104:8300`）→ 连接，之后自动记住
+3. 首次打开填 Mac 地址（App 已预填构建时的默认值，改成你自己的）→ 连接，之后自动记住
 4. 点「键盘输入」框会直接调起手机输入法，打字（含中文发 Apple TV）回车即上电视
 
 重新构建 APK：`./android/build.sh`（无需 Gradle，用 aapt2+d8+apksigner 手工链；注意 resources.arsc 必须未压缩存储，脚本已处理）
@@ -121,7 +121,7 @@ python3 server.py [--host 127.0.0.1] [--port 8300] [--adb adb路径] [--no-open]
 
 ```
 GET  /api/status                          # 连接状态（两种设备）
-POST /api/connect   {"target":"192.168.1.100:5555"}        # Android 连接
+POST /api/connect   {"target":"192.168.1.50:5555"}        # Android 连接
 POST /api/cmd       {"type":"key","code":19}               # 按键（两种设备通用）
 POST /api/cmd       {"type":"text","text":"hello","enter":true}
 POST /api/cmd       {"type":"tap"...} / {"type":"swipe"...}
