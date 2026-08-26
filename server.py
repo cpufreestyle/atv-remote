@@ -26,8 +26,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parent
-STATIC = ROOT / "static"
-STATE_FILE = ROOT / "state.json"
+STATIC = Path(os.environ.get("ATV_STATIC", str(ROOT / "static")))
+STATE_FILE = Path(os.environ.get("ATV_STATE", str(ROOT / "state.json")))
 
 # Android KeyEvent 键码（AOSP keycode.h 子集）
 KEYCODES = {
@@ -460,10 +460,10 @@ def handle_connect(body):
 
 
 def handle_disconnect(_body):
-    cur = state["current"]
-    if cur and cur.get("type") == "android" and cur.get("target"):
-        adb.disconnect(cur["target"])
     with state_lock:
+        cur = state.get("current")
+        if cur and cur.get("type") == "android" and cur.get("target"):
+            adb.disconnect(cur["target"])
         state["current"] = None
         state["info"] = {}
         save_state()

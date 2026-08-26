@@ -236,7 +236,7 @@ function atvRow(dev) {
     x.className = "btn";
     x.textContent = "✕";
     x.title = "删除已配对设备";
-    x.onclick = () => api("/api/atv/forget", { id: dev.id }).then(() => { renderAtvKnown(); refreshStatus(); });
+    x.onclick = () => api("/api/atv/forget", { id: dev.id }).then(() => { refreshStatus(); });
     btns.appendChild(x);
   }
   row.appendChild(left);
@@ -384,10 +384,16 @@ $$(".devtab").forEach((t) => {
     t.classList.add("on");
     $$(".devpane").forEach((p) => p.classList.remove("on"));
     $("#pane-" + t.dataset.dev).classList.add("on");
-    if (t.dataset.dev === "appletv" && !$("#atvList").dataset.scanned) {
-      api("/api/status").then((s) => {
-        if ((s.appletv.devices || []).length) renderAtvFound(s.appletv.devices.map((d) => ({ ...d, paired: true, stored: true })));
-      });
+    if (t.dataset.dev === "appletv") {
+      const box = $("#atvList");
+      if (!box.dataset.scanned) {
+        api("/api/status").then((s) => {
+          if ((s.appletv.devices || []).length) {
+            box.dataset.scanned = "1";
+            renderAtvFound(s.appletv.devices.map((d) => ({ ...d, paired: true, stored: true })));
+          }
+        });
+      }
     }
   });
 });
@@ -518,5 +524,10 @@ $("#copyCmd").addEventListener("click", async () => {
 });
 
 /* ---------------- 启动 ---------------- */
+let pageVisible = true;
+document.addEventListener("visibilitychange", () => {
+  pageVisible = !document.hidden;
+  if (pageVisible) refreshStatus();
+});
 refreshStatus();
-setInterval(refreshStatus, 8000);
+setInterval(() => { if (pageVisible) refreshStatus(); }, 8000);
