@@ -149,6 +149,25 @@ POST /api/atv/apps   {}                   # Apple TV 应用列表
 - **文字发送无效**：Apple TV 必须有聚焦的输入框（看到「输入框已聚焦」徽标再发送）
 - **电视休眠连不上**：Apple TV 深度休眠时需先「唤醒」（tvOS 16+ 支持网络唤醒）
 
+### 原生独立 APK（android-native/）
+
+`android-native/` 是**完全离线独立**的原生 Android 方案：通过 [Chaquopy](https://chaquo.com/chaquopy/) 将 Python 引擎（pyatv + server.py）直接打包进 APK，无需 Termux、无需 Mac 后台服务。
+
+**用途**：给不想折腾 Termux 的用户，装好即用——打开 App 自动启动内置引擎，WebView 加载遥控器界面，直接控制 Apple TV / Android TV。
+
+**与 `android/` 的区别**：
+- `android/`：轻量 WebView 壳，需连接 Mac/手机 Termux 上的后台服务
+- `android-native/`：内置完整 Python 引擎，完全离线独立（APK 体积更大）
+
+**构建方式**（需 Android Studio + Chaquopy 插件）：
+
+```bash
+cd android-native
+./gradlew assembleDebug   # 产物：app/build/outputs/apk/debug/app-debug.apk
+```
+
+> 首次构建 Chaquopy 会下载 Python 解释器和 pip 依赖（pyatv、qrcode），耗时较长。
+
 ## 目录结构
 
 ```
@@ -156,6 +175,9 @@ atv-remote/
 ├── server.py          # Web 服务 + adb（Android）+ 设备路由
 ├── atv_backend.py     # pyatv 封装（Apple TV：扫描/配对/按键/键盘/触摸）
 ├── static/            # 遥控器界面（html/css/js）
+├── android/           # Android WebView 壳 App（需外部引擎）
+├── android-native/    # Android 原生独立 App（Chaquopy 内嵌 Python 引擎，离线可用）
+├── mac/               # macOS 原生 App（Swift + WebKit）
 ├── start.command      # macOS 双击启动（优先用 .venv）
 ├── .venv/             # 虚拟环境（pyatv）
 ├── state.json         # 设备与配对凭据（自动生成）

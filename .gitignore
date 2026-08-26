@@ -22,5 +22,11 @@ android/ATVRemote.apk
 android/ATVRemote.apk.idsig
 android/debug.keystore
 
+# Android Native 构建产物
+android-native/app/build/
+android-native/build/
+android-native/.gradle/
+android-native/local.properties
+
 # 系统
 .DS_Store
