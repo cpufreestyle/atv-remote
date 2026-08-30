@@ -5,8 +5,14 @@ __pycache__/
 
 # 运行时产物（含 Apple TV 配对凭据，勿提交）
 state.json
+state.json.tmp
 server.log
 *.log
+
+# 编辑器 / 工具的本地状态目录（非项目代码）
+.mimosa/
+.qoder/
+.workbuddy-ai/
 
 # Mac 构建产物
 mac/ATVRemote

@@ -1,0 +1,12 @@
+# ATV Remote 依赖
+# 仅标准库即可运行 Android TV 功能；以下为可选增强，装不上也不影响主流程。
+
+# Apple TV 支持（MediaRemote / Companion 协议）
+pyatv==0.18.0
+
+# 手机安装引导页的二维码（缺失时前端自动隐藏二维码）
+qrcode==8.2
+
+# 说明：atv_backend.py / server.py 对以上两项都是「导入失败即优雅降级」，
+# 用系统 python3 启动（无 pyatv）也能正常遥控 Android TV。
+# 完整安装： .venv/bin/pip install -r requirements.txt
