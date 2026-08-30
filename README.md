@@ -130,10 +130,28 @@ App 有「🚀 独立模式」：手机内的 Termux 引擎直连电视（adb �
 ## 命令行参数
 
 ```
-python3 server.py [--host 127.0.0.1] [--port 8300] [--adb adb路径] [--no-open]
+python3 server.py [--host 127.0.0.1] [--port 8300] [--adb adb路径] [--no-open] [--token 令牌]
 ```
 
 用 `.venv/bin/python server.py` 启动会加载 Apple TV 支持（pyatv）；直接 `python3 server.py` 时 Apple TV 功能自动禁用、Android 照常可用。
+
+### 🔒 局域网访问令牌（可选）
+
+默认**不鉴权**（与历史版本一致）。服务默认监听 `0.0.0.0`，意味着同一网段的任何人都能对你的电视发 `input text` / `monkey` 命令，还能拖走 `/bundle.tgz` 里的 Apple TV 配对凭据。在共享网络、公司网络或租房宽带下建议开启：
+
+```bash
+python3 server.py --token 你的令牌       # 也可用环境变量 ATV_TOKEN
+```
+
+开启后：
+
+- **本机（`127.0.0.1` / `::1`）免令牌**，本机浏览器和 Mac App 用法不变；
+- 局域网设备访问 `/` 会看到登录页，输入令牌即可（成功后种 cookie，后续请求自动带上）；
+- 脚本 / App 调用用 `X-ATV-Token` 头，或在 URL 后加 `?token=<令牌>`：
+  ```bash
+  curl -H 'X-ATV-Token: 你的令牌' -X POST -d '{"type":"key","code":19}' http://192.168.1.5:8300/api/cmd
+  ```
+- 页面上的 Termux 安装命令、APK 直链、二维码会自动带上令牌，手机装引擎的流程不受影响。
 
 ## HTTP API（curl 可直接用）
 

@@ -58,5 +58,31 @@ node --check static/app.js
 ### 一键运行全部验证
 
 ```bash
+./check.sh          # 等价下面的命令；有 .venv 时额外校验 pyatv 分支
 python3 -c 'import server; import atv_backend' && node --check static/app.js && echo "✅ ALL CHECKS PASSED"
 ```
+
+## 依赖
+
+```bash
+.venv/bin/pip install -r requirements.txt   # pyatv（Apple TV）+ qrcode，均为可选
+```
+
+`server.py` / `atv_backend.py` 对这两个依赖都是**导入失败即优雅降级**，
+用系统 `python3` 启动（无 pyatv）也能正常遥控 Android TV。
+
+## 关键约定
+
+- **adb 调用很贵**：`adb.devices()` / `adb.version()` 走缓存（TTL 1.5s / 只查一次）。
+  连接、断开、命令超时、设备掉线时必须调用 `adb.invalidate_devices()` 主动失效缓存，
+  否则会读到陈旧的在线状态。新增任何改变设备在线状态的操作都要记得失效缓存。
+- **不要直接改 `adb._shell`**：一律用 `adb.reset_shell()`（内部持锁）。
+- **`state` 操作要持 `state_lock`**：它是 `RLock`，`save_state()` 会在已持锁的分支里被调用。
+  `save_state()` 走临时文件 + `os.replace` 原子写，不要改回直接覆盖写。
+- **前端不要用 `innerHTML` 渲染设备名 / IP**：这些来自局域网广播可被伪造，一律 `textContent`。
+- **HTTP 层是 keep-alive（HTTP/1.1）**：所有响应必须带准确 `Content-Length`，走 `_send()` 即可。
+- **可选令牌鉴权**：全局 `AUTH_TOKEN` 为空 = 不鉴权（默认，行为与历史版本一致）。
+  开启后仅**非回环**来源需要令牌，取值顺序 `X-ATV-Token` 头 → `?token=` → `atv_token` cookie，
+  比较一律用 `hmac.compare_digest`。新增路由不要自己判权限，`do_GET` / `do_POST`
+  开头的 `_check_auth()` 已统一处理（注意它同时负责种 cookie）。
+  `/` 未授权时返回 `LOGIN_PAGE`（表单 GET 提交即变成 `/?token=xxx`）。

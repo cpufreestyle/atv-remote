@@ -3,6 +3,11 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
 
+// 服务端启用 --token 时会注入到这里；未启用为空串，下面所有拼接都退化成原路径，行为不变
+const ATV_TOKEN = (document.querySelector('meta[name="atv-token"]') || {}).content || "";
+const TOKEN_Q = ATV_TOKEN ? "?token=" + encodeURIComponent(ATV_TOKEN) : "";
+const TOKEN_AMP = ATV_TOKEN ? "&token=" + encodeURIComponent(ATV_TOKEN) : "";
+
 const APPS = [
   { name: "YouTube", pkg: "com.google.android.youtube.tv" },
   { name: "Netflix", pkg: "com.netflix.ninja" },
@@ -26,13 +31,14 @@ const KEYMAP = {
 const status = { curType: null, connected: false, screen: { w: 1920, h: 1080 } };
 const lastSent = {}; // 同键节流（自动重复）
 let pairingDev = null; // 正在配对的 Apple TV
+let lastChipSig = ""; // 设备列表签名：无变化则跳过重建
 
 /* ---------------- 基础 ---------------- */
 async function api(path, body) {
   const init = body
     ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
     : {};
-  const r = await fetch(path, init);
+  const r = await fetch(path + TOKEN_Q, init);
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
   return j;
@@ -151,6 +157,14 @@ function renderStatus(s) {
     ? '点一下页面空白处，然后直接用键盘遥控：<b>方向键</b> 移动 · <b>回车</b>=OK · <b>Esc</b>=返回 · <b>PageUp/Down</b> 快退/快进 · <b>媒体键</b> 播放控制。在输入框里打字则作为文本发送（支持中文）。'
     : '点一下页面空白处，然后直接用键盘遥控：<b>方向键</b> 移动 · <b>回车</b>=OK · <b>Esc</b>=返回 · <b>退格</b>=删除 · <b>PageUp/Down</b> 翻页 · <b>媒体键</b> 播放控制。在输入框里打字则作为文本发送。';
 
+  // 设备列表每 8 秒轮询一次，数据没变就别重建 DOM（会打断 hover / 触发无谓重排）
+  const chipSig = JSON.stringify([
+    s.cur_type, s.current, s.current_state, s.recent, s.devices,
+    (s.appletv.devices || []).map((d) => d.id),
+  ]);
+  if (chipSig === lastChipSig) return;
+  lastChipSig = chipSig;
+
   // Android 最近连接
   const rc = $("#recentChips");
   rc.innerHTML = "";
@@ -215,7 +229,12 @@ function atvRow(dev) {
   row.className = "atvrow";
   const left = document.createElement("div");
   left.className = "atvname";
-  left.innerHTML = `🍎 ${dev.name || "Apple TV"} <span class="atvip">${dev.ip || ""}</span>`;
+  // 设备名 / IP 来自局域网广播，可被伪造 → 一律走 textContent，禁止拼 innerHTML
+  left.appendChild(document.createTextNode(`🍎 ${dev.name || "Apple TV"} `));
+  const ip = document.createElement("span");
+  ip.className = "atvip";
+  ip.textContent = dev.ip || "";
+  left.appendChild(ip);
   const btns = document.createElement("div");
   btns.className = "atvbtns";
   if (dev.paired !== false) {
@@ -484,17 +503,24 @@ pad.addEventListener("pointerup", async () => {
 pad.addEventListener("pointercancel", () => { ptr = null; pad.classList.remove("dragging"); });
 
 /* ---------------- 截屏 / 画面 ---------------- */
+let shotUrl = null; // 上一次截屏的 blob URL，必须显式释放否则每次截屏都泄漏一张 PNG
+
+function setShot(url) {
+  if (shotUrl) URL.revokeObjectURL(shotUrl); // 释放上一张，避免内存泄漏
+  shotUrl = url;
+  $("#shotImg").src = url;
+  $("#shotSave").href = url;
+}
+
 $("#shotBtn").addEventListener("click", async () => {
   log(status.curType === "appletv" ? "正在获取画面…" : "正在截屏…");
   try {
-    const r = await fetch("/api/screenshot");
+    const r = await fetch("/api/screenshot" + TOKEN_Q);
     if (!r.ok) {
       const j = await r.json().catch(() => ({}));
       throw new Error(j.error || "获取画面失败");
     }
-    const url = URL.createObjectURL(await r.blob());
-    $("#shotImg").src = url;
-    $("#shotSave").href = url;
+    setShot(URL.createObjectURL(await r.blob()));
     $("#shotModal").classList.remove("hidden");
     log("完成");
   } catch (e) {
@@ -508,10 +534,22 @@ $("#shotModal").addEventListener("click", (e) => {
 });
 
 /* ---------------- 手机安装引导 ---------------- */
-const installCmd = `curl -sL ${location.origin}/install | bash`;
+const installCmd = `curl -sL ${location.origin}/install${TOKEN_Q} | bash`;
 $("#installCmd").value = installCmd;
-$("#qrImg").src = "/api/qr.svg?text=" + encodeURIComponent(installCmd);
+$("#qrImg").src = "/api/qr.svg?text=" + encodeURIComponent(installCmd) + TOKEN_AMP;
 $("#qrImg").onerror = () => { document.querySelector(".qrbox").style.display = "none"; }; // 无 qrcode 库时隐藏
+
+// 启用令牌后，APK 直链与手机访问地址都得带上它
+const apkLink = $("#apkLink");
+if (apkLink) apkLink.href = "/app.apk" + TOKEN_Q;
+if (ATV_TOKEN) {
+  const tip = document.createElement("p");
+  tip.className = "hint";
+  tip.textContent = "🔒 本机已启用访问令牌，手机浏览器请打开：" +
+    location.origin + "/?token=" + ATV_TOKEN + "（本机 127.0.0.1 访问免令牌）";
+  const box = $("#phoneInstall");
+  box.insertBefore(tip, box.querySelector("ol"));
+}
 $("#copyCmd").addEventListener("click", async () => {
   try {
     await navigator.clipboard.writeText(installCmd);
@@ -521,6 +559,10 @@ $("#copyCmd").addEventListener("click", async () => {
     document.execCommand("copy");
   }
   toast("已复制！打开 Termux 粘贴回车即可", true);
+});
+
+window.addEventListener("pagehide", () => {
+  if (shotUrl) URL.revokeObjectURL(shotUrl);
 });
 
 /* ---------------- 启动 ---------------- */
