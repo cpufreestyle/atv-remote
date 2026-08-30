@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>ATV Remote</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>📺</text></svg>">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+
+  <header>
+    <div class="brand">
+      <span class="logo">📺</span>
+      <div class="brand-text">
+        <h1>ATV Remote</h1>
+        <div class="sub"><span id="dot" class="dot off"></span><span id="tvInfo">未连接</span></div>
+      </div>
+    </div>
+
+    <div class="devtabs">
+      <button class="devtab on" data-dev="android">🤖 Android TV</button>
+      <button class="devtab" data-dev="appletv">🍎 Apple TV</button>
+    </div>
+
+    <div id="pane-android" class="devpane on">
+      <div class="conn">
+        <input id="targetInput" placeholder="电视 IP，如 192.168.1.50" spellcheck="false" autocomplete="off">
+        <button id="connectBtn" class="btn primary">连接</button>
+      </div>
+      <div class="chips" id="recentChips"></div>
+      <div class="chips" id="deviceChips"></div>
+    </div>
+
+    <div id="pane-appletv" class="devpane">
+      <div class="brow">
+        <button id="scanBtn" class="btn primary">🔍 扫描局域网 Apple TV</button>
+      </div>
+      <div id="atvList"><p class="hint">点「扫描」自动发现同一网段的 Apple TV；首次使用需在电视上输 PIN 配对。</p></div>
+      <div id="pairBox" class="pairbox hidden">
+        <div class="pairtitle">正在配对 <b id="pairName"></b>，请在电视屏幕上查看 4 位 PIN 码</div>
+        <div class="inputrow">
+          <input id="pinInput" placeholder="PIN 码" maxlength="8" inputmode="numeric" autocomplete="off">
+          <button id="pairFinishBtn" class="btn primary">完成配对</button>
+          <button id="pairCancelBtn" class="btn">取消</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+
+    <section class="card">
+      <div class="tabs">
+        <button class="tab on" data-tab="dpad">方向键</button>
+        <button class="tab" data-tab="pad">触摸板</button>
+      </div>
+      <div id="pane-dpad" class="tabpane on">
+        <div class="dpad">
+          <button class="dk up"    data-key="19" aria-label="上">▲</button>
+          <button class="dk left"  data-key="21" aria-label="左">◀</button>
+          <button class="dk ok"    data-key="23" aria-label="确定">OK</button>
+          <button class="dk right" data-key="22" aria-label="右">▶</button>
+          <button class="dk down"  data-key="20" aria-label="下">▼</button>
+        </div>
+      </div>
+      <div id="pane-pad" class="tabpane">
+        <div id="touchpad">
+          <span class="padhint" id="padHint">轻点 = 点击 · 按住拖动 = 滑动（映射整块电视屏幕）</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="brow">
+        <button class="btn" data-key="4">↩ 返回</button>
+        <button class="btn" data-key="3">⌂ 主页</button>
+        <button class="btn" data-key="82">☰ 菜单</button>
+        <button class="btn danger" data-key="26">⏻ 电源</button>
+        <button class="btn" data-key="224">☀ 唤醒</button>
+      </div>
+      <div class="brow">
+        <button class="btn" data-key="24">🔊＋</button>
+        <button class="btn" data-key="25">🔊－</button>
+        <button class="btn" data-key="164">🔇 静音</button>
+        <button class="btn" data-key="165">ℹ 信息</button>
+        <button class="btn" id="settingsBtn">⚙ 设置</button>
+      </div>
+      <div class="brow">
+        <button class="btn" data-key="88">⏮</button>
+        <button class="btn big" data-key="85">⏯</button>
+        <button class="btn" data-key="87">⏭</button>
+        <button class="btn" data-key="86">⏹</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>⌨ 键盘输入 <span id="kbFocus" class="badge hidden">电视输入框已聚焦</span></h2>
+      <div class="inputrow">
+        <input id="textInput" placeholder="在此打字，回车发送到电视" autocomplete="off" spellcheck="false">
+        <button id="sendBtn" class="btn primary">发送</button>
+        <button id="sendEnterBtn" class="btn">＋⏎</button>
+      </div>
+      <p class="hint" id="kbdHint">点一下页面空白处，然后直接用键盘遥控：<b>方向键</b> 移动 · <b>回车</b>=OK · <b>Esc</b>=返回 · <b>退格</b>=删除 · <b>PageUp/Down</b> 翻页 · <b>媒体键</b> 播放控制。在输入框里打字则作为文本发送。</p>
+    </section>
+
+    <section class="card" id="appsCard">
+      <h2>📦 应用</h2>
+      <div id="appsAndroid">
+        <div class="brow apps" id="apps"></div>
+        <div class="inputrow">
+          <input id="pkgInput" placeholder="自定义包名，如 com.google.android.youtube.tv" autocomplete="off" spellcheck="false">
+          <button id="pkgBtn" class="btn">启动</button>
+        </div>
+      </div>
+      <div id="appsApple" class="hidden">
+        <div class="brow"><button id="loadAppsBtn" class="btn">📋 加载 Apple TV 应用列表</button></div>
+        <div class="brow apps" id="atvApps"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>🛠 工具</h2>
+      <div class="brow">
+        <button id="shotBtn" class="btn">📸 电视截屏</button>
+        <button id="disconnectBtn" class="btn">断开连接</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <details id="phoneInstall">
+        <summary>📱 把遥控器装到手机（3 步，之后无需电脑）</summary>
+        <ol class="steps">
+          <li>手机浏览器打开本页面，<a id="apkLink" href="/app.apk">点此下载 ATVRemote.apk</a> 并安装</li>
+          <li>手机安装 <a href="https://f-droid.org/packages/com.termux/" target="_blank" rel="noreferrer">Termux（F-Droid 版）</a> 并打开一次</li>
+          <li>在 Termux 里粘贴这行命令回车，等待自动装完（3-8 分钟）：
+            <div class="inputrow">
+              <input id="installCmd" readonly>
+              <button id="copyCmd" class="btn primary">复制</button>
+            </div>
+            <div class="qrbox">
+              <img id="qrImg" alt="安装命令二维码">
+              <span>或用手机相机扫码复制命令</span>
+            </div>
+          </li>
+        </ol>
+        <p class="hint">装完后打开 ATVRemote App → 「🚀 独立模式」。电脑上的电视配对记录会自动同步到手机，无需重新配对。排错：Termux 里跑 <b>~/atv-remote/start.sh</b>，日志在 <b>~/atv-remote/server.log</b>。</p>
+      </details>
+    </section>
+
+  </main>
+
+  <div id="log">就绪 · 等待连接电视</div>
+</div>
+
+<div id="toast" class="hidden"></div>
+
+<div id="shotModal" class="modal hidden">
+  <div class="mbox">
+    <img id="shotImg" alt="电视画面">
+    <div class="brow center">
+      <a id="shotSave" class="btn" download="tv.png">保存图片</a>
+      <button id="shotClose" class="btn">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

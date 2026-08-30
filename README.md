@@ -101,6 +101,24 @@ swift make_icon.swift        # 生成 mac/AppIcon_1024.png 和 mac/ic_launcher_f
 
 重新构建 APK：`./android/build.sh`（无需 Gradle，用 aapt2+d8+apksigner 手工链；注意 resources.arsc 必须未压缩存储，脚本已处理）
 
+### 📱 原生安卓 App（v1.1.0 新增，推荐）
+
+`ATVRemote-native.apk`（约 33MB）——**Python 引擎直接内嵌**（Chaquopy），安装即用、零配置，无需 Mac 也无需 Termux：
+
+- 打开 App → 自动启动内置引擎 → 直接进入遥控器
+- Apple TV 的扫描/配对/键盘输入（含中文）/应用启动全部内置；Android TV 因手机沙箱无 adb 二进制不可用（原生版主打 Apple TV）
+- 从 [Releases](https://github.com/cpufreestyle/atv-remote/releases) 下载安装即可
+
+重新构建：
+
+```bash
+cd android-native
+gradle assembleRelease   # 需要 JDK 17 + Android SDK + Python 3.10（Chaquopy 构建要求）
+# 产物: app/build/outputs/apk/release/app-release.apk
+```
+
+> 构建踩坑记录：Gradle 需 8.x（9.x 与 AGP 8.x 不兼容）；Chaquopy 17 的 pip 自动回溯到 pyatv 0.13.2（cryptography 42 有官方 Android 预编译 wheel）；`chacha20poly1305_reuseable` 继承 Rust 类在 Chaquopy 下不可继承，已由 `app/src/main/python/boot.py` 注入组合式 shim 解决；旧版 pyatv 无 `touch` 接口，触摸板操作自动降级提示；Android 模拟器 NAT 不转发 mDNS，Apple TV 扫描需真机验证。
+
 ### 手机独立运行（不需要 Mac）
 
 App 有「🚀 独立模式」：手机内的 Termux 引擎直连电视（adb 和 Apple TV 协议都是纯 TCP）。安装方式见上文「手机（3 步…）」——网页底部的手机安装卡片会给出全部链接和一键命令。

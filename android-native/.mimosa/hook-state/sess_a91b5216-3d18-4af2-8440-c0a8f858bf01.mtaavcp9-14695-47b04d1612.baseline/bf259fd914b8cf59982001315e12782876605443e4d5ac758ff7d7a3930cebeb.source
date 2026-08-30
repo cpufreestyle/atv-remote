@@ -18,14 +18,9 @@ try:
     from pyatv.const import InputAction, OperatingSystem, Protocol
     from pyatv.exceptions import (AuthenticationError, BlockedStateError,
                                   CommandError, ConnectionFailedError,
-                                  InvalidCredentialsError, InvalidStateError,
-                                  NoCredentialsError, NotSupportedError,
-                                  PairingError)
-    try:
-        from pyatv.exceptions import ConnectionLostError
-        _CONN_LOST_ERRORS = (ConnectionFailedError, ConnectionLostError)
-    except ImportError:  # pyatv < 0.14 无 ConnectionLostError
-        _CONN_LOST_ERRORS = (ConnectionFailedError,)
+                                  ConnectionLostError, InvalidCredentialsError,
+                                  InvalidStateError, NoCredentialsError,
+                                  NotSupportedError, PairingError)
     PYATV_AVAILABLE = True
 except ImportError:  # venv / pyatv 不可用时禁用 Apple TV 功能
     PYATV_AVAILABLE = False
@@ -105,7 +100,7 @@ class AppleTvManager:
             return fut.result(timeout)
         except futures.TimeoutError:
             raise AppleTvError("Apple TV 响应超时（电视休眠？）")
-        except _CONN_LOST_ERRORS as e:
+        except (ConnectionLostError, ConnectionFailedError) as e:
             raise AppleTvConnError("连接已断开：{}".format(e))
         except PYATV_ERRORS as e:
             raise AppleTvError(self._friendly("{}: {}".format(type(e).__name__, e)))
@@ -299,8 +294,6 @@ class AppleTvManager:
 
     def tap(self):
         def factory(atv):
-            if not hasattr(atv, "touch"):
-                raise AppleTvError("此 pyatv 版本不支持触控，请用方向键 + OK")
             return atv.touch.click(InputAction.SingleTap)
         self._call(factory)
 
@@ -309,8 +302,6 @@ class AppleTvManager:
         def clamp(v):
             return min(1.0, max(0.0, float(v)))
         def factory(atv):
-            if not hasattr(atv, "touch"):
-                raise AppleTvError("此 pyatv 版本不支持触控，请用方向键 + OK")
             return atv.touch.swipe(clamp(x1), clamp(y1), clamp(x2), clamp(y2),
                                    min(2000, max(100, int(duration_ms))))
         self._call(factory)

@@ -18,19 +18,9 @@ android {
         }
     }
 
-    signingConfigs {
-        release {
-            storeFile rootProject.file("../android/debug.keystore")
-            storePassword "atvremote"
-            keyAlias "atvremote"
-            keyPassword "atvremote"
-        }
-    }
-
     buildTypes {
         release {
             minifyEnabled false
-            signingConfig signingConfigs.release
         }
     }
 }

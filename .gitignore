@@ -27,6 +27,7 @@ android-native/app/build/
 android-native/build/
 android-native/.gradle/
 android-native/local.properties
+android-native/ATVRemote-native.apk
 
 # 系统
 .DS_Store
