@@ -12,6 +12,7 @@ ATV Remote — Android TV 遥控器（本地 Web UI + adb）
 """
 
 import argparse
+import base64
 import hmac
 import json
 import mimetypes
@@ -90,6 +91,19 @@ KEYCODES = {
     "enter": 66, "del": 67, "info": 165, "settings": 176, "app_switch": 187,
     "page_up": 92, "page_down": 93, "escape": 111,
 }
+
+# ---- ADBKeyboard：Android TV 上输入中文 / Emoji 的唯一可行方案 ----
+# adb 的 `input text` 只吃 ASCII（非 ASCII 会静默丢弃），中文必须借道第三方输入法：
+# ADBKeyboard 监听广播 intent，把文本交给「当前输入法」的 InputConnection 提交，
+# 所以只有当它是电视的当前输入法时文本才会落到输入框里。
+ADBKB_IME = "com.android.adbkeyboard/.AdbIME"
+# Android 16 必须用 v2.5-dev（旧版装不上）；其它版本用 v2.4-dev
+ADBKB_APK_A16 = ("https://github.com/senzhk/ADBKeyBoard/releases/download/"
+                 "v2.5-dev/keyboardservice-debug.apk")
+ADBKB_APK = ("https://github.com/senzhk/ADBKeyBoard/releases/download/"
+             "v2.4-dev/keyboardservice-debug.apk")
+# EditorInfo.imeOptions 动作码：搜索框里点「搜索」比发回车更准
+ADBKB_ACTIONS = {"go": 2, "search": 3, "send": 4, "next": 5, "done": 6, "previous": 7}
 
 
 class AdbError(Exception):
@@ -319,6 +333,71 @@ def fetch_device_info(serial):
     return info
 
 
+# ---------------- ADBKeyboard 中文键盘 ----------------
+def current_android_target() -> str:
+    with state_lock:
+        cur = state.get("current") or {}
+    if cur.get("type") != "android" or not cur.get("target"):
+        raise AdbError("未连接 Android TV")
+    return cur["target"]
+
+
+def ime_current(serial) -> str:
+    """当前输入法组件名。只取 default_input_method，一次 shell —— 走中文输入路径时每次都要确认"""
+    try:
+        v = adb.shell(serial, "settings get secure default_input_method", timeout=5).strip()
+    except AdbError:
+        return ""
+    return "" if v in ("null", "None", "0") else v
+
+
+def ime_status(serial):
+    """ADBKeyboard 的 安装 / 已启用 / 是当前 三态。切换输入法后必须重新取"""
+    st = {
+        "ime": ADBKB_IME,
+        "installed": False,   # APK 装了没（ime list -a 里能查到）
+        "enabled": False,     # 在「语言和输入法」里勾上了没
+        "current": False,     # 当前正在用（决定了中文能不能打进去）
+        "default_ime": ime_current(serial),
+        "apk": ADBKB_APK,
+        "apk_a16": ADBKB_APK_A16,
+    }
+    try:
+        enabled = adb.shell(serial, "settings get secure enabled_input_methods", timeout=5).strip()
+        st["enabled"] = ADBKB_IME in enabled
+    except AdbError:
+        pass
+    try:
+        st["installed"] = ADBKB_IME in adb.shell(serial, "ime list -a", timeout=8)
+    except AdbError:
+        pass
+    st["current"] = st["default_ime"] == ADBKB_IME
+    return st
+
+
+def require_adbkb(serial):
+    """广播在没有接收器时同样返回 result=0（静默失效），所以每个中文操作前都要确认
+    ADBKeyboard 就是电视的当前输入法 —— 否则用户点了没反应还以为是坏了"""
+    cur_ime = ime_current(serial)
+    if cur_ime != ADBKB_IME:
+        raise AdbError("该操作需要电视的当前输入法是 ADBKeyboard（现在是{}），"
+                       "点键盘区的「启用」".format(cur_ime or "未知输入法"))
+
+
+def adbkb_text(serial, text):
+    """base64 广播输入任意 Unicode（ADB_INPUT_TEXT 在 Oreo+ 传 UTF-8 会坏，必须用 B64）"""
+    b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    adb.shell(serial, "am broadcast -a ADB_INPUT_B64 --es msg " + sh_quote(b64), timeout=8)
+
+
+def adbkb_clear(serial):
+    adb.shell(serial, "am broadcast -a ADB_CLEAR_TEXT", timeout=8)
+
+
+def adbkb_action(serial, code: int):
+    adb.shell(serial, "am broadcast -a ADB_EDITOR_CODE --ei code {}".format(int(code)), timeout=8)
+
+
 def make_status():
     with state_lock:
         cur = dict(state.get("current") or {})
@@ -356,14 +435,44 @@ def make_status():
 
 
 # ---------------- 命令处理 ----------------
+WAKE_KEYCODES = (26, 223, 224)   # POWER / SLEEP / WAKEUP
+
+
+def is_wake_cmd(cmd: str) -> bool:
+    """是否是唤醒 / 电源键。这类按键本就是用来解除休眠的，超时后不能再报「休眠」"""
+    m = re.match(r"input keyevent ([\d \-]+)$", (cmd or "").strip())
+    if not m:
+        return False
+    try:
+        return bool(set(WAKE_KEYCODES) & {int(x) for x in m.group(1).split()})
+    except ValueError:
+        return False
+
+
+def device_asleep(serial) -> bool:
+    """设备是否在休眠。只在超时路径上调用（罕见），不影响正常按键延迟"""
+    try:
+        out = adb.shell(serial, "dumpsys power", timeout=5)
+    except AdbError:
+        return False
+    return "mWakefulness=Asleep" in out or "mWakefulness=Dozing" in out
+
+
 def run_shell(serial, cmd, timeout=6):
     """执行命令；设备端偶发挂起（如模拟器 input text）时重试一次"""
     try:
         return adb.shell(serial, cmd, timeout=timeout)
     except AdbError as e:
-        if "超时" in str(e):
-            return adb.shell(serial, cmd, timeout=timeout)
-        raise
+        if "超时" not in str(e):
+            raise
+        # 屏幕熄灭时 `input` 会一直阻塞（实测 keyevent 也一样）。此时报「未授权/离线」
+        # 是误导，用户会去查授权 —— 先看一眼休眠状态，给出能直接行动的原因。
+        if device_asleep(serial):
+            if is_wake_cmd(cmd):
+                return ""   # 唤醒键已注入，只是 input 等回执时挂住了；别再报错吓人
+            raise AdbError("电视处于休眠状态，命令送不进去：先点「☀ 唤醒」"
+                           "（或按一下电视遥控器的电源键）")
+        return adb.shell(serial, cmd, timeout=timeout)
 
 
 def handle_cmd(body):
@@ -404,13 +513,29 @@ def handle_cmd_android(body):
         text = str(body.get("text", ""))[:MAX_TEXT_LEN]
         if not text.strip():
             raise AdbError("内容为空")
-        bad = sorted({ch for ch in text if ord(ch) > 0x7E})
-        if bad:
-            raise AdbError("adb input 不支持中文等非 ASCII 字符（{}…），"
-                           "中文输入需在电视端安装 ADBKeyboard 输入法".format("".join(bad[:4])))
-        run_shell(cur, "input text " + sh_quote(text))
+        if all(ord(ch) <= 0x7E for ch in text):
+            run_shell(cur, "input text " + sh_quote(text))   # ASCII 走原生通道，最快
+        else:
+            # 非 ASCII：广播收不到时字符是静默丢失的，先确认输入法再发
+            require_adbkb(cur)
+            adbkb_text(cur, text)
         if body.get("enter"):
             run_shell(cur, "input keyevent 66")
+        return {"ok": True}
+
+    if t == "clear":
+        require_adbkb(cur)
+        adbkb_clear(cur)
+        return {"ok": True}
+
+    if t == "editor":
+        code = body.get("code", 3)
+        code = int(code) if str(code).lstrip("-").isdigit() else -1
+        if code not in ADBKB_ACTIONS.values():
+            raise AdbError("编辑器动作码不合法：{}（可用 {}）".format(
+                body.get("code"), "/".join(ADBKB_ACTIONS)))
+        require_adbkb(cur)
+        adbkb_action(cur, code)
         return {"ok": True}
 
     if t == "tap":
@@ -537,6 +662,40 @@ def handle_atv_forget(body):
 
 def handle_atv_apps(_body):
     return {"apps": atv_mgr.apps()}
+
+
+def handle_ime(body):
+    """ADBKeyboard 中文键盘：status / enable / reset"""
+    action = body.get("action") or "status"
+    serial = current_android_target()
+    if action == "status":
+        return ime_status(serial)
+
+    if action == "enable":
+        st = ime_status(serial)
+        if not st["installed"]:
+            # 不抛异常：长 APK 链接进 toast 会糊成一团，交给前端渲染成可点链接
+            st["ok"] = False
+            st["hint"] = "电视上未安装 ADBKeyboard，请先按提示装 APK（Android 16 必须用 v2.5-dev）"
+            return st
+        if not st["enabled"]:
+            adb.shell(serial, "ime enable " + ADBKB_IME, timeout=8)
+        adb.shell(serial, "ime set " + ADBKB_IME, timeout=8)
+        time.sleep(0.3)   # 切换输入法有延迟，等一下再回读
+        st = ime_status(serial)
+        st["ok"] = st["current"]
+        if not st["current"]:
+            st["hint"] = ("切换命令已发出，但电视当前仍是「{}」。请看电视屏幕："
+                          "若弹出「选择输入法」确认框，用遥控器点「确定」。"
+                          .format(st["default_ime"] or "未知输入法"))
+        return st
+
+    if action == "reset":
+        adb.shell(serial, "ime reset", timeout=8)
+        time.sleep(0.3)
+        return ime_status(serial)
+
+    raise AdbError("未知的键盘动作: {}".format(action))
 
 
 def handle_connect(body):
@@ -683,6 +842,7 @@ ROUTES = {
     "/api/connect": handle_connect,
     "/api/disconnect": handle_disconnect,
     "/api/cmd": handle_cmd,
+    "/api/ime": handle_ime,
     "/api/forget": handle_forget,
     "/api/switch": handle_switch,
     "/api/atv/scan": handle_atv_scan,

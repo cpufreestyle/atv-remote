@@ -86,3 +86,30 @@ python3 -c 'import server; import atv_backend' && node --check static/app.js && 
   比较一律用 `hmac.compare_digest`。新增路由不要自己判权限，`do_GET` / `do_POST`
   开头的 `_check_auth()` 已统一处理（注意它同时负责种 cookie）。
   `/` 未授权时返回 `LOGIN_PAGE`（表单 GET 提交即变成 `/?token=xxx`）。
+
+### ADBKeyboard 中文输入（Android TV）
+
+`adb shell input text` **只吃 ASCII**，中文 / Emoji 会静默丢失。中文走第三方输入法
+ADBKeyboard（`com.android.adbkeyboard/.AdbIME`），由 `/api/ime` 管理、`/api/cmd`
+的 `text` / `clear` / `editor` 三种命令消费。
+
+- **广播是静默失效的**：`am broadcast -a ADB_CLEAR_TEXT` 在没有接收器时同样返回
+  `Broadcast completed: result=0`、**退出码 0**。所以每个中文操作前必须用
+  `require_adbkb()` 确认当前输入法就是 ADBKeyboard（`settings get secure
+  default_input_method`），否则用户点了没反应还查不出原因。
+- 输入法三态：`installed`（`ime list -a` 能查到）/ `enabled`（`enabled_input_methods`
+  里）/ `current`（`default_input_method` 等于它）。**只有 `current` 为真才能输入**。
+- `ime enable` 对未安装的输入法返回 **exit 255**，`adb.shell()` 会抛 `AdbError`，
+  所以 `enable` 分支先查 `installed`，用结构化返回（带 APK 链接）而不是抛异常 ——
+  长 URL 进 toast 会糊成一团，交给前端渲染成可点链接。
+- 用 **base64**（`ADB_INPUT_B64`）而不是 `ADB_INPUT_TEXT`：后者在 Oreo+ 传 UTF-8 会坏。
+
+### 设备休眠时 `input` 会阻塞
+
+屏幕熄灭时 `input text` / `input keyevent` **会一直挂住**（实测），而 `settings` /
+`dumpsys` 不受影响。因此 `run_shell()` 超时后会查一次 `dumpsys power`：
+- 确认休眠 → 报「先点☀ 唤醒」（原来报「未授权/离线」，是误导，用户会去查授权）；
+- 但**唤醒键（26 / 223 / 224）豁免**，直接返回成功 —— 否则提示用户点唤醒、
+  用户点了又弹一次「休眠」，自相矛盾。
+
+`ime` 状态查询要 3 条 shell，前端按需查询（设备切换时），**不能挂进 8s 轮询**。

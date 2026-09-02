@@ -7,7 +7,7 @@
 | 功能 | 🤖 Android TV | 🍎 Apple TV |
 |------|:---:|:---:|
 | 方向键 D-pad | ✅ | ✅ |
-| 键盘打字发送到电视 | ✅（仅 ASCII） | ✅ **支持中文** |
+| 键盘打字发送到电视 | ✅（中文需一键启用 ADBKeyboard） | ✅ **支持中文** |
 | 全局键盘遥控（方向键/回车/Esc…） | ✅ | ✅ |
 | 触摸板（点击/滑动） | ✅（映射屏幕坐标） | ✅（触控手势） |
 | 返回/主页/菜单/播放控制 | ✅ | ✅ |
@@ -76,6 +76,18 @@ swift make_icon.swift        # 生成 mac/AppIcon_1024.png 和 mac/ic_launcher_f
 
 **打字发送**：在「键盘输入」框打字 → 回车或「发送」→ 文字直接上电视。
 （Apple TV 需要电视端有聚焦的输入框，状态栏会显示「输入框已聚焦」徽标；支持中文）
+
+**Android TV 输中文**：`adb shell input text` 只认 ASCII，中文会被静默丢弃，
+必须借道第三方输入法 ADBKeyboard —— 页面里点一下「中文键盘 → 启用」即自动完成，只需一次：
+
+| 状态显示 | 含义 | 怎么办 |
+|---------|------|-------|
+| 电视上未安装 | 还没装 ADBKeyboard | 卡片里给出了 APK 直链（Android 16 必须用 v2.5-dev），在电视浏览器打开装一次 |
+| 已安装 · 未切换 | 装了但当前不是它 | 点「启用」 |
+| 已启用 · 可输中文 | 就绪 | 直接打中文 / Emoji |
+
+切换后电视可能弹一次「选择输入法」确认框，用遥控器点「确定」。不用了点「切回系统」即可还原。
+启用后输入框右下角会多两个按钮：**清空电视输入框**、**电视搜索键**（比发回车更能命中搜索框）。
 
 **全局键盘遥控**（点一下页面空白处后生效）：
 
@@ -162,6 +174,11 @@ POST /api/cmd       {"type":"key","code":19}               # 按键（两种设�
 POST /api/cmd       {"type":"text","text":"hello","enter":true}
 POST /api/cmd       {"type":"tap"...} / {"type":"swipe"...}
 POST /api/cmd       {"type":"app","pkg":"com.netflix.ninja"}   # Android 包名 / Apple TV bundle id
+POST /api/cmd       {"type":"clear"}                  # 清空电视输入框（需 ADBKeyboard）
+POST /api/cmd       {"type":"editor","code":3}        # 触发 IME 动作：3=搜索 2=前往 6=完成
+POST /api/ime       {"action":"status"}               # ADBKeyboard 三态：installed/enabled/current
+POST /api/ime       {"action":"enable"}               # 启用并切到 ADBKeyboard
+POST /api/ime       {"action":"reset"}                # 切回电视系统输入法
 GET  /api/screenshot                      # Android 截屏 / Apple TV 播放画面
 POST /api/atv/scan   {}                   # 扫描 Apple TV
 POST /api/atv/pair   {"action":"begin","id","ip","name"}   # 开始配对（电视显示 PIN）
@@ -175,7 +192,13 @@ POST /api/atv/apps   {}                   # Apple TV 应用列表
 **Android TV**
 - **连接不上**：确认同一网段、电视端「网络调试」已开启；终端 `adb connect <ip>:5555` 验证
 - **设备未授权**：首次连接需在电视上点「允许」；一直未授权试 `adb kill-server` 后重连
-- **中文打不进**：Android `input text` 仅支持 ASCII；要中文需电视端装 [ADBKeyboard](https://github.com/senzhk/ADBKeyBoard)（Apple TV 侧无此限制）
+- **中文打不进**：Android `input text` 仅支持 ASCII，中文会被静默丢弃。点键盘区的
+  「中文键盘 → 启用」（内置 ADBKeyboard 方案，见上文）。手动装 APK 见
+  [ADBKeyBoard](https://github.com/senzhk/ADBKeyBoard)——**Android 16 必须用 v2.5-dev**。
+  （Apple TV 侧无此限制）
+- **启用后中文还是打不进**：确认状态显示的是「已启用 · 可输中文」（只是「已安装」不够，
+  必须是电视的**当前**输入法）。部分电视会弹「选择输入法」确认框，需要在电视上点「确定」。
+- **按键没反应、报「休眠」**：电视屏幕熄灭时 `input` 命令会阻塞，先点「☀ 唤醒」
 - **电源键无反应**：部分电视限制 `keyevent 26`，用「唤醒」+系统菜单代替
 
 **Apple TV**

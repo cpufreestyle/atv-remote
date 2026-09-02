@@ -32,6 +32,9 @@ const status = { curType: null, connected: false, screen: { w: 1920, h: 1080 } }
 const lastSent = {}; // 同键节流（自动重复）
 let pairingDev = null; // 正在配对的 Apple TV
 let lastChipSig = ""; // 设备列表签名：无变化则跳过重建
+let lastImeTarget = null; // 上次查过输入法的设备，避免 8s 轮询反复查
+// ADBKeyboard 中文键盘状态（仅 Android TV 需要，按需查询，不进 8s 轮询）
+const imeState = { installed: false, enabled: false, current: false, default_ime: "", checked: false };
 
 /* ---------------- 基础 ---------------- */
 async function api(path, body) {
@@ -89,8 +92,11 @@ async function sendText(text, withEnter) {
     return;
   }
   if (status.curType !== "appletv" && /[^\x20-\x7E]/.test(text)) {
-    toast("⚠ Android TV 的 adb 输入不支持中文等非 ASCII 字符（Apple TV 支持中文）");
-    return;
+    if (!imeState.current) {
+      toast("⚠ 中文输入要把电视输入法切到 ADBKeyboard，点下方「中文键盘 → 启用」");
+      refreshIme(); // 状态可能已变（比如刚在电视上手动切过），顺手刷新一次
+      return;
+    }
   }
   try {
     await api("/api/cmd", { type: "text", text, enter: !!withEnter });
@@ -147,9 +153,17 @@ function renderStatus(s) {
   $("#appsAndroid").classList.toggle("hidden", isApple);
   $("#appsApple").classList.toggle("hidden", !isApple);
   $("#shotBtn").textContent = isApple ? "🖼 正在播放画面" : "📸 电视截屏";
-  $("#textInput").placeholder = isApple
-    ? "在此打字，回车发送到电视（Apple TV 支持中文）"
-    : "在此打字，回车发送到电视（英文/数字/符号）";
+  // Android 的 placeholder 由 renderIme() 按 ADBKeyboard 状态设置（会随能力变化）
+  if (isApple) $("#textInput").placeholder = "在此打字，回车发送到电视（Apple TV 支持中文）";
+  // 清空 / 搜索键走 ADBKeyboard 广播，Apple TV 没有这回事
+  $("#kbTools").classList.toggle("hidden", isApple);
+
+  // 连接的设备变了才去查输入法（每次查询要 3 条 shell，不能跟着 8s 轮询跑）
+  const imeTarget = (isApple ? "atv:" : "adb:") + (s.current || "");
+  if (imeTarget !== lastImeTarget) {
+    lastImeTarget = imeTarget;
+    refreshIme();
+  }
   $("#padHint").textContent = isApple
     ? "轻点 = 点击 · 按住拖动 = 滑动（Apple TV 触控）"
     : "轻点 = 点击 · 按住拖动 = 滑动（映射整块电视屏幕）";
@@ -208,6 +222,70 @@ async function connect(target) {
     toast(e.message);
   } finally {
     $("#connectBtn").disabled = false;
+  }
+}
+
+/* ---------------- ADBKeyboard 中文键盘 ---------------- */
+function renderIme(st) {
+  Object.assign(imeState, st || {}, { checked: true });
+  const el = $("#imeState");
+  if (status.curType === "appletv") {
+    $("#imeRow").classList.add("hidden");
+    $("#imeHint").classList.add("hidden");
+    $("#imeInstall").classList.add("hidden");
+    return;
+  }
+  $("#imeRow").classList.remove("hidden");
+  $("#imeHint").classList.remove("hidden");
+
+  let cls = "imestate", label = "未检测";
+  if (imeState.current) { cls += " ok"; label = "已启用 · 可输中文"; }
+  else if (imeState.installed) { cls += " warn"; label = "已安装 · 未切换"; }
+  else { cls += " off"; label = "电视上未安装"; }
+  el.className = cls;
+  el.textContent = label;
+  el.title = imeState.default_ime ? "当前输入法：" + imeState.default_ime : "";
+
+  $("#imeEnableBtn").classList.toggle("hidden", !!imeState.current);
+  $("#imeResetBtn").classList.toggle("hidden", !imeState.current);
+  $("#imeInstall").classList.toggle("hidden", !!imeState.installed);
+
+  // 输入框提示随能力变化，避免用户打完中文才发现发不出去
+  $("#textInput").placeholder = imeState.current
+    ? "在此打字，回车发送到电视（支持中文 / Emoji）"
+    : "在此打字，回车发送到电视（中文需先启用 ADBKeyboard）";
+}
+
+async function refreshIme() {
+  if (status.curType === "appletv") return renderIme(null);
+  try {
+    renderIme(await api("/api/ime", { action: "status" }));
+  } catch (e) {
+    imeState.current = false;
+    $("#imeState").className = "imestate off";
+    $("#imeState").textContent = "未连接";
+  }
+}
+
+async function imeEnable() {
+  log("正在切换电视输入法…");
+  $("#imeEnableBtn").disabled = true;
+  try {
+    const st = await api("/api/ime", { action: "enable" });
+    renderIme(st);
+    if (st.ok) {
+      toast("已切到 ADBKeyboard，可以输中文了", true);
+      log("输入法已切换");
+    } else {
+      const msg = st.hint || "切换未生效，请看电视屏幕确认";
+      toast(msg, true);
+      log("⚠ " + msg);
+    }
+  } catch (e) {
+    log("⚠ " + e.message);
+    toast(e.message);
+  } finally {
+    $("#imeEnableBtn").disabled = false;
   }
 }
 
@@ -403,6 +481,7 @@ $$(".devtab").forEach((t) => {
     t.classList.add("on");
     $$(".devpane").forEach((p) => p.classList.remove("on"));
     $("#pane-" + t.dataset.dev).classList.add("on");
+    refreshIme(); // 页签切换会改变键盘区的显隐，重新按当前设备类型渲染
     if (t.dataset.dev === "appletv") {
       const box = $("#atvList");
       if (!box.dataset.scanned) {
@@ -423,6 +502,24 @@ $("#sendEnterBtn").addEventListener("click", () => sendText($("#textInput").valu
 $("#textInput").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); sendText($("#textInput").value, true); }
   if (e.key === "Escape") e.target.blur();
+});
+
+/* 中文键盘（ADBKeyboard）控件 */
+$("#imeEnableBtn").addEventListener("click", imeEnable);
+$("#imeResetBtn").addEventListener("click", async () => {
+  try {
+    renderIme(await api("/api/ime", { action: "reset" }));
+    toast("已切回电视系统输入法", true);
+    log("输入法已还原");
+  } catch (e) { toast(e.message); }
+});
+$("#clearBtn").addEventListener("click", async () => {
+  try { await api("/api/cmd", { type: "clear" }); log("→ 清空电视输入框"); }
+  catch (e) { toast(e.message); }
+});
+$("#searchBtn").addEventListener("click", async () => {
+  try { await api("/api/cmd", { type: "editor", code: 3 }); log("→ 触发电视搜索（IME_ACTION_SEARCH）"); }
+  catch (e) { toast(e.message); }
 });
 
 /* Android 应用预设 */
