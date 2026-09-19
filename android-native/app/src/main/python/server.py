@@ -6,9 +6,14 @@ ATV Remote — Android TV 遥控器（本地 Web UI + adb）
 
 用法:
     python3 server.py [--host 127.0.0.1] [--port 8300] [--adb adb路径] [--no-open]
+
+    # 局域网访问加令牌（不传则行为与以前完全一致：无鉴权）
+    python3 server.py --token 你的令牌
 """
 
 import argparse
+import base64
+import hmac
 import json
 import mimetypes
 import os
@@ -21,13 +26,61 @@ import sys
 import threading
 import time
 import webbrowser
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 ROOT = Path(__file__).resolve().parent
 STATIC = Path(os.environ.get("ATV_STATIC", str(ROOT / "static")))
 STATE_FILE = Path(os.environ.get("ATV_STATE", str(ROOT / "state.json")))
+
+# `adb devices` / `adb version` 的缓存秒数：按键路径每次 fork 进程是延迟大头，
+# 遥控器场景可接受 1.5s 的陈旧度（连接/断开等关键操作会主动失效缓存）
+DEVICES_CACHE_TTL = 1.5
+# 单条命令允许的参数上限，防止构造超长指令（adb 命令行长度也有限制）
+MAX_TEXT_LEN = 5000
+MAX_KEYCODES = 32
+
+# 允许的设备地址写法：IPv4(:port) 或 主机名(:port)；禁止空格与 shell 元字符
+TARGET_RE = re.compile(r"^[A-Za-z0-9.\-]+(:\d+)?$")
+
+# 可选访问令牌：为空表示不鉴权（与历史行为一致）。
+# 设置后仅局域网来源需要令牌，本机回环（127.0.0.1 / ::1）直接放行 ——
+# 威胁模型就是「同一网段的其它设备」，没必要给本机加门槛。
+AUTH_TOKEN = os.environ.get("ATV_TOKEN", "").strip()
+TOKEN_COOKIE = "atv_token"
+LOOPBACK_HOSTS = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+# 未带令牌时给浏览器看的引导页（表单用 GET，提交后变成 /?token=xxx 自带令牌）
+LOGIN_PAGE = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ATV Remote · 需要访问令牌</title>
+<style>
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#12141a;
+     color:#e7e9ee;font:15px/1.6 -apple-system,"PingFang SC",system-ui,sans-serif}
+.box{width:min(92vw,380px);padding:28px;border-radius:14px;background:#1b1e26;
+     box-shadow:0 10px 40px rgba(0,0,0,.4)}
+h1{margin:0 0 6px;font-size:19px} p{margin:0 0 18px;color:#9aa3b2;font-size:13px}
+input{width:100%;padding:11px 12px;border:1px solid #333a49;border-radius:9px;
+      background:#12141a;color:#e7e9ee;font-size:15px;box-sizing:border-box}
+button{margin-top:10px;width:100%;padding:11px;border:0;border-radius:9px;
+       background:#3b7cff;color:#fff;font-size:15px;cursor:pointer}
+code{color:#ffd479}
+</style></head><body><div class="box">
+<h1>🔒 需要访问令牌</h1>
+<p>这台服务器开了 <code>--token</code>。令牌在启动它的终端窗口里能找到。</p>
+<form method="get" action="/">
+  <input name="token" placeholder="输入访问令牌" autocomplete="off" autofocus>
+  <button type="submit">进入遥控器</button>
+</form></div></body></html>
+"""
+
+
+def token_query() -> str:
+    """追加到 URL 上的令牌查询串；未启用令牌时为空串（行为与历史版本一致）"""
+    return ("?token=" + quote(AUTH_TOKEN, safe="")) if AUTH_TOKEN else ""
 
 # Android KeyEvent 键码（AOSP keycode.h 子集）
 KEYCODES = {
@@ -39,6 +92,19 @@ KEYCODES = {
     "page_up": 92, "page_down": 93, "escape": 111,
 }
 
+# ---- ADBKeyboard：Android TV 上输入中文 / Emoji 的唯一可行方案 ----
+# adb 的 `input text` 只吃 ASCII（非 ASCII 会静默丢弃），中文必须借道第三方输入法：
+# ADBKeyboard 监听广播 intent，把文本交给「当前输入法」的 InputConnection 提交，
+# 所以只有当它是电视的当前输入法时文本才会落到输入框里。
+ADBKB_IME = "com.android.adbkeyboard/.AdbIME"
+# Android 16 必须用 v2.5-dev（旧版装不上）；其它版本用 v2.4-dev
+ADBKB_APK_A16 = ("https://github.com/senzhk/ADBKeyBoard/releases/download/"
+                 "v2.5-dev/keyboardservice-debug.apk")
+ADBKB_APK = ("https://github.com/senzhk/ADBKeyBoard/releases/download/"
+             "v2.4-dev/keyboardservice-debug.apk")
+# EditorInfo.imeOptions 动作码：搜索框里点「搜索」比发回车更准
+ADBKB_ACTIONS = {"go": 2, "search": 3, "send": 4, "next": 5, "done": 6, "previous": 7}
+
 
 class AdbError(Exception):
     pass
@@ -47,6 +113,11 @@ class AdbError(Exception):
 def sh_quote(s: str) -> str:
     """给设备端 shell 用的单引号转义"""
     return "'" + s.replace("'", "'\\''") + "'"
+
+
+def clamp_coord(v) -> int:
+    """触摸坐标夹到合理区间，避免超大数值进入 adb 命令行"""
+    return min(100000, max(-100000, int(v)))
 
 
 class Adb:
@@ -58,6 +129,29 @@ class Adb:
         self._shell = None          # type: subprocess.Popen | None
         self._shell_serial = None
         self._seq = 0
+        self._dev_lock = threading.Lock()
+        self._devices_cache = (0.0, [])   # (时间戳, [{serial, state}])
+        self._version_cache = None
+
+    # ---------- 缓存 ----------
+    def invalidate_devices(self):
+        """连接/断开后调用，强制下次 devices() 重新查询"""
+        with self._dev_lock:
+            self._devices_cache = (0.0, [])
+
+    def reset_shell(self):
+        """丢弃常驻 shell（设备掉线时），下次命令会重新建立"""
+        with self._lock:
+            self._kill_shell_locked()
+
+    def _kill_shell_locked(self):
+        if self._shell is not None:
+            try:
+                self._shell.kill()
+            except Exception:
+                pass
+            self._shell = None
+            self._shell_serial = None
 
     # ---------- 基础 ----------
     def run(self, *args, timeout=10, binary=False):
@@ -77,13 +171,23 @@ class Adb:
         return shutil.which(self.path) is not None or Path(self.path).exists()
 
     def version(self) -> str:
+        """adb 版本不会变，只查一次"""
+        if self._version_cache is not None:
+            return self._version_cache
         try:
-            return (self.run("version").splitlines() or [""])[0]
+            self._version_cache = (self.run("version").splitlines() or [""])[0]
         except AdbError:
-            return "unknown"
+            self._version_cache = "unknown"
+        return self._version_cache
 
-    def devices(self):
-        """返回 [{serial, state}]"""
+    def devices(self, fresh: bool = False):
+        """返回 [{serial, state}]；默认走 1.5s 缓存，fresh=True 强制重新查询"""
+        now = time.time()
+        with self._dev_lock:
+            ts, cached = self._devices_cache
+            if not fresh and cached and now - ts < DEVICES_CACHE_TTL:
+                return [dict(d) for d in cached]
+
         out = self.run("devices")
         result = []
         for line in out.splitlines()[1:]:
@@ -93,12 +197,15 @@ class Adb:
             parts = line.split()
             if len(parts) >= 2:
                 result.append({"serial": parts[0], "state": parts[1]})
-        return result
+        with self._dev_lock:
+            self._devices_cache = (now, result)
+        return [dict(d) for d in result]
 
     def connect(self, target: str):
         out = self.run("connect", target, timeout=12)
         if "connected" not in out and "already connected" not in out:
             raise AdbError("无法连接 {}: {}".format(target, out))
+        self.invalidate_devices()
         return out
 
     def disconnect(self, target: str):
@@ -106,18 +213,14 @@ class Adb:
             self.run("disconnect", target, timeout=8)
         except AdbError:
             pass
-        with self._lock:
-            self._shell = None
+        self.reset_shell()
+        self.invalidate_devices()
 
     # ---------- 常驻 shell ----------
     def _ensure_shell(self, serial):
         if self._shell is not None and self._shell.poll() is None and self._shell_serial == serial:
             return
-        if self._shell is not None:
-            try:
-                self._shell.kill()
-            except Exception:
-                pass
+        self._kill_shell_locked()
         self._shell = subprocess.Popen(
             [self.path, "-s", serial, "shell"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -134,7 +237,7 @@ class Adb:
                 self._shell.stdin.write("{}; echo {}=$?\n".format(cmd, token).encode())
                 self._shell.stdin.flush()
             except (BrokenPipeError, OSError):
-                self._shell = None
+                self._kill_shell_locked()
                 raise AdbError("adb shell 已断开，请重试")
 
             buf = b""
@@ -145,7 +248,8 @@ class Adb:
                     continue
                 chunk = os.read(self._shell.stdout.fileno(), 65536)
                 if not chunk:
-                    self._shell = None
+                    self._kill_shell_locked()
+                    self.invalidate_devices()
                     raise AdbError("设备连接中断，请重新连接")
                 buf += chunk
                 text = buf.decode("utf-8", "replace")
@@ -156,11 +260,8 @@ class Adb:
                         tail = "; ".join(l for l in body.splitlines()[-2:] if l.strip())
                         raise AdbError(tail or "命令执行失败（退出码 {}）".format(m.group(1)))
                     return body
-            try:
-                self._shell.kill()
-            except Exception:
-                pass
-            self._shell = None
+            self._kill_shell_locked()
+            self.invalidate_devices()
             raise AdbError("命令超时：设备可能未授权（请在电视上点“允许”）或已离线")
 
 
@@ -171,7 +272,8 @@ from atv_backend import PYATV_AVAILABLE as ATV_AVAILABLE
 adb = None            # type: Adb
 atv_mgr = AppleTvManager()
 state = {"recent_android": [], "appletvs": [], "current": None, "info": {}}
-state_lock = threading.Lock()
+# 可重入：save_state 会在已持锁的分支里被调用
+state_lock = threading.RLock()
 
 
 def load_state():
@@ -189,8 +291,13 @@ def load_state():
 
 
 def save_state():
+    """原子写盘：先写 .tmp 再 rename，避免写一半崩溃后 state.json（含配对凭据）损坏"""
     try:
-        STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), "utf-8")
+        with state_lock:
+            snapshot = json.dumps(state, ensure_ascii=False, indent=2)
+        tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
+        tmp.write_text(snapshot, "utf-8")
+        os.replace(str(tmp), str(STATE_FILE))
     except Exception:
         pass
 
@@ -199,8 +306,9 @@ def normalize_target(t: str) -> str:
     t = t.strip()
     if not t:
         raise AdbError("请填写电视 IP")
-    if not re.match(r"^\d+\.\d+\.\d+\.\d+(:\d+)?$", t) and ":" not in t:
-        raise AdbError("IP 格式不正确：{}".format(t))
+    # 只允许 IP 或主机名（可带端口），杜绝空格与 shell 元字符进入 adb 命令行
+    if not TARGET_RE.match(t):
+        raise AdbError("IP / 主机名格式不正确：{}".format(t))
     if ":" not in t:
         t += ":5555"
     return t
@@ -225,47 +333,146 @@ def fetch_device_info(serial):
     return info
 
 
+# ---------------- ADBKeyboard 中文键盘 ----------------
+def current_android_target() -> str:
+    with state_lock:
+        cur = state.get("current") or {}
+    if cur.get("type") != "android" or not cur.get("target"):
+        raise AdbError("未连接 Android TV")
+    return cur["target"]
+
+
+def ime_current(serial) -> str:
+    """当前输入法组件名。只取 default_input_method，一次 shell —— 走中文输入路径时每次都要确认"""
+    try:
+        v = adb.shell(serial, "settings get secure default_input_method", timeout=5).strip()
+    except AdbError:
+        return ""
+    return "" if v in ("null", "None", "0") else v
+
+
+def ime_status(serial):
+    """ADBKeyboard 的 安装 / 已启用 / 是当前 三态。切换输入法后必须重新取"""
+    st = {
+        "ime": ADBKB_IME,
+        "installed": False,   # APK 装了没（ime list -a 里能查到）
+        "enabled": False,     # 在「语言和输入法」里勾上了没
+        "current": False,     # 当前正在用（决定了中文能不能打进去）
+        "default_ime": ime_current(serial),
+        "apk": ADBKB_APK,
+        "apk_a16": ADBKB_APK_A16,
+    }
+    try:
+        enabled = adb.shell(serial, "settings get secure enabled_input_methods", timeout=5).strip()
+        st["enabled"] = ADBKB_IME in enabled
+    except AdbError:
+        pass
+    try:
+        st["installed"] = ADBKB_IME in adb.shell(serial, "ime list -a", timeout=8)
+    except AdbError:
+        pass
+    st["current"] = st["default_ime"] == ADBKB_IME
+    return st
+
+
+def require_adbkb(serial):
+    """广播在没有接收器时同样返回 result=0（静默失效），所以每个中文操作前都要确认
+    ADBKeyboard 就是电视的当前输入法 —— 否则用户点了没反应还以为是坏了"""
+    cur_ime = ime_current(serial)
+    if cur_ime != ADBKB_IME:
+        raise AdbError("该操作需要电视的当前输入法是 ADBKeyboard（现在是{}），"
+                       "点键盘区的「启用」".format(cur_ime or "未知输入法"))
+
+
+def adbkb_text(serial, text):
+    """base64 广播输入任意 Unicode（ADB_INPUT_TEXT 在 Oreo+ 传 UTF-8 会坏，必须用 B64）"""
+    b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    adb.shell(serial, "am broadcast -a ADB_INPUT_B64 --es msg " + sh_quote(b64), timeout=8)
+
+
+def adbkb_clear(serial):
+    adb.shell(serial, "am broadcast -a ADB_CLEAR_TEXT", timeout=8)
+
+
+def adbkb_action(serial, code: int):
+    adb.shell(serial, "am broadcast -a ADB_EDITOR_CODE --ei code {}".format(int(code)), timeout=8)
+
+
 def make_status():
+    with state_lock:
+        cur = dict(state.get("current") or {})
+        info = dict(state.get("info", {}))
+        recent = list(state.get("recent_android", []))
+        appletvs = list(state.get("appletvs", []))
+
     devices = []
     if adb.exists():
         try:
             devices = adb.devices()
         except AdbError:
             devices = []
-    cur = state.get("current") or {}
     ctype = cur.get("type")
     cur_state = None
     if ctype == "android":
         cur_state = next((d["state"] for d in devices if d["serial"] == cur.get("target")), None)
-    with state_lock:
-        return {
-            "adb_found": adb.exists(),
-            "adb_path": adb.path,
-            "adb_version": adb.version() if adb.exists() else "",
-            "cur_type": ctype,
-            "current": cur.get("target") if ctype == "android" else cur.get("id"),
-            "current_state": cur_state,
-            "info": state.get("info", {}),
-            "devices": devices,
-            "recent": state.get("recent_android", []),
-            "appletv": {
-                "available": ATV_AVAILABLE,
-                "devices": state.get("appletvs", []),
-                "connected": bool(atv_mgr and atv_mgr.connected),
-                "kb_focus": (atv_mgr.keyboard_focus() if atv_mgr and atv_mgr.connected else None),
-            },
-        }
+    return {
+        "adb_found": adb.exists(),
+        "adb_path": adb.path,
+        "adb_version": adb.version() if adb.exists() else "",
+        "cur_type": ctype,
+        "current": cur.get("target") if ctype == "android" else cur.get("id"),
+        "current_state": cur_state,
+        "info": info,
+        "devices": devices,
+        "recent": recent,
+        "appletv": {
+            "available": ATV_AVAILABLE,
+            "devices": appletvs,
+            "connected": bool(atv_mgr and atv_mgr.connected),
+            "kb_focus": (atv_mgr.keyboard_focus() if atv_mgr and atv_mgr.connected else None),
+        },
+    }
 
 
 # ---------------- 命令处理 ----------------
+WAKE_KEYCODES = (26, 223, 224)   # POWER / SLEEP / WAKEUP
+
+
+def is_wake_cmd(cmd: str) -> bool:
+    """是否是唤醒 / 电源键。这类按键本就是用来解除休眠的，超时后不能再报「休眠」"""
+    m = re.match(r"input keyevent ([\d \-]+)$", (cmd or "").strip())
+    if not m:
+        return False
+    try:
+        return bool(set(WAKE_KEYCODES) & {int(x) for x in m.group(1).split()})
+    except ValueError:
+        return False
+
+
+def device_asleep(serial) -> bool:
+    """设备是否在休眠。只在超时路径上调用（罕见），不影响正常按键延迟"""
+    try:
+        out = adb.shell(serial, "dumpsys power", timeout=5)
+    except AdbError:
+        return False
+    return "mWakefulness=Asleep" in out or "mWakefulness=Dozing" in out
+
+
 def run_shell(serial, cmd, timeout=6):
     """执行命令；设备端偶发挂起（如模拟器 input text）时重试一次"""
     try:
         return adb.shell(serial, cmd, timeout=timeout)
     except AdbError as e:
-        if "超时" in str(e):
-            return adb.shell(serial, cmd, timeout=timeout)
-        raise
+        if "超时" not in str(e):
+            raise
+        # 屏幕熄灭时 `input` 会一直阻塞（实测 keyevent 也一样）。此时报「未授权/离线」
+        # 是误导，用户会去查授权 —— 先看一眼休眠状态，给出能直接行动的原因。
+        if device_asleep(serial):
+            if is_wake_cmd(cmd):
+                return ""   # 唤醒键已注入，只是 input 等回执时挂住了；别再报错吓人
+            raise AdbError("电视处于休眠状态，命令送不进去：先点「☀ 唤醒」"
+                           "（或按一下电视遥控器的电源键）")
+        return adb.shell(serial, cmd, timeout=timeout)
 
 
 def handle_cmd(body):
@@ -278,7 +485,8 @@ def handle_cmd(body):
 
 def handle_cmd_android(body):
     t = body.get("type")
-    cur = (state.get("current") or {}).get("target")
+    with state_lock:
+        cur = (state.get("current") or {}).get("target")
     if not cur:
         raise AdbError("未连接电视：请在「Android TV」页输入电视 IP 并连接")
     dev_state = None
@@ -286,39 +494,57 @@ def handle_cmd_android(body):
         if d["serial"] == cur:
             dev_state = d["state"]
     if dev_state != "device":
-        adb._shell = None
+        adb.reset_shell()
+        adb.invalidate_devices()
         raise AdbError("设备 {} 状态异常（{}），请重新连接".format(cur, dev_state or "offline"))
 
     if t == "key":
-        codes = body.get("codes") or ([body["code"]] if "code" in body else None)
-        if not codes:
+        raw = body.get("codes") or ([body["code"]] if "code" in body else None)
+        if not raw:
             raise AdbError("缺少键码")
-        codes = [int(c) for c in codes if str(c).lstrip("-").isdigit()]
+        raw = list(raw)[:MAX_KEYCODES]
+        codes = [int(c) for c in raw if str(c).lstrip("-").isdigit()]
         if not codes:
             raise AdbError("键码不合法")
         run_shell(cur, "input keyevent " + " ".join(map(str, codes)))
         return {"ok": True, "sent": codes}
 
     if t == "text":
-        text = str(body.get("text", ""))
+        text = str(body.get("text", ""))[:MAX_TEXT_LEN]
         if not text.strip():
             raise AdbError("内容为空")
-        bad = sorted({ch for ch in text if ord(ch) > 0x7E})
-        if bad:
-            raise AdbError("adb input 不支持中文等非 ASCII 字符（{}…），"
-                           "中文输入需在电视端安装 ADBKeyboard 输入法".format("".join(bad[:4])))
-        run_shell(cur, "input text " + sh_quote(text))
+        if all(ord(ch) <= 0x7E for ch in text):
+            run_shell(cur, "input text " + sh_quote(text))   # ASCII 走原生通道，最快
+        else:
+            # 非 ASCII：广播收不到时字符是静默丢失的，先确认输入法再发
+            require_adbkb(cur)
+            adbkb_text(cur, text)
         if body.get("enter"):
             run_shell(cur, "input keyevent 66")
         return {"ok": True}
 
+    if t == "clear":
+        require_adbkb(cur)
+        adbkb_clear(cur)
+        return {"ok": True}
+
+    if t == "editor":
+        code = body.get("code", 3)
+        code = int(code) if str(code).lstrip("-").isdigit() else -1
+        if code not in ADBKB_ACTIONS.values():
+            raise AdbError("编辑器动作码不合法：{}（可用 {}）".format(
+                body.get("code"), "/".join(ADBKB_ACTIONS)))
+        require_adbkb(cur)
+        adbkb_action(cur, code)
+        return {"ok": True}
+
     if t == "tap":
-        x, y = int(body["x"]), int(body["y"])
+        x, y = clamp_coord(body["x"]), clamp_coord(body["y"])
         run_shell(cur, "input tap {} {}".format(x, y))
         return {"ok": True}
 
     if t == "swipe":
-        args = [int(body[k]) for k in ("x1", "y1", "x2", "y2")]
+        args = [clamp_coord(body[k]) for k in ("x1", "y1", "x2", "y2")]
         dur = min(2000, max(100, int(body.get("duration", 300))))
         run_shell(cur, "input swipe {} {} {} {} {}".format(*args, dur))
         return {"ok": True}
@@ -438,12 +664,46 @@ def handle_atv_apps(_body):
     return {"apps": atv_mgr.apps()}
 
 
+def handle_ime(body):
+    """ADBKeyboard 中文键盘：status / enable / reset"""
+    action = body.get("action") or "status"
+    serial = current_android_target()
+    if action == "status":
+        return ime_status(serial)
+
+    if action == "enable":
+        st = ime_status(serial)
+        if not st["installed"]:
+            # 不抛异常：长 APK 链接进 toast 会糊成一团，交给前端渲染成可点链接
+            st["ok"] = False
+            st["hint"] = "电视上未安装 ADBKeyboard，请先按提示装 APK（Android 16 必须用 v2.5-dev）"
+            return st
+        if not st["enabled"]:
+            adb.shell(serial, "ime enable " + ADBKB_IME, timeout=8)
+        adb.shell(serial, "ime set " + ADBKB_IME, timeout=8)
+        time.sleep(0.3)   # 切换输入法有延迟，等一下再回读
+        st = ime_status(serial)
+        st["ok"] = st["current"]
+        if not st["current"]:
+            st["hint"] = ("切换命令已发出，但电视当前仍是「{}」。请看电视屏幕："
+                          "若弹出「选择输入法」确认框，用遥控器点「确定」。"
+                          .format(st["default_ime"] or "未知输入法"))
+        return st
+
+    if action == "reset":
+        adb.shell(serial, "ime reset", timeout=8)
+        time.sleep(0.3)
+        return ime_status(serial)
+
+    raise AdbError("未知的键盘动作: {}".format(action))
+
+
 def handle_connect(body):
     target = normalize_target(str(body.get("target", "")))
     adb.connect(target)
     time.sleep(0.3)
     st = None
-    for d in adb.devices():
+    for d in adb.devices(fresh=True):
         if d["serial"] == target:
             st = d["state"]
     if st is None:
@@ -461,9 +721,11 @@ def handle_connect(body):
 
 def handle_disconnect(_body):
     with state_lock:
-        cur = state.get("current")
-        if cur and cur.get("type") == "android" and cur.get("target"):
-            adb.disconnect(cur["target"])
+        cur = dict(state.get("current") or {})
+    target = cur.get("target") if cur.get("type") == "android" else None
+    if target:
+        adb.disconnect(target)  # 涉及子进程调用，不要持锁执行
+    with state_lock:
         state["current"] = None
         state["info"] = {}
         save_state()
@@ -484,7 +746,7 @@ def handle_forget(body):
 def handle_switch(body):
     """切换到 adb devices 里已有的设备"""
     target = str(body.get("target", ""))
-    devices = {d["serial"]: d["state"] for d in adb.devices()}
+    devices = {d["serial"]: d["state"] for d in adb.devices(fresh=True)}
     if target not in devices:
         raise AdbError("设备不在线: {}".format(target))
     info = fetch_device_info(target) if devices[target] == "device" else {}
@@ -510,7 +772,7 @@ pip install --upgrade pip wheel >/dev/null
 pip install pyatv || echo "⚠️ pyatv 安装失败（Apple TV 暂不可用，Android TV 正常），可稍后重试本命令"
 
 # 拉取项目（含 start.sh；若 Mac 上有配对记录会一并同步）
-curl -sL __HOST__/bundle.tgz -o /data/data/com.termux/files/usr/tmp/atv.tgz
+curl -sL __HOST__/bundle.tgz__TOKENQ__ -o /data/data/com.termux/files/usr/tmp/atv.tgz
 tar xzf /data/data/com.termux/files/usr/tmp/atv.tgz -C "$HOME"
 rm -f /data/data/com.termux/files/usr/tmp/atv.tgz
 chmod +x "$HOME"/atv-remote/start.sh
@@ -523,6 +785,38 @@ grep -q allow-external-apps "$HOME/.termux/termux.properties" 2>/dev/null || \
 echo ""
 echo "✅ 完成！打开 ATVRemote App 点「🚀 独立模式」即可遥控电视"
 """
+
+
+def bundle_signature():
+    """打包内容的文件签名（路径 + mtime + 大小），用于判断缓存是否过期"""
+    sig = []
+    for name in ("server.py", "atv_backend.py", "start.sh", "state.json"):
+        p = ROOT / name
+        if p.is_file():
+            st = p.stat()
+            sig.append((name, st.st_mtime_ns, st.st_size))
+    static_dir = ROOT / "static"
+    for p in sorted(static_dir.rglob("*")):
+        if p.is_file():
+            st = p.stat()
+            sig.append((p.relative_to(ROOT).as_posix(), st.st_mtime_ns, st.st_size))
+    return tuple(sig)
+
+
+_bundle_cache = {"sig": None, "data": b""}
+_bundle_lock = threading.Lock()
+
+
+def cached_bundle() -> bytes:
+    """带缓存的打包：手机反复拉取 bundle.tgz 时不必每次重新压缩"""
+    sig = bundle_signature()
+    with _bundle_lock:
+        if _bundle_cache["sig"] == sig and _bundle_cache["data"]:
+            return _bundle_cache["data"]
+        data = build_bundle()
+        _bundle_cache["sig"] = sig
+        _bundle_cache["data"] = data
+        return data
 
 
 def build_bundle() -> bytes:
@@ -543,11 +837,79 @@ def build_bundle() -> bytes:
 
 
 # ---------------- HTTP ----------------
+# 模块级路由表：不要每次 POST 都重建
+ROUTES = {
+    "/api/connect": handle_connect,
+    "/api/disconnect": handle_disconnect,
+    "/api/cmd": handle_cmd,
+    "/api/ime": handle_ime,
+    "/api/forget": handle_forget,
+    "/api/switch": handle_switch,
+    "/api/atv/scan": handle_atv_scan,
+    "/api/atv/pair": handle_atv_pair,
+    "/api/atv/connect": handle_atv_connect,
+    "/api/atv/disconnect": handle_atv_disconnect,
+    "/api/atv/forget": handle_atv_forget,
+    "/api/atv/apps": handle_atv_apps,
+}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ATVRemote/1.0"
+    protocol_version = "HTTP/1.1"  # 长连接：连按方向键不必每次重开 TCP
+    timeout = 15                   # 慢客户端兜底，避免长期占用工作线程
 
     def log_message(self, fmt, *args):
         pass  # 静默访问日志
+
+    # ---- 可选令牌鉴权 ----
+    def _from_loopback(self) -> bool:
+        return (self.client_address[0] if self.client_address else "") in LOOPBACK_HOSTS
+
+    def _provided_token(self):
+        """令牌来源优先级：X-ATV-Token 头 > ?token= 查询串 > Cookie"""
+        h = self.headers.get("X-ATV-Token")
+        if h:
+            return h.strip()
+        q = parse_qs(urlparse(self.path).query).get(TOKEN_COOKIE) or \
+            parse_qs(urlparse(self.path).query).get("token")
+        if q:
+            return (q[0] or "").strip()
+        raw = self.headers.get("Cookie")
+        if raw:
+            jar = SimpleCookie()
+            try:
+                jar.load(raw)
+            except Exception:
+                return None
+            morsel = jar.get(TOKEN_COOKIE)
+            if morsel:
+                return morsel.value
+        return None
+
+    def _authorized(self) -> bool:
+        if not AUTH_TOKEN:
+            return True
+        if self._from_loopback():
+            return True                      # 本机访问免令牌
+        provided = self._provided_token()
+        return bool(provided) and hmac.compare_digest(provided, AUTH_TOKEN)
+
+    def _unauthorized(self):
+        if self.path.split("?")[0] in ("/", "/index.html"):
+            return self._send(401, LOGIN_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        return self._send(401, {"error": "需要访问令牌：请带 X-ATV-Token 头，"
+                                         "或在地址后加 ?token=<令牌>（令牌见启动终端）"})
+
+    def _check_auth(self) -> bool:
+        """每个请求开头调用；不通过时已自行返回 401"""
+        self._issue_cookie = False
+        if not self._authorized():
+            self._unauthorized()
+            return False
+        if AUTH_TOKEN and not self._from_loopback():
+            self._issue_cookie = True
+        return True
 
     def _send(self, code, data, ctype="application/json; charset=utf-8"):
         body = data if isinstance(data, bytes) else json.dumps(data, ensure_ascii=False).encode()
@@ -555,6 +917,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        # 令牌校验通过后种 cookie，后续请求（fetch / 静态资源 / APK）就不用再拼 ?token=
+        if AUTH_TOKEN and not self._from_loopback() and getattr(self, "_issue_cookie", False):
+            self.send_header("Set-Cookie", "{}={}; Path=/; SameSite=Lax".format(
+                TOKEN_COOKIE, AUTH_TOKEN))
         self.end_headers()
         self.wfile.write(body)
 
@@ -567,13 +933,19 @@ class Handler(BaseHTTPRequestHandler):
     # ---- GET ----
     def do_GET(self):
         path = self.path.split("?")[0]
+        if not self._check_auth():
+            return
         try:
             if path in ("/", "/index.html"):
-                return self._send(200, (STATIC / "index.html").read_bytes(), "text/html; charset=utf-8")
+                html = (STATIC / "index.html").read_bytes()
+                # 把令牌注入页面：前端要拼进安装命令与 API 请求
+                html = html.replace(b"__ATV_TOKEN__", AUTH_TOKEN.encode())
+                return self._send(200, html, "text/html; charset=utf-8")
             if path == "/api/status":
                 return self._send(200, make_status())
             if path == "/api/screenshot":
-                cur = state.get("current") or {}
+                with state_lock:
+                    cur = dict(state.get("current") or {})
                 if not cur:
                     return self._send(400, {"error": "未连接电视"})
                 if cur.get("type") == "appletv":
@@ -585,10 +957,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, png, "image/png")
             if path == "/install":
                 host = self.headers.get("Host") or "127.0.0.1:8300"
-                script = INSTALL_SCRIPT.replace("__HOST__", "http://" + host)
+                script = (INSTALL_SCRIPT
+                          .replace("__HOST__", "http://" + host)
+                          .replace("__TOKENQ__", token_query()))
                 return self._send(200, script.encode(), "text/plain; charset=utf-8")
             if path == "/bundle.tgz":
-                return self._send(200, build_bundle(), "application/gzip")
+                return self._send(200, cached_bundle(), "application/gzip")
             if path == "/app.apk":
                 apk = ROOT / "android" / "ATVRemote.apk"
                 if not apk.is_file():
@@ -610,8 +984,10 @@ class Handler(BaseHTTPRequestHandler):
                 img.save(buf)
                 return self._send(200, buf.getvalue(), "image/svg+xml")
             if path.startswith("/static/"):
+                root = STATIC.resolve()
                 f = (STATIC / path[len("/static/"):]).resolve()
-                if not str(f).startswith(str(STATIC.resolve())) or not f.is_file():
+                # 目录前缀比较必须补分隔符，否则 /a/static 会放行 /a/static-secret/x
+                if not (str(f) + os.sep).startswith(str(root) + os.sep) or not f.is_file():
                     return self._send(404, {"error": "not found"})
                 ctype = mimetypes.guess_type(str(f))[0] or "application/octet-stream"
                 return self._send(200, f.read_bytes(), ctype)
@@ -626,20 +1002,9 @@ class Handler(BaseHTTPRequestHandler):
     # ---- POST ----
     def do_POST(self):
         path = self.path.split("?")[0]
-        routes = {
-            "/api/connect": handle_connect,
-            "/api/disconnect": handle_disconnect,
-            "/api/cmd": handle_cmd,
-            "/api/forget": handle_forget,
-            "/api/switch": handle_switch,
-            "/api/atv/scan": handle_atv_scan,
-            "/api/atv/pair": handle_atv_pair,
-            "/api/atv/connect": handle_atv_connect,
-            "/api/atv/disconnect": handle_atv_disconnect,
-            "/api/atv/forget": handle_atv_forget,
-            "/api/atv/apps": handle_atv_apps,
-        }
-        fn = routes.get(path)
+        if not self._check_auth():
+            return
+        fn = ROUTES.get(path)
         if not fn:
             return self._send(404, {"error": "not found"})
         try:
@@ -682,14 +1047,17 @@ def lan_ip() -> str:
 
 
 def main():
-    global adb
+    global adb, AUTH_TOKEN
     ap = argparse.ArgumentParser(description="ATV Remote — Android TV / Apple TV 遥控器")
     ap.add_argument("--host", default="0.0.0.0",
                     help="默认 0.0.0.0（手机可直接访问）；只允许本机则传 127.0.0.1")
     ap.add_argument("--port", type=int, default=8300)
     ap.add_argument("--adb", default=os.environ.get("ADB_PATH", "adb"), help="adb 可执行文件路径")
     ap.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
+    ap.add_argument("--token", default=AUTH_TOKEN,
+                    help="局域网访问令牌；不传则不鉴权（默认）。本机 127.0.0.1 访问始终免令牌")
     args = ap.parse_args()
+    AUTH_TOKEN = (args.token or "").strip()
 
     adb = Adb(resolve_adb(args.adb))
     load_state()
@@ -707,7 +1075,10 @@ def main():
     print("  Apple TV : {}".format("pyatv 已就绪" if ATV_AVAILABLE else
                                    "⚠️ pyatv 未加载（用 .venv/bin/python 启动可启用）"))
     if args.host == "0.0.0.0":
-        print("  手机访问 : http://{}:{}  （App 或浏览器直接打开）".format(lan_ip(), args.port))
+        lan = "http://{}:{}{}".format(lan_ip(), args.port, token_query())
+        print("  手机访问 : {}  （App 或浏览器直接打开）".format(lan))
+        if AUTH_TOKEN:
+            print("  🔒 已启用令牌，局域网设备需带 ?token= 或用页面上的表单登录")
     print("  Ctrl+C 停止")
     print("=" * 46)
 

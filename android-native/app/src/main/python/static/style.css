@@ -140,6 +140,28 @@ input:focus { border-color: var(--accent); }
 .inputrow input { flex: 1; }
 .hint { color: var(--muted); font-size: 12px; line-height: 1.7; margin: 8px 0 0; }
 .hint b { color: var(--accent); }
+code {
+  background: var(--card2); border: 1px solid var(--line); border-radius: 5px;
+  padding: 1px 5px; font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; color: var(--accent);
+}
+
+/* ---------- ADBKeyboard 中文键盘状态行 ---------- */
+.imerow {
+  display: flex; align-items: center; gap: 8px; margin-top: 10px;
+  background: var(--card2); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px;
+}
+.imelabel { color: var(--muted); font-size: 12.5px; }
+.imestate {
+  flex: 1; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.imestate.ok   { color: var(--ok); }
+.imestate.warn { color: #f0b03c; }
+.imestate.off  { color: var(--muted); }
+.btn.tiny { padding: 5px 10px; font-size: 12px; border-radius: 8px; flex: none; }
+.imeinstall { margin-top: 8px; }
+.imeinstall .hint { margin-top: 0; }
+.steps.tight { font-size: 12.5px; line-height: 1.7; padding-left: 18px; margin: 6px 0 0; color: var(--muted); }
+.steps.tight a { color: var(--accent); }
 
 /* ---------- apps ---------- */
 .apps .btn { min-width: 92px; }
