@@ -133,6 +133,7 @@ input:focus { border-color: var(--accent); }
 .btn:hover { border-color: var(--accent); }
 .btn:active, .btn.pressed { background: var(--accent2); border-color: var(--accent); transform: scale(.95); }
 .btn.primary { background: var(--accent2); border-color: var(--accent); font-weight: 600; }
+.btn.on { background: var(--accent2); border-color: var(--accent); color: var(--accent); }
 .btn.danger:hover { border-color: var(--danger); color: var(--danger); }
 .btn.big { font-size: 18px; min-width: 72px; }
 

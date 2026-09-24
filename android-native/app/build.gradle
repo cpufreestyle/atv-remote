@@ -37,9 +37,11 @@ android {
 
 chaquopy {
     defaultConfig {
+        // 版本必须与 requirements.txt 一致：同一份 server.py/atv_backend.py 要能在
+        // 不 pin 的 0.13 与 0.18 之间表现一致，靠运气不行（atv_backend 的兼容分支已经踩到）。
         pip {
-            install "pyatv"
-            install "qrcode"
+            install "pyatv==0.18.0"
+            install "qrcode==8.2"
         }
     }
 }

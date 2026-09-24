@@ -19,6 +19,12 @@ run() {
 run python3 -c 'import server, atv_backend'
 run node --check static/app.js
 
+# HTTP 层加固的行为回归（配对凭据 / Host 头 / keep-alive 帧），只用标准库
+run python3 -m unittest discover -s tests
+
+# 内嵌进 Android 原生包的前后端副本是否还跟根目录一致（同步用 ./sync-native.sh）
+run ./sync-native.sh --check
+
 # 有 venv 时额外验证 pyatv 路径（Apple TV 分支）也能导入
 if [ -x .venv/bin/python ]; then
   run .venv/bin/python -c 'import server, atv_backend'

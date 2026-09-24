@@ -1,0 +1,60 @@
+// ATV Remote — 风险关系图（2026-09-21 审查）
+// 渲染：dot -Tsvg docs/risk-map.dot -o docs/risk-map.svg
+// 图例：红=本轮开出的高危，黄=本轮已修，灰蓝=结构债，白=外部可信边界
+digraph riskmap {
+  rankdir=LR; fontname="PingFang SC"; node [fontname="PingFang SC", fontsize=11];
+  edge [fontname="PingFang SC", fontsize=10];
+
+  // ---- 暴露面 ----
+  lan [label="同一局域网\n(不可信来源)", shape=ellipse, style=filled, fillcolor="#eef2f8"];
+  httpd [label="server.py\nThreadingHTTPServer 0.0.0.0:8300\n默认无鉴权", shape=box, style="filled,rounded", fillcolor="#ffd9d9"];
+
+  lan -> httpd [label="HTTP/1.1 keep-alive", color="#c0392b"];
+
+  // ---- 已修的高危路径 ----
+  bundle [label="/bundle.tgz\nbuild_bundle()/bundle_files()", shape=box, style="filled,rounded", fillcolor="#fff3cd"];
+  statejson [label="state.json\nApple TV 配对凭据", shape=cylinder, style=filled, fillcolor="#fde2e2"];
+  httpd -> bundle [label="GET"];
+  bundle -> statejson [label="F1: 无令牌时不再进包\n(有令牌=已鉴权才同步)", color="#7d8a9c", style=dashed];
+  statejson -> atvtv [label="拿到凭据≈拿到遥控器", style=dashed, color="#c0392b", constraint=false];
+  atvtv [label="Apple TV\n(主卧)", shape=ellipse];
+
+  install [label="/install\nHost 头 → curl|bash", shape=box, style="filled,rounded", fillcolor="#fff3cd"];
+  install -> phone [label="F3: HOST_RE 白名单\n+ 回退实际可达地址", color="#7d8a9c", style=dashed];
+  phone [label="手机 Termux\n用户执行脚本", shape=ellipse];
+  httpd -> install;
+
+  body [label="_body()\nContent-Length", shape=box, style="filled,rounded", fillcolor="#fff3cd"];
+  httpd -> body;
+  body -> desync [label="F2: 超限/非法 → 400 + 关连接", color="#27ae60"];
+  desync [label="keep-alive 帧错位\n(原静默丢包)", shape=box, style="dashed"];
+
+  // ---- 结构债 ----
+  root [label="根目录\nserver.py + static/", shape=box];
+  emb [label="android-native/\n…/src/main/python\n(手工副本)", shape=box, style="filled,rounded", fillcolor="#dfe7f3"];
+  apk [label="ATVRemote-native.apk\n内含过期前端", shape=box, style="filled,rounded", fillcolor="#dfe7f3"];
+  termux [label="Termux 运行目录", shape=box, style="filled,rounded", fillcolor="#dfe7f3"];
+  root -> emb [label="F9: sync-native.sh 同步\ncheck.sh diff 挡住漂移", color="#27ae60"];
+  emb -> apk [label="gradle（无 Copy 任务，O1 未消除）", color="#c0392b"];
+  root -> termux [label="termux-setup.sh cp"];
+  root -> bundle [label="打包第 5 份"];
+
+  gradlepin [label="依赖版本 4 处口径\npyatv 0.18.0 / 0.13.2", shape=box, style="filled,rounded", fillcolor="#fff3cd"];
+  root -> gradlepin [label="F10: 已统一到 requirements.txt"];
+
+  lock [label="atv_backend._call()\nRLock 横跨 12s 等待", shape=box, style="filled,rounded", fillcolor="#dfe7f3"];
+  lock -> httpd [label="O3: 电视休眠时按键排队", color="#c0392b", style=dashed];
+
+  ci [label="无 CI / 无提交钩子\ncheck.sh 靠人跑", shape=box, style="filled,rounded", fillcolor="#dfe7f3"];
+  ci -> root [label="O4: 约定无强制", color="#c0392b", style=dashed];
+
+  // ---- 分组 ----
+  subgraph cluster_done {
+    label="本轮已修并验证（7 例回归）"; fontsize=11; color="#27ae60"; style=rounded;
+    bundle; install; body; gradlepin;
+  }
+  subgraph cluster_open {
+    label="待决策 / 待构建验证"; fontsize=11; color="#c0392b"; style=rounded;
+    httpd; emb; apk; lock; ci;
+  }
+}

@@ -37,11 +37,18 @@ let lastImeTarget = null; // 上次查过输入法的设备，避免 8s 轮询�
 const imeState = { installed: false, enabled: false, current: false, default_ime: "", checked: false };
 
 /* ---------------- 基础 ---------------- */
+// 走请求头而不是 ?token= 查询串：令牌会留在浏览器历史、Referer 和任何中间代理日志里。
+// 只有 curl / <img> / 下载链接这类发不出自定义头的场景才需要拼进 URL。
+const TOKEN_HDR = ATV_TOKEN ? { "X-ATV-Token": ATV_TOKEN } : {};
+
 async function api(path, body) {
-  const init = body
-    ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
-    : {};
-  const r = await fetch(path + TOKEN_Q, init);
+  const init = { headers: { ...TOKEN_HDR } };
+  if (body) {
+    init.method = "POST";
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(body);
+  }
+  const r = await fetch(path, init);
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
   return j;
@@ -100,7 +107,10 @@ async function sendText(text, withEnter) {
   }
   try {
     await api("/api/cmd", { type: "text", text, enter: !!withEnter });
-    log(`→ text "${text.slice(0, 30)}"${text.length > 30 ? "…" : ""}${withEnter ? " + Enter" : ""}`);
+    const echo = privacy.on
+      ? "•".repeat(Math.min(8, text.length))
+      : `"${text.slice(0, 30)}"${text.length > 30 ? "…" : ""}`;
+    log(`→ text ${echo}${withEnter ? " + Enter" : ""}`);
     $("#textInput").value = "";
     $("#textInput").blur(); // 发送后回到全局键盘遥控状态
   } catch (e) {
@@ -109,11 +119,86 @@ async function sendText(text, withEnter) {
   }
 }
 
-/* ---------------- 状态与连接 ---------------- */
-async function refreshStatus() {
+/* ---------------- 隐私模式 ---------------- */
+// 在电视上输密码一类场景：发送内容不回显进 #log（会一直留在手机屏幕上），输入框同时掩码
+const privacy = { on: localStorage.getItem("atv.privacy") === "1" };
+
+function applyPrivacy() {
+  $("#privacyBtn").classList.toggle("on", privacy.on);
+  $("#privacyBtn").setAttribute("aria-pressed", privacy.on ? "true" : "false");
+  $("#textInput").type = privacy.on ? "password" : "text";
+  $("#privacyHint").hidden = !privacy.on;
+}
+$("#privacyBtn").addEventListener("click", () => {
+  privacy.on = !privacy.on;
+  localStorage.setItem("atv.privacy", privacy.on ? "1" : "0");
+  applyPrivacy();
+});
+
+/* ---------------- 睡眠定时 ---------------- */
+// until 用 epoch 秒由服务端给，倒计时本地走秒：不靠 8s 轮询刷新，按钮秒级响应
+let sleepUntil = 0;
+let sleepTick = null;
+
+function fmtLeft(sec) {
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+}
+
+function renderSleepTimer(st) {
+  sleepUntil = st && st.active && st.until ? st.until : 0;
+  $("#sleepCancelBtn").classList.toggle("hidden", !sleepUntil);
+  clearInterval(sleepTick);
+  sleepTick = null;
+  if (!sleepUntil) {
+    $("#sleepState").textContent = "到点自动让电视休眠 / 关闭，取消随时有效。";
+    return;
+  }
+  const tick = () => {
+    const left = Math.max(0, Math.round(sleepUntil - Date.now() / 1000));
+    $("#sleepState").textContent = left > 0 ? `⏳ ${fmtLeft(left)} 后自动休眠 / 关闭电视` : "正在执行…";
+    if (left <= 0) { clearInterval(sleepTick); sleepTick = null; }
+  };
+  tick();
+  sleepTick = setInterval(tick, 1000);
+}
+
+$$("[data-sleep]").forEach((b) => b.addEventListener("click", async () => {
   try {
-    renderStatus(await api("/api/status"));
-  } catch { /* ignore */ }
+    const r = await api("/api/cmd", { type: "timer", action: "set", minutes: +b.dataset.sleep });
+    renderSleepTimer(r.sleep_timer);
+    toast(`已定时 ${b.dataset.sleep} 分钟后休眠`);
+  } catch (e) {
+    toast("⚠ " + e.message);
+  }
+}));
+$("#sleepCancelBtn").addEventListener("click", async () => {
+  try {
+    const r = await api("/api/cmd", { type: "timer", action: "cancel" });
+    renderSleepTimer(r.sleep_timer);
+    toast("已取消睡眠定时", true);
+  } catch (e) {
+    toast("⚠ " + e.message);
+  }
+});
+
+/* ---------------- 状态与连接 ---------------- */
+let statusBusy = null;  // 上一次 /api/status 没回来就不叠加下一次（慢响应会排在按键锁后面）
+
+async function refreshStatus() {
+  if (statusBusy) return statusBusy;
+  statusBusy = (async () => {
+    try {
+      renderStatus(await api("/api/status"));
+    } catch (e) {
+      // 原来是静默 ignore：服务端挂了状态栏却还留着上一次的「已连接」，
+      // 用户对着一个已经死掉的遥控器按半天。
+      $("#dot").className = "dot off";
+      $("#tvInfo").textContent = "连不上服务端：" + e.message;
+    } finally {
+      statusBusy = null;
+    }
+  })();
+  return statusBusy;
 }
 
 function renderStatus(s) {
@@ -157,6 +242,9 @@ function renderStatus(s) {
   if (isApple) $("#textInput").placeholder = "在此打字，回车发送到电视（Apple TV 支持中文）";
   // 清空 / 搜索键走 ADBKeyboard 广播，Apple TV 没有这回事
   $("#kbTools").classList.toggle("hidden", isApple);
+
+  // 睡眠定时状态（倒计时本地走秒，这里只负责发现 set/cancel 的变化）
+  renderSleepTimer(s.sleep_timer);
 
   // 连接的设备变了才去查输入法（每次查询要 3 条 shell，不能跟着 8s 轮询跑）
   const imeTarget = (isApple ? "atv:" : "adb:") + (s.current || "");
@@ -333,7 +421,14 @@ function atvRow(dev) {
     x.className = "btn";
     x.textContent = "✕";
     x.title = "删除已配对设备";
-    x.onclick = () => api("/api/atv/forget", { id: dev.id }).then(() => { refreshStatus(); });
+    x.onclick = async () => {
+      try {
+        await api("/api/atv/forget", { id: dev.id });
+        refreshStatus();
+      } catch (e) {
+        toast(e.message);   // 没有 catch 的话失败会变成静默的 unhandled rejection
+      }
+    };
     btns.appendChild(x);
   }
   row.appendChild(left);
@@ -612,7 +707,7 @@ function setShot(url) {
 $("#shotBtn").addEventListener("click", async () => {
   log(status.curType === "appletv" ? "正在获取画面…" : "正在截屏…");
   try {
-    const r = await fetch("/api/screenshot" + TOKEN_Q);
+    const r = await fetch("/api/screenshot", { headers: { ...TOKEN_HDR } });
     if (!r.ok) {
       const j = await r.json().catch(() => ({}));
       throw new Error(j.error || "获取画面失败");
@@ -668,5 +763,6 @@ document.addEventListener("visibilitychange", () => {
   pageVisible = !document.hidden;
   if (pageVisible) refreshStatus();
 });
+applyPrivacy();
 refreshStatus();
 setInterval(() => { if (pageVisible) refreshStatus(); }, 8000);

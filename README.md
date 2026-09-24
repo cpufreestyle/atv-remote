@@ -27,7 +27,7 @@
 
 ```bash
 cd ~/atv-remote
-python3 -m venv .venv && .venv/bin/pip install pyatv   # 首次（Apple TV 支持）
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # 首次（Apple TV 支持）
 bash mac-install.sh                                    # 后台服务装成开机自启（崩溃自动重启）
 cd mac && swiftc -O -target arm64-apple-macos26.0 -o ATVRemote main.swift -framework Cocoa -framework WebKit
 # 再把 mac/ATVRemote.app 拷到 /Applications（注意：本机 CLT 的 SDK 默认 minos 28.0 高于系统版本，
@@ -149,7 +149,7 @@ python3 server.py [--host 127.0.0.1] [--port 8300] [--adb adb路径] [--no-open]
 
 ### 🔒 局域网访问令牌（可选）
 
-默认**不鉴权**（与历史版本一致）。服务默认监听 `0.0.0.0`，意味着同一网段的任何人都能对你的电视发 `input text` / `monkey` 命令，还能拖走 `/bundle.tgz` 里的 Apple TV 配对凭据。在共享网络、公司网络或租房宽带下建议开启：
+默认**不鉴权**（与历史版本一致）。服务默认监听 `0.0.0.0`，意味着同一网段的任何人都能对你的电视发 `input text` / `monkey` 命令。在共享网络、公司网络或租房宽带下建议开启：
 
 ```bash
 python3 server.py --token 你的令牌       # 也可用环境变量 ATV_TOKEN
@@ -164,6 +164,12 @@ python3 server.py --token 你的令牌       # 也可用环境变量 ATV_TOKEN
   curl -H 'X-ATV-Token: 你的令牌' -X POST -d '{"type":"key","code":19}' http://192.168.1.5:8300/api/cmd
   ```
 - 页面上的 Termux 安装命令、APK 直链、二维码会自动带上令牌，手机装引擎的流程不受影响。
+
+#### 配对凭据只在有令牌时才随包下发
+
+`/bundle.tgz` 是 Termux 一键安装要拉的代码包。**未启用令牌时它不含 `state.json`**（Apple TV 配对凭据），
+因为此时局域网里任何设备都能把它拖走，拿到凭据就等于拿到了遥控器；手机装完引擎后自行配对即可。
+启用令牌后，取包必须先通过鉴权，这时才会把配对记录一并同步过去（省去二次配对）。
 
 ## HTTP API（curl 可直接用）
 
@@ -221,11 +227,13 @@ POST /api/atv/apps   {}                   # Apple TV 应用列表
 **构建方式**（需 Android Studio + Chaquopy 插件）：
 
 ```bash
+./sync-native.sh        # 先把根目录的 server.py / static 同步进内嵌副本
 cd android-native
-./gradlew assembleDebug   # 产物：app/build/outputs/apk/debug/app-debug.apk
+gradle assembleDebug    # 仓库里没有 gradlew 包装器；产物：app/build/outputs/apk/debug/app-debug.apk
 ```
 
-> 首次构建 Chaquopy 会下载 Python 解释器和 pip 依赖（pyatv、qrcode），耗时较长。
+> 首次构建 Chaquopy 会下载 Python 解释器和 pip 依赖（pyatv、qrcode，版本跟 `requirements.txt` 对齐），耗时较长。
+> `src/main/python/` 下是根目录文件的**手工副本**，改完后不跑 `./sync-native.sh` 就会发出「新后端 + 旧前端」的 APK；`./check.sh` 会检查这一项。
 
 ## 目录结构
 

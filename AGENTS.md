@@ -8,8 +8,8 @@ Python 后端提供 HTTP API，Web 前端 + Mac 原生 App + Android 客户端�
 ## 启动命令
 
 ```bash
-python3 server.py        # 主入口，启动 Web 服务
-./start.sh               # 脚本封装
+python3 server.py        # 主入口，启动 Web 服务（默认 0.0.0.0:8300）
+./start.sh               # ⚠️ 这是 Termux 脚本（shebang 指向 /data/data/com.termux/…），在 macOS 上跑不了
 ```
 
 ## 源码结构
@@ -21,6 +21,7 @@ python3 server.py        # 主入口，启动 Web 服务
 | `static/` | Web 前端（index.html, app.js, style.css） |
 | `android/` | Android WebView 客户端 |
 | `android-native/` | Android 原生客户端（Chaquopy） |
+| `android-native/app/src/main/python/` | ⚠️ `server.py` + `atv_backend.py` + `static/` 的**手工副本**，见下方「内嵌副本」 |
 | `mac/` | Mac 原生 App（Swift + WebKit） |
 
 ## 构建路径
@@ -32,6 +33,11 @@ python3 server.py        # 主入口，启动 Web 服务
 
 - `debug.keystore` — Android 调试签名密钥，已在 .gitignore 中排除，禁止提交
 - `state.json` — 包含 Apple TV 配对凭据，已在 .gitignore 中排除，禁止提交
+- **`state.json` 同样不得进 `/bundle.tgz`**（除非启用了 `--token`）：这个包是局域网里任何设备
+  都能下载的，凭据漏出去就等于遥控器被人拿走。清单由 `bundle_files()` 统一决定，
+  别再往 `build_bundle()` / `bundle_signature()` 里硬编文件名。
+- `/install` 返回的脚本会被用户 `curl … | bash` 执行，其中的地址来自 `Host` 头（可伪造），
+  必须过 `HOST_RE` 才允许进脚本。
 
 ## 验证基线
 
@@ -62,6 +68,29 @@ node --check static/app.js
 python3 -c 'import server; import atv_backend' && node --check static/app.js && echo "✅ ALL CHECKS PASSED"
 ```
 
+### 内嵌副本一致性检查
+
+```bash
+./sync-native.sh --check    # 只检查；./sync-native.sh 则同步并顺带跑一遍 check.sh
+```
+
+- 覆盖 `android-native/app/src/main/python/` 下的 5 个副本
+- 验证内容：内嵌进 APK 的前后端与根目录**逐字节一致**。不一致就 `./sync-native.sh` 同步，
+  不要手工 `cp`（上一次手工同步把 `static/` 拷成了 `static/static/`，APK 里于是装了一份旧前端）。
+
+### HTTP 行为回归测试
+
+```bash
+python3 -m unittest discover -s tests
+```
+
+- 覆盖文件：`tests/test_http_hardening.py`
+- 验证内容：`/bundle.tgz` 不含配对凭据（未启用令牌时）、`Host` 头经校验后才进 `/install` 脚本、
+  异常 body 不会让 keep-alive 帧错位、鉴权 cookie 带 `HttpOnly`
+- 只用标准库，不起真端口、不碰 adb/pyatv：把 `LOOPBACK_HOSTS` 临时清空来走真实的
+  「非回环（局域网）」鉴权分支，测试结束在 `tearDown` 里还原。
+- 改动 HTTP 层（`_send` / `_body` / `_check_auth` / 路由分发）后必须跑这个，光 import 检查不出行为回归。
+
 ## 依赖
 
 ```bash
@@ -73,6 +102,10 @@ python3 -c 'import server; import atv_backend' && node --check static/app.js && 
 
 ## 关键约定
 
+- **改 `server.py` / `atv_backend.py` / `static/*` 后跑 `./sync-native.sh`**：
+  `android-native/app/src/main/python/` 下是这些文件的独立副本（Chaquopy 只编该目录里现成的东西，
+  build.gradle 没有 copy 任务）。历史上漂移过一次，结果是「新后端 + 旧前端」的 APK 安静地发出去，
+  而且旧版还多拷了一层 `static/static/`。`./check.sh` 会用 `diff -q` 挡住这种漂移，别绕过它。
 - **adb 调用很贵**：`adb.devices()` / `adb.version()` 走缓存（TTL 1.5s / 只查一次）。
   连接、断开、命令超时、设备掉线时必须调用 `adb.invalidate_devices()` 主动失效缓存，
   否则会读到陈旧的在线状态。新增任何改变设备在线状态的操作都要记得失效缓存。

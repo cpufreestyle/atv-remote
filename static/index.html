@@ -104,6 +104,10 @@
         <button id="sendBtn" class="btn primary">发送</button>
         <button id="sendEnterBtn" class="btn">＋⏎</button>
       </div>
+      <div class="brow">
+        <button id="privacyBtn" class="btn tiny" aria-pressed="false">👁 隐私模式</button>
+      </div>
+      <p class="hint" id="privacyHint" hidden>隐私模式：发送的内容在日志里只显示 ••、输入框掩码显示 —— 在电视上输密码一类场景用，可随时关掉。</p>
       <div class="brow" id="kbTools">
         <button id="clearBtn" class="btn">🧹 清空电视输入框</button>
         <button id="searchBtn" class="btn">🔍 电视搜索键</button>
@@ -148,6 +152,17 @@
         <button id="shotBtn" class="btn">📸 电视截屏</button>
         <button id="disconnectBtn" class="btn">断开连接</button>
       </div>
+    </section>
+
+    <section class="card">
+      <h2>🌙 睡眠定时</h2>
+      <div class="brow">
+        <button class="btn" data-sleep="30">30 分钟</button>
+        <button class="btn" data-sleep="60">60 分钟</button>
+        <button class="btn" data-sleep="90">90 分钟</button>
+        <button id="sleepCancelBtn" class="btn danger hidden">取消定时</button>
+      </div>
+      <p class="hint" id="sleepState">到点自动让电视休眠 / 关闭，取消随时有效。</p>
     </section>
 
     <section class="card">

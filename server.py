@@ -25,7 +25,9 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import webbrowser
+from html import escape as html_escape
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -41,9 +43,13 @@ DEVICES_CACHE_TTL = 1.5
 # 单条命令允许的参数上限，防止构造超长指令（adb 命令行长度也有限制）
 MAX_TEXT_LEN = 5000
 MAX_KEYCODES = 32
+# 应用标识白名单：Android 包名与 Apple TV bundle id 共用，首字符必须是字母
+APP_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.\-]+$")
 
 # 允许的设备地址写法：IPv4(:port) 或 主机名(:port)；禁止空格与 shell 元字符
 TARGET_RE = re.compile(r"^[A-Za-z0-9.\-]+(:\d+)?$")
+# /install 里的 Host 头：同上，另外放行 [IPv6] 字面量写法
+HOST_RE = re.compile(r"^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.\-]+)(:\d{1,5})?$")
 
 # 可选访问令牌：为空表示不鉴权（与历史行为一致）。
 # 设置后仅局域网来源需要令牌，本机回环（127.0.0.1 / ::1）直接放行 ——
@@ -398,6 +404,22 @@ def adbkb_action(serial, code: int):
     adb.shell(serial, "am broadcast -a ADB_EDITOR_CODE --ei code {}".format(int(code)), timeout=8)
 
 
+# 键盘焦点态要经 pyatv 的 asyncio loop + 遥控器锁（最坏等 12s），不能真的挂进
+# 前端 8s 轮询：电视卡住时按键会被它排在后面。取上次值 + 短 TTL 足以驱动那个徽标。
+KB_FOCUS_TTL = 10.0
+_kb_focus_cache = {"ts": 0.0, "value": None}
+
+
+def kb_focus_cached():
+    now = time.time()
+    if now - _kb_focus_cache["ts"] < KB_FOCUS_TTL:
+        return _kb_focus_cache["value"]
+    value = atv_mgr.keyboard_focus()
+    _kb_focus_cache["ts"] = now
+    _kb_focus_cache["value"] = value
+    return value
+
+
 def make_status():
     with state_lock:
         cur = dict(state.get("current") or {})
@@ -406,7 +428,7 @@ def make_status():
         appletvs = list(state.get("appletvs", []))
 
     devices = []
-    if adb.exists():
+    if adb and adb.exists():   # adb 只在 main() 里构造；被当库 import 时先别崩
         try:
             devices = adb.devices()
         except AdbError:
@@ -416,9 +438,9 @@ def make_status():
     if ctype == "android":
         cur_state = next((d["state"] for d in devices if d["serial"] == cur.get("target")), None)
     return {
-        "adb_found": adb.exists(),
-        "adb_path": adb.path,
-        "adb_version": adb.version() if adb.exists() else "",
+        "adb_found": bool(adb and adb.exists()),
+        "adb_path": adb.path if adb else "",
+        "adb_version": adb.version() if adb and adb.exists() else "",
         "cur_type": ctype,
         "current": cur.get("target") if ctype == "android" else cur.get("id"),
         "current_state": cur_state,
@@ -429,8 +451,9 @@ def make_status():
             "available": ATV_AVAILABLE,
             "devices": appletvs,
             "connected": bool(atv_mgr and atv_mgr.connected),
-            "kb_focus": (atv_mgr.keyboard_focus() if atv_mgr and atv_mgr.connected else None),
+            "kb_focus": (kb_focus_cached() if atv_mgr and atv_mgr.connected else None),
         },
+        "sleep_timer": timer_state(),
     }
 
 
@@ -458,6 +481,54 @@ def device_asleep(serial) -> bool:
     return "mWakefulness=Asleep" in out or "mWakefulness=Dozing" in out
 
 
+# 屏幕状态短 TTL 缓存：连按方向键时每键都查一轮 dumpsys 太贵（它比 input 便宜，
+# 但还不至于免费）；休眠时 input 会一直挂住，发命令前必须先确认屏幕是亮着的
+SCREEN_CACHE_TTL = 1.0
+_screen_cache = {"ts": 0.0, "awake": True}
+# 会注入按键 / 启动界面的命令类型：这些在屏幕熄灭时都会阻塞到超时
+INPUT_TYPES = ("key", "text", "tap", "swipe", "app", "settings")
+
+
+def screen_awake(serial, fresh=False) -> bool:
+    """电视屏幕是否点亮。dumpsys power 在休眠时也正常响应（input 会挂，它不会）"""
+    now = time.time()
+    if not fresh and now - _screen_cache["ts"] < SCREEN_CACHE_TTL:
+        return _screen_cache["awake"]
+    try:
+        out = adb.shell(serial, "dumpsys power", timeout=5)
+    except AdbError:
+        return _screen_cache["awake"]   # 查不到就按老样子发，让命令自己的错误说话
+    awake = not ("mWakefulness=Asleep" in out or "mWakefulness=Dozing" in out)
+    _screen_cache.update(ts=now, awake=awake)
+    return awake
+
+
+def wake_codes_in_body(body) -> bool:
+    """本次按键里是否含唤醒 / 电源键（26 / 223 / 224）：这类键本就是用来解除
+    休眠的，发出去就又变成「用户已经手动唤醒」的语义，不能再抢着代发"""
+    raw = body.get("codes") or ([body["code"]] if "code" in body else [])
+    try:
+        return bool({int(c) for c in raw} & set(WAKE_KEYCODES))
+    except (TypeError, ValueError):
+        return False
+
+
+def ensure_awake(serial):
+    """屏幕熄灭时 input 类命令会一直挂到超时：先代发唤醒键，再轮询到屏幕点亮（≤2s）。
+    唤醒键发出去后 input 等回执照样会挂住，所以短超时后靠 dumpsys 轮询确认。"""
+    if screen_awake(serial):
+        return
+    try:
+        adb.shell(serial, "input keyevent 224", timeout=1.5)
+    except AdbError:
+        pass   # 唤醒键多半已注入，超时只是等不到回执；交给下面轮询确认
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        if screen_awake(serial, fresh=True):
+            return
+        time.sleep(0.25)
+
+
 def run_shell(serial, cmd, timeout=6):
     """执行命令；设备端偶发挂起（如模拟器 input text）时重试一次"""
     try:
@@ -475,10 +546,83 @@ def run_shell(serial, cmd, timeout=6):
         return adb.shell(serial, cmd, timeout=timeout)
 
 
+# ---------------- 睡眠定时 ----------------
+# 定时只存内存：服务重启即失效（重新设一次即可），不把这种易变状态写进 state.json
+SLEEP_TIMER_MAX_MIN = 12 * 60
+_timer_lock = threading.Lock()
+_timer_stop = threading.Event()   # 停机信号：测试要能确定地停掉这个循环
+_sleep_until = None    # epoch 秒；None = 未设置
+
+
+def timer_state():
+    with _timer_lock:
+        until = _sleep_until
+    if not until:
+        return {"active": False, "until": None, "remaining": 0}
+    return {"active": True, "until": until, "remaining": max(0, int(until - time.time()))}
+
+
+def handle_timer(body):
+    global _sleep_until
+    action = body.get("action", "set")
+    if action == "cancel":
+        with _timer_lock:
+            _sleep_until = None
+        return {"ok": True, "sleep_timer": timer_state()}
+    if action != "set":
+        raise AdbError("未知定时操作: {}（可用 set / cancel）".format(action))
+    minutes = body.get("minutes")
+    if isinstance(minutes, bool) or not isinstance(minutes, (int, float)) or \
+            not (0 < minutes <= SLEEP_TIMER_MAX_MIN):
+        raise AdbError("定时分钟数不合法：{}（1 ~ {}）".format(minutes, SLEEP_TIMER_MAX_MIN))
+    with _timer_lock:
+        _sleep_until = time.time() + minutes * 60
+    return {"ok": True, "sleep_timer": timer_state()}
+
+
+def _fire_sleep_timer():
+    """到点执行：Android 发 SLEEP 键（223，幂等——不像电源键会翻转状态），
+    Apple TV 走电源关闭。屏幕本来就黑着就等于已完成，不再发命令。"""
+    with state_lock:
+        cur = dict(state.get("current") or {})
+    try:
+        if cur.get("type") == "android" and cur.get("target"):
+            if screen_awake(cur["target"]):
+                run_shell(cur["target"], "input keyevent 223")
+        elif cur.get("type") == "appletv" and atv_mgr and atv_mgr.connected:
+            atv_mgr.send_keys([26])
+    except Exception as e:
+        traceback.print_exc()
+        print("睡眠定时执行失败: {}".format(e), file=sys.stderr)
+
+
+def _sleep_timer_loop():
+    """每秒看一眼；到点后清掉再执行（清掉与点火之间持锁，避免并发重复触发）。
+    注意 global 声明：下面给 _sleep_until 赋值会让它成为局部变量，
+    没有 global 时第一次读就 UnboundLocalError（重启实例时实测过）。"""
+    global _sleep_until
+    while not _timer_stop.is_set():
+        try:
+            with _timer_lock:
+                until = _sleep_until
+            if until and time.time() >= until:
+                with _timer_lock:
+                    if _sleep_until == until:
+                        _sleep_until = None
+                _fire_sleep_timer()
+        except Exception:
+            traceback.print_exc()
+        _timer_stop.wait(1.0)   # Event.wait：停机时立刻醒，不等满 1s
+
+
 def handle_cmd(body):
-    """按当前设备类型分发：android → adb，appletv → pyatv"""
-    cur = state.get("current") or {}
-    if cur.get("type") == "appletv":
+    """按当前设备类型分发：android → adb，appletv → pyatv；
+    timer 与当前连的是什么设备无关，在这里先拦掉"""
+    if body.get("type") == "timer":
+        return handle_timer(body)
+    with state_lock:
+        ctype = (state.get("current") or {}).get("type")
+    if ctype == "appletv":
         return handle_cmd_appletv(body)
     return handle_cmd_android(body)
 
@@ -497,6 +641,11 @@ def handle_cmd_android(body):
         adb.reset_shell()
         adb.invalidate_devices()
         raise AdbError("设备 {} 状态异常（{}），请重新连接".format(cur, dev_state or "offline"))
+
+    # 屏幕熄灭时 input 会阻塞到超时：先探一次屏幕，熄了代发唤醒键再等点亮。
+    # 唤醒 / 电源键豁免（它本身就是解除休眠的手段）
+    if t in INPUT_TYPES and not (t == "key" and wake_codes_in_body(body)):
+        ensure_awake(cur)
 
     if t == "key":
         raw = body.get("codes") or ([body["code"]] if "code" in body else None)
@@ -551,7 +700,7 @@ def handle_cmd_android(body):
 
     if t == "app":
         pkg = str(body.get("pkg", "")).strip()
-        if not re.match(r"^[A-Za-z][A-Za-z0-9_.]+$", pkg):
+        if not APP_ID_RE.match(pkg):
             raise AdbError("包名不合法：{}".format(pkg))
         run_shell(cur, "monkey -p {} -c android.intent.category.LAUNCHER 1".format(pkg), timeout=10)
         return {"ok": True}
@@ -571,10 +720,16 @@ def handle_cmd_appletv(body):
         codes = body.get("codes") or ([body["code"]] if "code" in body else None)
         if not codes:
             raise AppleTvError("缺少键码")
+        # 每条命令最坏阻塞 12s，不限量等于让一个请求长期占死遥控器通道
+        codes = list(codes)[:MAX_KEYCODES]
         atv_mgr.send_keys(codes)
         return {"ok": True, "sent": codes}
     if t == "text":
-        atv_mgr.send_text(body.get("text", ""), enter=body.get("enter"))
+        # 与 Android 分支同样限长：长文本会一直卡在 pyatv 的往返里
+        text = str(body.get("text", ""))[:MAX_TEXT_LEN]
+        if not text:
+            raise AppleTvError("内容为空")
+        atv_mgr.send_text(text, enter=body.get("enter"))
         return {"ok": True}
     if t == "tap":
         atv_mgr.tap()  # Apple TV 无坐标点击，等价轻点
@@ -586,8 +741,8 @@ def handle_cmd_appletv(body):
         return {"ok": True}
     if t == "app":
         pkg = str(body.get("pkg", "")).strip()
-        if not pkg:
-            raise AppleTvError("缺少应用标识")
+        if not APP_ID_RE.match(pkg):
+            raise AppleTvError("应用标识不合法：{}".format(pkg))
         atv_mgr.launch_app(pkg)
         return {"ok": True}
     raise AppleTvError("Apple TV 不支持该命令: {}".format(t))
@@ -769,9 +924,9 @@ pkg install -y python clang libffi openssl android-tools
 # 预编译 cryptography（避免本地编 rust）
 pkg install -y tur-repo >/dev/null 2>&1 && pkg install -y python-cryptography || true
 pip install --upgrade pip wheel >/dev/null
-pip install pyatv || echo "⚠️ pyatv 安装失败（Apple TV 暂不可用，Android TV 正常），可稍后重试本命令"
+pip install "pyatv==0.18.0" || echo "⚠️ pyatv 安装失败（Apple TV 暂不可用，Android TV 正常），可稍后重试本命令"
 
-# 拉取项目（含 start.sh；若 Mac 上有配对记录会一并同步）
+# 拉取项目（含 start.sh；仅当 Mac 启用了 --token 时才一并同步配对记录）
 curl -sL __HOST__/bundle.tgz__TOKENQ__ -o /data/data/com.termux/files/usr/tmp/atv.tgz
 tar xzf /data/data/com.termux/files/usr/tmp/atv.tgz -C "$HOME"
 rm -f /data/data/com.termux/files/usr/tmp/atv.tgz
@@ -787,10 +942,23 @@ echo "✅ 完成！打开 ATVRemote App 点「🚀 独立模式」即可遥控�
 """
 
 
+BUNDLE_FILES = ("server.py", "atv_backend.py", "start.sh")
+
+
+def bundle_files():
+    """安装包内容清单。
+
+    state.json 含 Apple TV 配对凭据（mrp/companion/airplay），拿到就等于拿到遥控器。
+    /bundle.tgz 在启用令牌时只发给持令牌者，所以可随包同步配对记录；
+    未启用令牌（默认）时局域网里任何设备都能直接下载，此时决不能把凭据打进包里。
+    """
+    return BUNDLE_FILES + (("state.json",) if AUTH_TOKEN else ())
+
+
 def bundle_signature():
     """打包内容的文件签名（路径 + mtime + 大小），用于判断缓存是否过期"""
     sig = []
-    for name in ("server.py", "atv_backend.py", "start.sh", "state.json"):
+    for name in bundle_files():
         p = ROOT / name
         if p.is_file():
             st = p.stat()
@@ -820,12 +988,12 @@ def cached_bundle() -> bytes:
 
 
 def build_bundle() -> bytes:
-    """打包 Termux 引擎需要的文件（含 Mac 上的配对记录）"""
+    """打包 Termux 引擎需要的文件（启用令牌时一并同步配对记录）"""
     import io
     import tarfile
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for name in ("server.py", "atv_backend.py", "start.sh", "state.json"):
+        for name in bundle_files():
             p = ROOT / name
             if p.is_file():
                 tar.add(str(p), arcname="atv-remote/" + name)
@@ -865,6 +1033,18 @@ class Handler(BaseHTTPRequestHandler):
     # ---- 可选令牌鉴权 ----
     def _from_loopback(self) -> bool:
         return (self.client_address[0] if self.client_address else "") in LOOPBACK_HOSTS
+
+    def _reachable_host(self) -> str:
+        """本次连接本机这一侧的 host:port —— 客户端确实能连上的那个地址"""
+        try:
+            ip = self.request.getsockname()[0]
+        except OSError:
+            ip = lan_ip()
+        if ip in ("0.0.0.0", "::", ""):
+            ip = lan_ip()
+        if ":" in ip and not ip.startswith("["):
+            ip = "[" + ip + "]"
+        return "{}:{}".format(ip, self.server.server_address[1])
 
     def _provided_token(self):
         """令牌来源优先级：X-ATV-Token 头 > ?token= 查询串 > Cookie"""
@@ -919,15 +1099,27 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         # 令牌校验通过后种 cookie，后续请求（fetch / 静态资源 / APK）就不用再拼 ?token=
         if AUTH_TOKEN and not self._from_loopback() and getattr(self, "_issue_cookie", False):
-            self.send_header("Set-Cookie", "{}={}; Path=/; SameSite=Lax".format(
+            self.send_header("Set-Cookie", "{}={}; Path=/; SameSite=Lax; HttpOnly".format(
                 TOKEN_COOKIE, AUTH_TOKEN))
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
 
     def _body(self):
-        n = int(self.headers.get("Content-Length") or 0)
-        if n <= 0 or n > 100_000:
+        raw = self.headers.get("Content-Length")
+        try:
+            n = int(raw) if raw else 0
+        except ValueError:
+            self.close_connection = True
+            raise AdbError("Content-Length 不合法")
+        if n <= 0:
             return {}
+        if n > 100_000:
+            # 声明的 body 太大时若直接返回、不把字节读干净，这条长连接上的下一个
+            # 请求就会从半截 body 开始解析 —— 帧错位比报错严重得多。
+            self.close_connection = True
+            raise AdbError("请求体过大（{} 字节）".format(n))
         return json.loads(self.rfile.read(n).decode("utf-8", "replace") or "{}")
 
     # ---- GET ----
@@ -939,7 +1131,8 @@ class Handler(BaseHTTPRequestHandler):
             if path in ("/", "/index.html"):
                 html = (STATIC / "index.html").read_bytes()
                 # 把令牌注入页面：前端要拼进安装命令与 API 请求
-                html = html.replace(b"__ATV_TOKEN__", AUTH_TOKEN.encode())
+                html = html.replace(b"__ATV_TOKEN__",
+                                    html_escape(AUTH_TOKEN, quote=True).encode())
                 return self._send(200, html, "text/html; charset=utf-8")
             if path == "/api/status":
                 return self._send(200, make_status())
@@ -956,7 +1149,17 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(500, {"error": "截屏失败：设备可能未授权或已锁屏"})
                 return self._send(200, png, "image/png")
             if path == "/install":
-                host = self.headers.get("Host") or "127.0.0.1:8300"
+                host = (self.headers.get("Host") or "").strip()
+                # Host 头可被伪造，而它会被拼进用户复制到手机里执行的 curl 命令：
+                # 不合法就退回本机「被这次访问用到的那个地址」—— lan_ip() 走默认路由探测，
+                # 有 VPN/代理网卡时会挑错网卡，给出一个手机根本连不上去的 IP。
+                host_match = HOST_RE.match(host)
+                if not host_match:
+                    host = self._reachable_host()
+                elif not host_match.group(2):
+                    # Host 头没带端口（如反向代理、或手写 Host: [::1]）时补上真实监听端口，
+                    # 否则生成的地址指向 80，手机照着 curl 一定连不上。
+                    host = "{}:{}".format(host, self.server.server_address[1])
                 script = (INSTALL_SCRIPT
                           .replace("__HOST__", "http://" + host)
                           .replace("__TOKENQ__", token_query()))
@@ -994,10 +1197,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, {"error": "not found"})
         except (AdbError, AppleTvError) as e:
             return self._send(400, {"error": str(e)})
-        except BrokenPipeError:
-            pass
-        except Exception as e:
-            return self._send(500, {"error": "内部错误: {}".format(e)})
+        except ConnectionError:
+            pass  # 客户端半路断开（BrokenPipe / ConnectionReset），不是故障
+        except Exception:
+            # 堆栈只进 stderr（LaunchAgent 收进 server.log）：访问者拿不到内部细节，
+            # 运维又能在出问题时看到根因。
+            traceback.print_exc()
+            return self._send(500, {"error": "服务器内部错误，请查看服务端日志"})
 
     # ---- POST ----
     def do_POST(self):
@@ -1005,19 +1211,24 @@ class Handler(BaseHTTPRequestHandler):
         if not self._check_auth():
             return
         fn = ROUTES.get(path)
-        if not fn:
-            return self._send(404, {"error": "not found"})
         try:
+            # 先读干净 body 再判 404：未匹配的路由也要把请求体消耗掉，
+            # 否则这条长连接上的下一个请求会从半截 body 开始解析。
             body = self._body()
+            if not fn:
+                return self._send(404, {"error": "not found"})
             return self._send(200, fn(body) or {"ok": True})
         except json.JSONDecodeError:
             return self._send(400, {"error": "请求体不是合法 JSON"})
         except (AdbError, AppleTvError) as e:
             return self._send(400, {"error": str(e)})
-        except BrokenPipeError:
-            pass
-        except Exception as e:
-            return self._send(500, {"error": "内部错误: {}".format(e)})
+        except ConnectionError:
+            pass  # 客户端半路断开（BrokenPipe / ConnectionReset），不是故障
+        except Exception:
+            # 堆栈只进 stderr（LaunchAgent 收进 server.log）：访问者拿不到内部细节，
+            # 运维又能在出问题时看到根因。
+            traceback.print_exc()
+            return self._send(500, {"error": "服务器内部错误，请查看服务端日志"})
 
 
 def resolve_adb(path: str) -> str:
@@ -1063,6 +1274,7 @@ def main():
     load_state()
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.daemon_threads = True
+    threading.Thread(target=_sleep_timer_loop, daemon=True, name="sleep-timer").start()
 
     url = "http://{}:{}".format("127.0.0.1" if args.host == "0.0.0.0" else args.host, args.port)
     print("=" * 46)
