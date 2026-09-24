@@ -63,6 +63,8 @@
 | D1 一键宏 | **完成** | `/api/cmd` 的 `macro` 类型：请求线程同步校验（400 即时），`_macro_worker` 线程串行执行，单步失败不中断、延时可取消；预置 5 个场景，自定义宏存 localStorage |
 | B3 服务自发现 | **部分完成（平台限制内）** | macOS 用 `dns-sd` 广播 `_atv-remote._tcp`（`start_mdns()`）；其余平台静默跳过。接入主路径仍是二维码，广播只加分 |
 
-功能进度（docs/feature-proposals.md）：**提案 12 条全部落地** —— 第一批（智能唤醒 / 睡眠定时 / 隐私模式）、第二批（mDNS 扫描配对 / 自动重连 / 剪贴板短语 / 语音输入 / 触觉）、第三批（D1 一键宏 / B3 服务自发现）已实现并提交（`ea1a84f`、`eaf94a8` 及本轮）；C1 Mac 菜单栏 App 未做（纯 Swift 壳，独立于 HTTP 层，另开一轮）。
+功能进度（docs/feature-proposals.md）：**提案 12 条全部落地** —— 第一批（智能唤醒 / 睡眠定时 / 隐私模式）、第二批（mDNS 扫描配对 / 自动重连 / 剪贴板短语 / 语音输入 / 触觉）、第三批（D1 一键宏 / B3 服务自发现）已实现并提交（`ea1a84f`、`eaf94a8` 及本轮）；C1 Mac 菜单栏 App 已实现：`mac/main.swift` 的 `StatusBarController`（NSStatusItem + NSPopover，
+D-pad / 播放 / 音量 / 系统键 + 当前设备名，全部走 `127.0.0.1:8300` 的 HTTP API），
+`swiftc -O -target arm64-apple-macos26.0` 编译通过。
 
 第一批（智能唤醒 / 睡眠定时 / 隐私模式）与第二批（mDNS 扫描配对 / 自动重连 / 剪贴板短语 / 语音输入）均已实现并提交（`ea1a84f`、`eaf94a8`）。
