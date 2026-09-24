@@ -48,7 +48,7 @@
             android:id="@+id/urlInput"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="如 192.168.1.104:8300"
+            android:hint="如 http://192.168.1.50:8300"
             android:textColor="#e8eaf0"
             android:textColorHint="#5a5f6d"
             android:inputType="textUri"

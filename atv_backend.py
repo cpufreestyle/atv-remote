@@ -10,6 +10,7 @@ Apple TV 后端 — 基于 pyatv（MediaRemote 协议，与 iOS「遥控器」Ap
 import asyncio
 import ipaddress
 import threading
+import time
 from concurrent import futures
 
 try:
@@ -37,6 +38,11 @@ if PYATV_AVAILABLE:
                     NoCredentialsError, NotSupportedError, PairingError)
 else:
     PYATV_ERRORS = ()
+
+
+# 上一条命令超时后的快速失败窗口：电视休眠时一条命令能占住遥控器锁 12s，
+# 之后每条按键都排在那把锁后面干等。窗口内直接失败，用户立刻知道电视没响应。
+FAST_FAIL_AFTER_TIMEOUT = 8.0
 
 
 class AppleTvError(Exception):
@@ -93,6 +99,7 @@ class AppleTvManager:
         self._pair_proto = None     # 正在配对的协议名
         self._pair_dev = None       # 正在配对的设备条目
         self._lock = threading.RLock()
+        self._last_timeout = 0.0    # 上次超时的时刻（0 = 很久以前 / 无）
 
     # ---------------- loop 基础 ----------------
     def _run(self):
@@ -104,6 +111,7 @@ class AppleTvManager:
         try:
             return fut.result(timeout)
         except futures.TimeoutError:
+            self._last_timeout = time.time()   # 供 _call 的快速失败窗口判断
             raise AppleTvError("Apple TV 响应超时（电视休眠？）")
         except _CONN_LOST_ERRORS as e:
             raise AppleTvConnError("连接已断开：{}".format(e))
@@ -209,9 +217,13 @@ class AppleTvManager:
 
     def _call(self, coro_factory):
         """执行命令；连接断开类错误自动重连重试一次"""
+        # 进锁之前先看快速失败窗口：超时刚发生过就别再去锁上排 12s 队
+        # （锁横跨 run() 的等待，这是「第二键被第一键堵住」的直接原因）
+        if self._last_timeout and time.time() - self._last_timeout < FAST_FAIL_AFTER_TIMEOUT:
+            raise AppleTvError("上一条命令无响应（电视休眠？），稍等几秒再试")
         with self._lock:
             try:
-                return self.run(coro_factory(self._require()))
+                result = self.run(coro_factory(self._require()))
             except AppleTvConnError as e:
                 if self._dev is None:
                     raise
@@ -221,7 +233,9 @@ class AppleTvManager:
                     self.connect(dev)
                 except AppleTvError:
                     raise e  # 重连失败 → 返回原始连接错误
-                return self.run(coro_factory(self._require()))
+                result = self.run(coro_factory(self._require()))
+        self._last_timeout = 0.0   # 成功过就解除快速失败，别让一次抖动毒化后续
+        return result
 
     # ---------------- 配对 ----------------
     def pair_begin(self, dev):

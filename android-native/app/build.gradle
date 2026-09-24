@@ -3,6 +3,10 @@ plugins {
     id 'com.chaquo.python'
 }
 
+// 版本号：根目录 VERSION（versionName / versionCode 两行）
+def versionProps = new Properties()
+rootProject.file("../VERSION").withInputStream { versionProps.load(it) }
+
 android {
     namespace 'com.atv.remote'
     compileSdk 35
@@ -11,8 +15,9 @@ android {
         applicationId "com.atv.remote.native"
         minSdk 26
         targetSdk 35
-        versionCode 2
-        versionName "2.0-native"
+        // 版本号单一来源：根目录 VERSION（build.sh 与 README 同样引用它，不再各写一份）
+        versionCode versionProps.getProperty("versionCode").toInteger()
+        versionName versionProps.getProperty("versionName")
         ndk {
             abiFilters "arm64-v8a", "x86_64"
         }
@@ -34,6 +39,24 @@ android {
         }
     }
 }
+
+// 单一事实来源：内嵌进 APK 的 server.py / atv_backend.py / static 由仓库根目录在
+// 构建时生成，不再手工维护副本（漂移过一次：新后端 + 旧前端悄声发版，且旧版还多拷
+// 了一层 static/static/）。根目录那份是唯一提交进仓库的，这里的副本是构建产物。
+// 不跑构建的手工刷新/校验仍走 ../../sync-native.sh。
+tasks.register("syncPythonSrc", Copy) {
+    group = "chaquopy"
+    description = "从仓库根目录同步前后端到 src/main/python"
+    from rootProject.file("../server.py")
+    from rootProject.file("../atv_backend.py")
+    // static 是目录：不显式 into "static" 的话 Copy 会把目录内容平铺进 src/main/python，
+    // 变成「多一层 / 少一层」的经典事故（AGENTS.md 里记着 static/static/ 那次）
+    from(rootProject.file("../static")) {
+        into "static"
+    }
+    into "src/main/python"
+}
+preBuild.dependsOn "syncPythonSrc"
 
 chaquopy {
     defaultConfig {

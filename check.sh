@@ -25,9 +25,11 @@ run python3 -m unittest discover -s tests
 # 内嵌进 Android 原生包的前后端副本是否还跟根目录一致（同步用 ./sync-native.sh）
 run ./sync-native.sh --check
 
-# 有 venv 时额外验证 pyatv 路径（Apple TV 分支）也能导入
+# 有 venv 时额外验证 pyatv 路径：既能导入，行为回归也要在 pyatv 分支下跑一遍
+# （fastfail 等用例只在装了 pyatv 的环境才有意义）
 if [ -x .venv/bin/python ]; then
   run .venv/bin/python -c 'import server, atv_backend'
+  run .venv/bin/python -m unittest discover -s tests
 fi
 
 echo

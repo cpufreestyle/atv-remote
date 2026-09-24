@@ -46,3 +46,19 @@
 | 可维护性 | 同一源码跨 4 种交付形态 | 依赖版本单一来源 | **已达成**（F10）；文件副本 **未达成**（O1） |
 | 可观测性 | 500 错误 | 服务端日志有堆栈、客户端只看到通用文案 | **已达成**（F5）；但访问日志仍全静默（有意为之） |
 | 兼容性 | HTTP/1.1 keep-alive 复用 | 异常 body 后同连接下一请求仍可正确解析 | **已达成**（F2/F3 测试） |
+
+## 第二轮进度（2026-09-24）
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| O1 消灭副本 | **机制已落地** | `android-native/app/build.gradle` 的 `syncPythonSrc`（Copy 任务，`preBuild.dependsOn`）从根目录生成副本；5 份副本已停止跟踪并 gitignore；标记传播实测（改根 `static/style.css` → 副本随之更新） |
+| O1/O5 APK 重建 | **阻塞（网络）** | chaquo.com 的 Android wheel 源在本机双路不通（直连 000、系统代理 503），pyatv 0.18 依赖的 `cryptography>=44` / `chacha20poly1305>=0.13` / `pydantic-core` 的 Android wheel 只在 Chaquo 提供；缓存里只有 0.13.2 时代的旧闭包。网络可用后 `./gradlew assembleRelease` 即可刷新 checked-in APK |
+| O3 锁横跨 12s | **半程** | 「快速失败」半边已落地（`atv_backend._call` 进锁前判断超时窗口，`tests/test_atv_fastfail.py` 覆盖）；结构性放开 RLock 仍需确认 pyatv 并发安全，维持原状 |
+| O4 CI | **完成** | `.github/workflows/check.yml`（push/PR 跑 `./check.sh`）；`check.sh` 增加 `.venv` 下的 unittest（覆盖 pyatv 路径） |
+| O6 可移植性 | **完成（本次可验证部分）** | `android/build.sh` 的 SDK/build-tools/platform/JDK 全部可探测与环境变量覆盖；`make_icon.swift` 去掉绝对路径；`strings.xml` 不再预填某台机器的 IP；`Info.plist` 最低系统版本与构建目标对齐为 26.0；Gradle wrapper 钉 8.14.3（README 原「仓库里没有 gradlew」已过时） |
+| O7 触摸坐标 | **未动（需真机）** | 依赖 Quest 3 实测，另行安排 |
+| O8 密码回显 | **完成** | 隐私模式（日志脱敏 + 输入框掩码） |
+| O9 版本标识 | **完成** | 根目录 `VERSION` 单一来源，gradle 与 build.sh 都引用 |
+| O2 默认暴露面 | **待产品决策** | 仍是 review §4 的三选一，改变手机接入体验，需使用者拍板 |
+
+功能进度（docs/feature-proposals.md）：第一批（智能唤醒 / 睡眠定时 / 隐私模式）与第二批（mDNS 扫描配对 / 自动重连 / 剪贴板短语 / 语音输入）均已实现并提交（`ea1a84f`、`eaf94a8`）。

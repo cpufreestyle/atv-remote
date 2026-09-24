@@ -26,8 +26,21 @@ python3 server.py        # 主入口，启动 Web 服务（默认 0.0.0.0:8300�
 
 ## 构建路径
 
-- **Android APK**: `./android/build.sh`
+- **Android APK**: `./android/build.sh`（SDK/JDK 路径均可由 `ANDROID_HOME` / `JAVA_HOME` 覆盖，
+  默认自动探测；版本号从根目录 `VERSION` 注入 manifest）
+- **Android 原生 APK**: `cd android-native && ./gradlew assembleRelease`
+  （**必须用 wrapper**：已钉 Gradle 8.14.3，AGP 8.11 与系统里的 Gradle 9.x 不兼容）
 - **Mac App**: `mac/main.swift`，使用 `swiftc` 编译
+
+## 版本号与内嵌副本
+
+- 版本号单一来源是根目录 `VERSION`（`versionName` / `versionCode`）；`build.gradle` 与
+  `android/build.sh` 都读它，别在别处硬编版本。
+- `android-native/app/src/main/python/` 下的副本由构建时的 `syncPythonSrc`（Copy 任务，
+  挂在 `preBuild` 前）从根目录重新生成，**已不在 git 里跟踪**（.gitignore）。手工刷新
+  （不跑构建时）仍用 `./sync-native.sh`，`check.sh` 会逐字节比对副本与根目录。
+- CI：`.github/workflows/check.yml` 在 push / PR 上跑 `./check.sh`（import + node --check
+  + 行为回归 + 副本比对），失败即阻断。
 
 ## 安全约束
 
@@ -102,7 +115,8 @@ python3 -m unittest discover -s tests
 
 ## 关键约定
 
-- **改 `server.py` / `atv_backend.py` / `static/*` 后跑 `./sync-native.sh`**：
+- **改 `server.py` / `atv_backend.py` / `static/*` 后跑 `./sync-native.sh`**（不跑构建时；
+  跑 `./gradlew` 构建会自动同步）：
   `android-native/app/src/main/python/` 下是这些文件的独立副本（Chaquopy 只编该目录里现成的东西，
   build.gradle 没有 copy 任务）。历史上漂移过一次，结果是「新后端 + 旧前端」的 APK 安静地发出去，
   而且旧版还多拷了一层 `static/static/`。`./check.sh` 会用 `diff -q` 挡住这种漂移，别绕过它。

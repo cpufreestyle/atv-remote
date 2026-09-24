@@ -31,7 +31,8 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # 首次（
 bash mac-install.sh                                    # 后台服务装成开机自启（崩溃自动重启）
 cd mac && swiftc -O -target arm64-apple-macos26.0 -o ATVRemote main.swift -framework Cocoa -framework WebKit
 # 再把 mac/ATVRemote.app 拷到 /Applications（注意：本机 CLT 的 SDK 默认 minos 28.0 高于系统版本，
-# 会报 open -10825，必须显式 -target arm64-apple-macos26.0）
+# 会报 open -10825，必须显式 -target arm64-apple-macos26.0；mac/Info.plist 的
+# LSMinimumSystemVersion 与之对齐为 26.0）
 ```
 
 后台服务（`http://127.0.0.1:8300`）由 LaunchAgent 常驻，浏览器仍可访问。取消自启：`launchctl unload ~/Library/LaunchAgents/com.atv.remote.plist`。
@@ -113,7 +114,7 @@ swift make_icon.swift        # 生成 mac/AppIcon_1024.png 和 mac/ic_launcher_f
 
 重新构建 APK：`./android/build.sh`（无需 Gradle，用 aapt2+d8+apksigner 手工链；注意 resources.arsc 必须未压缩存储，脚本已处理）
 
-### 📱 原生安卓 App（v1.1.0 新增，推荐）
+### 📱 原生安卓 App（推荐）
 
 `ATVRemote-native.apk`（约 33MB）——**Python 引擎直接内嵌**（Chaquopy），安装即用、零配置，无需 Mac 也无需 Termux：
 
@@ -125,11 +126,18 @@ swift make_icon.swift        # 生成 mac/AppIcon_1024.png 和 mac/ic_launcher_f
 
 ```bash
 cd android-native
-gradle assembleRelease   # 需要 JDK 17 + Android SDK + Python 3.10（Chaquopy 构建要求）
-# 产物: app/build/outputs/apk/release/app-release.apk
+./gradlew assembleRelease   # 产物: app/build/outputs/apk/release/app-release.apk
 ```
 
-> 构建踩坑记录：Gradle 需 8.x（9.x 与 AGP 8.x 不兼容）；Chaquopy 17 的 pip 自动回溯到 pyatv 0.13.2（cryptography 42 有官方 Android 预编译 wheel）；`chacha20poly1305_reuseable` 继承 Rust 类在 Chaquopy 下不可继承，已由 `app/src/main/python/boot.py` 注入组合式 shim 解决；旧版 pyatv 无 `touch` 接口，触摸板操作自动降级提示；Android 模拟器 NAT 不转发 mDNS，Apple TV 扫描需真机验证。
+> 必须用仓库里的 `./gradlew`（已钉 Gradle 8.14.3）：AGP 8.11 与 Gradle 9.x 不兼容，
+> 系统 `gradle`（homebrew 现为 9.x）直接跑会配置失败。首次运行 wrapper 会按
+> `gradle-wrapper.properties` 里的官方地址下载 Gradle；国内网络下可先把对应
+> `gradle-8.14.3-bin.zip` 放到 `~/.gradle/wrapper/dists/gradle-8.14.3-bin/<hash>/` 下，
+> 或换用镜像源改 properties 的 `distributionUrl`。
+
+> 构建踩坑记录：Chaquopy 17 的 pip 需要访问自己的 Android wheel 源（chaquo.com）与 PyPI，
+> 网络不通时 `install*PythonRequirements` 会失败（pyatv 本体是纯 Python，但 cryptography /
+> chacha20poly1305 / pydantic-core 的 Android 预编译 wheel 只有 Chaquo 提供）；`chacha20poly1305_reuseable` 继承 Rust 类在 Chaquopy 下不可继承，已由 `app/src/main/python/boot.py` 注入组合式 shim 解决；旧版 pyatv 无 `touch` 接口，触摸板操作自动降级提示；Android 模拟器 NAT 不转发 mDNS，Apple TV 扫描需真机验证。
 
 ### 手机独立运行（不需要 Mac）
 
@@ -138,6 +146,14 @@ App 有「🚀 独立模式」：手机内的 Termux 引擎直连电视（adb �
 引擎排错：Termux 里跑 `~/atv-remote/start.sh` 看输出，日志在 `~/atv-remote/server.log`。
 
 > 为什么不把 Python 引擎直接打包进 APK？pyatv 依赖 cryptography/pydantic-core 等 Rust 原生库，无法在 Android 上现成交叉编译（Chaquopy 无预编译），重写协议工程量大。Termux 方案零重写、依赖齐全。
+
+## 版本号与默认端口
+
+- 版本号单一来源：根目录 **`VERSION`**（`versionName` / `versionCode` 两行）。
+  `android-native/app/build.gradle` 与 `android/build.sh`（aapt2 link 前注入 manifest）都读它，
+  不再各写一份。当前：见文件内容。
+- 默认端口 `8300` 的唯一定义在 `server.py` 的 `--port` 默认值；`mac/main.swift`、
+  `termux-setup.sh`、`mac-install.sh` 与文档里的是对该默认值的镜像，改端口请一并同步。
 
 ## 命令行参数
 
@@ -227,13 +243,15 @@ POST /api/atv/apps   {}                   # Apple TV 应用列表
 **构建方式**（需 Android Studio + Chaquopy 插件）：
 
 ```bash
-./sync-native.sh        # 先把根目录的 server.py / static 同步进内嵌副本
 cd android-native
-gradle assembleDebug    # 仓库里没有 gradlew 包装器；产物：app/build/outputs/apk/debug/app-debug.apk
+./gradlew assembleDebug    # 产物：app/build/outputs/apk/debug/app-debug.apk
 ```
 
 > 首次构建 Chaquopy 会下载 Python 解释器和 pip 依赖（pyatv、qrcode，版本跟 `requirements.txt` 对齐），耗时较长。
-> `src/main/python/` 下是根目录文件的**手工副本**，改完后不跑 `./sync-native.sh` 就会发出「新后端 + 旧前端」的 APK；`./check.sh` 会检查这一项。
+> `src/main/python/` 下的副本**由构建自动生成**：`syncPythonSrc`（Copy 任务，挂在 `preBuild` 前）
+> 每次构建从根目录重新拷贝 `server.py` / `atv_backend.py` / `static/`，这几份已不在 git 里跟踪
+> （单一事实来源是根目录）。不跑构建的手工刷新仍走 `./sync-native.sh`；`./check.sh` 逐字节
+> 比对副本与根目录，漂移即失败。
 
 ## 目录结构
 

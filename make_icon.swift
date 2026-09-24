@@ -85,7 +85,10 @@ func savePng(_ image: NSImage, _ path: String, _ px: CGFloat) {
     print("已生成 \(path) (\(px)px)")
 }
 
-let out = "/Users/a1-6/atv-remote/mac"
+// 输出目录：第一个参数优先，否则当前目录下的 mac/（README 在仓库根目录跑 swift make_icon.swift）
+let out = CommandLine.arguments.count > 1
+    ? CommandLine.arguments[1]
+    : (FileManager.default.currentDirectoryPath as NSString).appendingPathComponent("mac")
 
 // —— 1) macOS 图标 1024：圆角底 + 主题 ——
 let mac = NSImage(size: NSSize(width: 1024, height: 1024))
