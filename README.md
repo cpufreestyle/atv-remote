@@ -15,7 +15,9 @@
 | 应用启动 | ✅（预设+自定义包名） | ✅（在线应用列表） |
 | 画面获取 | ✅ 真实截屏 | ⚠️ 正在播放内容画面 |
 | 音量 | ✅ | ⚠️ 需额外 AirPlay 配对（见 FAQ） |
-| 设备发现 | 手动输 IP | ✅ 局域网自动扫描 |
+| 设备发现 | 手动输 IP + 无线调试扫描 | ✅ 局域网自动扫描 |
+| 一键宏（场景） | ✅ | ✅（包名依次尝试 Android/tvOS） |
+| 服务自发现（mDNS） | ✅ `_atv-remote._tcp` | ✅（macOS `dns-sd` 广播） |
 
 ## 使用
 
@@ -49,6 +51,26 @@ swift make_icon.swift        # 生成 mac/AppIcon_1024.png 和 mac/ic_launcher_f
 ```
 
 ### 手机（3 步变独立遥控器，之后不需要 Mac）
+
+### ⚡ 一键宏
+
+页面「⚡ 一键宏」区有预置场景：观影模式（打开 Netflix + 音量降 3 格）、看 YouTube、静音、
+回主页、音量降 3 格。宏 = 一串命令 + 步间延时，由服务端串行执行（单步失败不中断，
+比如 App 没装时后续音量调整照跑）。应用步骤可给多个包名，会依次尝试 Android/tvOS。
+
+自定义宏用 JSON 写在文本框里，「存为本机宏」后常驻该浏览器（localStorage）：
+
+```json
+{"name":"我的宏","steps":[
+  {"type":"app","pkgs":["com.google.android.youtube.tv","com.google.ios.youtube"]},
+  {"delay":2500},
+  {"type":"key","codes":[25,25]},
+  {"type":"text","text":"搜索词","enter":true}
+]}
+```
+
+可用步骤类型：`key`（`code`/`codes`）、`text`（`text`，可加 `enter`）、`app`（`pkg`/`pkgs`），
+外加纯延时步骤 `{"delay":毫秒}`。上限 20 步、单步延时 ≤10s。
 
 打开 Mac 上的遥控器网页，底部有「📱 把遥控器装到手机」卡片：
 
@@ -163,13 +185,17 @@ python3 server.py [--host 127.0.0.1] [--port 8300] [--adb adb路径] [--no-open]
 
 用 `.venv/bin/python server.py` 启动会加载 Apple TV 支持（pyatv）；直接 `python3 server.py` 时 Apple TV 功能自动禁用、Android 照常可用。
 
-### 🔒 局域网访问令牌（可选）
+### 🔒 局域网访问令牌（默认自动生成）
 
-默认**不鉴权**（与历史版本一致）。服务默认监听 `0.0.0.0`，意味着同一网段的任何人都能对你的电视发 `input text` / `monkey` 命令。在共享网络、公司网络或租房宽带下建议开启：
+服务默认监听 `0.0.0.0`。为了不让「同网段任何人都能对你的电视发 `input text` / `monkey`」成立，
+**首次启动会自动生成一个访问令牌**，打印在终端横幅里并存入 `state.json`（重启不变）。
+之后的行为：
 
-```bash
-python3 server.py --token 你的令牌       # 也可用环境变量 ATV_TOKEN
-```
+- **本机（`127.0.0.1` / `::1`）免令牌**，本机浏览器和 Mac App 用法不变；
+- 局域网设备首次访问会看到登录页；打开本页面「📱 装到手机」里有**带令牌的二维码**，扫一次即完成
+  接入（服务端种 cookie，之后不再需要令牌）；
+- 想指定自己的令牌：`--token 你的令牌`（或环境变量 `ATV_TOKEN`）；
+- 想退回「完全无鉴权」的自用内网：`--no-token`，或用 `--host 127.0.0.1` 只允许本机访问。
 
 开启后：
 
@@ -207,6 +233,10 @@ POST /api/atv/pair   {"action":"begin","id","ip","name"}   # 开始配对（电�
 POST /api/atv/pair   {"action":"finish","pin":"1234",...}  # 完成配对
 POST /api/atv/connect {"id","ip","name"}
 POST /api/atv/apps   {}                   # Apple TV 应用列表
+POST /api/cmd       {"type":"macro","name":"观影模式","steps":[...]}   # 一键宏（服务端线程串行执行）
+POST /api/cmd       {"type":"macro","action":"cancel"}                 # 取消执行中的宏
+GET  /api/macros                          # 预置宏列表 + 执行状态
+GET  /api/setup                           # 令牌与手机接入地址（渲染二维码用）
 ```
 
 ## 常见问题

@@ -151,6 +151,24 @@ ADBKeyboard（`com.android.adbkeyboard/.AdbIME`），由 `/api/ime` 管理、`/a
   长 URL 进 toast 会糊成一团，交给前端渲染成可点链接。
 - 用 **base64**（`ADB_INPUT_B64`）而不是 `ADB_INPUT_TEXT`：后者在 Oreo+ 传 UTF-8 会坏。
 
+### 一键宏（macro）
+
+`/api/cmd` 的 `type=macro` 是唯一在**线程里异步执行**的命令：20 步 × 每步最多 10s 延时会
+超过前端 fetch 的耐心，所以请求线程只做同步校验（拼错立刻 400），执行放 `_macro_worker`
+线程，进度/失败写 stderr。单步失败**不**中断整条宏（App 没装时后续步骤照跑），取消用
+`_macro_stop` 事件（延时中用 `Event.wait` 实现可打断 sleep）。自定义宏放浏览器
+localStorage，不要写进 `state.json`（敏感文件，不放可编辑内容）。
+
+### 局域网访问令牌
+
+- 绑 `0.0.0.0`/`::` 且没指定令牌时**首启自动生成**，存 `state.json` 的 `token` 键（重启不变，
+  否则手机每次重启都要重新配）。单一决策点是 `resolve_token()`，main() 与测试都走它。
+- `--no-token` 或 `--host 127.0.0.1` 都不鉴权；`--token ""` 是显式不鉴权（历史行为）。
+- `/api/setup` 会把令牌与局域网地址发给已授权客户端，只用于渲染接入二维码；这是已知取舍
+  （持令牌者本来每次请求都带着它）。
+- 服务发现：macOS 上用 `dns-sd` 广播 `_atv-remote._tcp`（`start_mdns()`），没有 dns-sd 的
+  平台静默跳过——只是可发现性增强，不影响 IP/二维码访问。
+
 ### 设备休眠时 `input` 会阻塞
 
 屏幕熄灭时 `input text` / `input keyevent` **会一直挂住**（实测），而 `settings` /

@@ -19,6 +19,7 @@ import mimetypes
 import os
 import re
 import select
+import secrets
 import shutil
 import socket
 import subprocess
@@ -76,12 +77,40 @@ button{margin-top:10px;width:100%;padding:11px;border:0;border-radius:9px;
 code{color:#ffd479}
 </style></head><body><div class="box">
 <h1>🔒 需要访问令牌</h1>
-<p>这台服务器开了 <code>--token</code>。令牌在启动它的终端窗口里能找到。</p>
+<p>这台服务器开启了访问令牌。令牌在启动它的终端窗口里（重启不变），
+电脑上打开本页面 →「📱 装到手机」里有带令牌的二维码，扫一次即可。</p>
 <form method="get" action="/">
   <input name="token" placeholder="输入访问令牌" autocomplete="off" autofocus>
   <button type="submit">进入遥控器</button>
 </form></div></body></html>
 """
+
+
+LOOPBACK_ONLY_HOSTS = ("127.0.0.1", "::1", "localhost")
+
+
+def resolve_token(explicit, host: str, no_token: bool, st, env_token="") -> str:
+    """决定本次运行的访问令牌（单一决策点，main() 与测试都走这里）：
+    - 显式 --token：以它为准（空串 = 明确不鉴权，保持历史行为；None = 没传）
+    - 环境变量 ATV_TOKEN：等效显式传入
+    - 只绑回环，或 --no-token：不鉴权
+    - 绑 0.0.0.0 / :: 且什么都没指定：首启自动生成一个并写进 state.json
+      （重启不变 → 手机只需首次输入或扫一次码；要退回无鉴权用 --no-token）
+    """
+    if explicit is not None:
+        return explicit.strip()
+    env = (env_token or "").strip()
+    if env:
+        return env
+    if no_token or host in LOOPBACK_ONLY_HOSTS:
+        return ""
+    tok = str((st or {}).get("token") or "").strip() if isinstance(st, dict) else ""
+    if tok:
+        return tok
+    tok = secrets.token_urlsafe(9)     # 12 字符，URL 安全，碰不中
+    if isinstance(st, dict):
+        st["token"] = tok
+    return tok
 
 
 def token_query() -> str:
@@ -277,7 +306,8 @@ from atv_backend import PYATV_AVAILABLE as ATV_AVAILABLE
 
 adb = None            # type: Adb
 atv_mgr = AppleTvManager()
-state = {"recent_android": [], "appletvs": [], "current": None, "info": {}}
+state = {"recent_android": [], "appletvs": [], "current": None, "info": {},
+         "token": ""}   # token：首启自动生成的访问令牌，落盘才跨重启稳定
 # 可重入：save_state 会在已持锁的分支里被调用
 state_lock = threading.RLock()
 
@@ -454,6 +484,7 @@ def make_status():
             "kb_focus": (kb_focus_cached() if atv_mgr and atv_mgr.connected else None),
         },
         "sleep_timer": timer_state(),
+        "macro": macro_state(),
         "auto_reconnect": {
             "active": _auto_reconn["active"],
             "stopped": _auto_reconn["stopped"],
@@ -731,6 +762,8 @@ def handle_cmd(body):
     timer 与当前连的是什么设备无关，在这里先拦掉"""
     if body.get("type") == "timer":
         return handle_timer(body)
+    if body.get("type") == "macro":
+        return handle_macro(body)
     with state_lock:
         ctype = (state.get("current") or {}).get("type")
     if ctype == "appletv":
@@ -1117,6 +1150,146 @@ def build_bundle() -> bytes:
     return buf.getvalue()
 
 
+# ---------------- 一键宏（场景） ----------------
+# 宏 = 一串 /api/cmd 指令 + 步间延时，server 串行执行；前端只负责编排、命名与保存。
+# 为什么放线程里而不是阻塞 HTTP：20 步 × 每步最多 10s 延时，轻松超过前端 fetch 的耐心；
+# 执行与失败都写 stderr（LaunchAgent 收进 server.log），取消用 stop 事件。
+MACRO_STEP_TYPES = ("key", "text", "app")   # 都与当前设备类型无关，仍走 handle_cmd 分发
+MACRO_MAX_STEPS = 20
+MACRO_MAX_DELAY = 10000      # 单步延时上限 ms
+_macro_running = threading.Event()
+_macro_stop = threading.Event()
+
+# 预置宏：开箱即用。pkg 一给多是因为「同一个 App 在 Android TV / tvOS 上包名不同」，
+# 按顺序试，成功即停；自定义宏保存在浏览器 localStorage，不写 state.json（敏感文件）。
+PRESET_MACROS = [
+    {"id": "movie", "icon": "🎬", "name": "观影模式",
+     "steps": [{"type": "app", "pkgs": ["com.netflix.ninja", "com.netflix.Netflix"]},
+               {"delay": 2500},
+               {"type": "key", "codes": [25, 25, 25]}]},
+    {"id": "youtube", "icon": "▶️", "name": "看 YouTube",
+     "steps": [{"type": "app", "pkgs": ["com.google.android.youtube.tv",
+                                        "com.google.ios.youtube"]},
+               {"delay": 2500}]},
+    {"id": "mute", "icon": "🔇", "name": "静音 / 取消",
+     "steps": [{"type": "key", "code": 164}]},
+    {"id": "home", "icon": "🏠", "name": "回主页",
+     "steps": [{"type": "key", "code": 3}]},
+    {"id": "volume-down3", "icon": "🔉", "name": "音量降 3 格",
+     "steps": [{"type": "key", "codes": [25, 25, 25]}]},
+]
+
+
+def macro_state():
+    return {"running": _macro_running.is_set()}
+
+
+def _macro_step_delay(step):
+    """步间延时 ms；非法值按 0 处理（上层已校验过，这里是二道闸）"""
+    d = step.get("delay", 0)
+    if isinstance(d, bool) or not isinstance(d, (int, float)):
+        return 0
+    return min(MACRO_MAX_DELAY, max(0, int(d)))
+
+
+def validate_macro_steps(steps, name="宏"):
+    """校验并原样返回 steps；任何不合法都抛 AdbError（调用方转 400）。
+    在请求线程里同步校验：拼错的宏要当场 400 报错，不能等线程里悄悄失败。"""
+    if not isinstance(steps, list) or not (1 <= len(steps) <= MACRO_MAX_STEPS):
+        raise AdbError("宏步骤须为 1~{} 项的数组".format(MACRO_MAX_STEPS))
+    for i, step in enumerate(steps):
+        where = "宏「{}」第 {} 步".format(name, i + 1)
+        if not isinstance(step, dict):
+            raise AdbError("{}：步骤必须是对象".format(where))
+        t = step.get("type") or "delay"   # 只带 delay 的步骤 = 纯等待
+        if t not in MACRO_STEP_TYPES and t != "delay":
+            raise AdbError("{}：类型 {} 不支持（可用 {}）".format(
+                where, t, "/".join(MACRO_STEP_TYPES)))
+        if t == "key":
+            raw = step.get("codes") if "codes" in step else step.get("code")
+            raw = [raw] if not isinstance(raw, list) else raw
+            if not raw or len(raw) > MAX_KEYCODES:
+                raise AdbError("{}：键码数量不合法".format(where))
+            if not all(str(c).lstrip("-").isdigit() for c in raw):
+                raise AdbError("{}：键码必须是数字".format(where))
+        elif t == "text":
+            text = step.get("text")
+            if not isinstance(text, str) or not text.strip():
+                raise AdbError("{}：文本为空".format(where))
+            if len(text) > MAX_TEXT_LEN:
+                raise AdbError("{}：文本超长（{}）".format(where, MAX_TEXT_LEN))
+        elif t == "app":
+            pkgs = ([step["pkg"]] if step.get("pkg") else []) + list(step.get("pkgs") or [])
+            pkgs = [p for p in pkgs if isinstance(p, str) and APP_ID_RE.match(p)]
+            if not pkgs:
+                raise AdbError("{}：包名不合法".format(where))
+            step["pkgs"] = pkgs
+        _macro_step_delay(step)   # 触发上面的整形钳制
+    return steps
+
+
+def _macro_exec_step(step):
+    """执行单步。app 支持 pkgs 多候选：Android/tvOS 包名不同，成功一个就停。"""
+    t = step.get("type")
+    if t == "app":
+        last = None
+        for p in step.get("pkgs") or [step.get("pkg")]:
+            try:
+                handle_cmd({"type": "app", "pkg": p})
+                return
+            except (AdbError, AppleTvError) as e:
+                last = e
+        if last:
+            raise last
+        return
+    payload = {k: v for k, v in step.items() if k not in ("delay", "pkgs")}
+    handle_cmd(payload)
+
+
+def _macro_worker(name, steps):
+    try:
+        for i, step in enumerate(steps):
+            if _macro_stop.is_set():
+                print("宏「{}」已取消（第 {} 步）".format(name, i), file=sys.stderr)
+                return
+            wait = _macro_step_delay(step) / 1000.0
+            if wait and _macro_stop.wait(wait):
+                print("宏「{}」在延时中被取消".format(name), file=sys.stderr)
+                return
+            try:
+                _macro_exec_step(step)
+            except (AdbError, AppleTvError) as e:
+                # 单步失败不终止整条宏：比如「观影模式」里 Netflix 没装，
+                # 后面的音量调整仍然该跑。失败原因进服务端日志。
+                print("宏「{}」第 {} 步失败：{}".format(name, i + 1, e), file=sys.stderr)
+    except Exception:
+        traceback.print_exc()
+    finally:
+        _macro_running.clear()
+
+
+def handle_macro(body):
+    action = body.get("action", "run")
+    if action == "cancel":
+        _macro_stop.set()
+        return {"ok": True, **macro_state()}
+    if action != "run":
+        raise AdbError("未知宏操作: {}（可用 run / cancel）".format(action))
+    name = str(body.get("name", "") or "宏")[:24]
+    steps = validate_macro_steps(body.get("steps"), name)
+    if _macro_running.is_set():
+        raise AdbError("已有一条宏在执行，等它跑完再试")
+    _macro_stop.clear()
+    _macro_running.set()
+    threading.Thread(target=_macro_worker, args=(name, steps),
+                     daemon=True, name="macro").start()
+    return {"ok": True, **macro_state(), "steps": len(steps)}
+
+
+def handle_macros(_body):
+    return {"presets": PRESET_MACROS, **macro_state()}
+
+
 # ---------------- HTTP ----------------
 # 模块级路由表：不要每次 POST 都重建
 ROUTES = {
@@ -1287,6 +1460,18 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(404, {"error": "APK 不存在，请先在电脑上执行 android/build.sh"})
                 return self._send(200, apk.read_bytes(),
                                   "application/vnd.android.package-archive")
+            if path == "/api/macros":
+                return self._send(200, handle_macros(None))
+            if path == "/api/setup":
+                # 给已授权用户（通常是本机浏览器）看「手机首次接入」用的令牌和带令牌的
+                # 页面地址，用于渲染二维码。能把令牌给已授权客户端是已知取舍：持令牌者
+                # 本来就每次请求都带着它（cookie），并没有放大暴露面。
+                # 二维码是给「另一台设备」扫的，回环地址对手机没意义，直接用局域网 IP
+                # （与启动横幅里的「手机访问」同源；VPN 多网卡时同 lan_ip 的已知局限）
+                return self._send(200, {
+                    "token": AUTH_TOKEN,
+                    "url": "http://{}:{}".format(lan_ip(), self.server.server_address[1]),
+                })
             if path == "/api/qr.svg":
                 text = (parse_qs(urlparse(self.path).query).get("text") or [""])[0][:512]
                 if not text:
@@ -1372,6 +1557,25 @@ def lan_ip() -> str:
         return "本机局域网IP"
 
 
+def start_mdns(port):
+    """Bonjour 广播 _atv-remote._tcp，让局域网的「发现类」App 能找到本服务。
+    dns-sd 只有 macOS 自带；Linux/Termux 没有就静默跳过 —— 广播只是可发现性增强，
+    网页与 App 照旧按 IP/二维码访问，少了它不影响任何现有路径。"""
+    exe = shutil.which("dns-sd")
+    if not exe:
+        print("  mDNS     : ⚠️ 未找到 dns-sd，跳过服务广播（不影响访问）")
+        return None
+    try:
+        proc = subprocess.Popen(
+            [exe, "-R", "ATV Remote", "_atv-remote._tcp", ".", str(port)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        print("  mDNS     : ⚠️ 广播失败：{}（不影响访问）".format(e))
+        return None
+    print("  mDNS     : 已广播 _atv-remote._tcp :{}（局域网可发现，关窗口即停）".format(port))
+    return proc
+
+
 def main():
     global adb, AUTH_TOKEN
     ap = argparse.ArgumentParser(description="ATV Remote — Android TV / Apple TV 遥控器")
@@ -1380,10 +1584,15 @@ def main():
     ap.add_argument("--port", type=int, default=8300)
     ap.add_argument("--adb", default=os.environ.get("ADB_PATH", "adb"), help="adb 可执行文件路径")
     ap.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
-    ap.add_argument("--token", default=AUTH_TOKEN,
-                    help="局域网访问令牌；不传则不鉴权（默认）。本机 127.0.0.1 访问始终免令牌")
+    ap.add_argument("--token", default=None,
+                    help="局域网访问令牌。绑 0.0.0.0/:: 且不传时首启自动生成"
+                         "（存 state.json，重启不变）；传空串 = 显式不鉴权")
+    ap.add_argument("--no-token", action="store_true",
+                    help="关掉自动生成的令牌，恢复无鉴权（仅建议可信内网）")
     args = ap.parse_args()
-    AUTH_TOKEN = (args.token or "").strip()
+    AUTH_TOKEN = resolve_token(args.token, args.host, args.no_token, state, AUTH_TOKEN)
+    if AUTH_TOKEN and str(state.get("token") or "") == AUTH_TOKEN:
+        save_state()   # 首启生成的令牌必须落盘，否则重启就换、手机要重新配
 
     adb = Adb(resolve_adb(args.adb))
     load_state()
@@ -1406,7 +1615,10 @@ def main():
         lan = "http://{}:{}{}".format(lan_ip(), args.port, token_query())
         print("  手机访问 : {}  （App 或浏览器直接打开）".format(lan))
         if AUTH_TOKEN:
-            print("  🔒 已启用令牌，局域网设备需带 ?token= 或用页面上的表单登录")
+            print("  🔒 令牌     : {}（{}）".format(
+                AUTH_TOKEN, "首启自动生成，已存 state.json" if args.token is None else "来自 --token"))
+            print("              局域网设备首次访问需输入令牌；网页「📱 装到手机」里有带令牌的二维码")
+            print("              退回无鉴权：加 --no-token 启动（不推荐，同网段任何人都能遥控）")
     print("  Ctrl+C 停止")
     print("=" * 46)
 
@@ -1429,11 +1641,15 @@ def main():
 
     if not args.no_open:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+    mdns = start_mdns(args.port)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n再见！")
         httpd.server_close()
+    finally:
+        if mdns:
+            mdns.terminate()
 
 
 if __name__ == "__main__":

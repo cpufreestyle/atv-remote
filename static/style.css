@@ -158,6 +158,7 @@ code {
 .imestate.ok   { color: var(--ok); }
 .imestate.warn { color: #f0b03c; }
 .imestate.off  { color: var(--muted); }
+.withdel { display: inline-flex; align-items: center; gap: 2px; }
 .btn.tiny { padding: 5px 10px; font-size: 12px; border-radius: 8px; flex: none; }
 .imeinstall { margin-top: 8px; }
 .imeinstall .hint { margin-top: 0; }

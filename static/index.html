@@ -162,6 +162,22 @@
     </section>
 
     <section class="card">
+      <h2>⚡ 一键宏</h2>
+      <div class="brow apps" id="macroRow"></div>
+      <p class="hint" id="macroState">宏会按顺序执行多步操作（应用包名会依次尝试 Android / tvOS）。</p>
+      <button id="macroCancelBtn" class="btn danger hidden">⏹ 取消执行中的宏</button>
+      <details id="macroCustom">
+        <summary>自定义宏（JSON，保存在本浏览器）</summary>
+        <textarea id="macroText" rows="4" spellcheck="false"
+          placeholder='{"name":"我的宏","steps":[{"type":"app","pkg":"com.google.android.youtube.tv"},{"delay":2500},{"type":"key","codes":[25,25]}]}'></textarea>
+        <div class="brow">
+          <button id="macroRunCustomBtn" class="btn primary">▶ 运行文本框里的宏</button>
+          <button id="macroSaveCustomBtn" class="btn">💾 存为本机宏</button>
+        </div>
+      </details>
+    </section>
+
+    <section class="card">
       <h2>🌙 睡眠定时</h2>
       <div class="brow">
         <button class="btn" data-sleep="30">30 分钟</button>
@@ -182,6 +198,10 @@
             <div class="inputrow">
               <input id="installCmd" readonly>
               <button id="copyCmd" class="btn primary">复制</button>
+            </div>
+            <div class="qrbox" id="setupQrBox" hidden>
+              <img id="setupQrImg" alt="带令牌的接入二维码">
+              <span>或用手机相机扫码直接打开已带令牌的页面</span>
             </div>
             <div class="qrbox">
               <img id="qrImg" alt="安装命令二维码">

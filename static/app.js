@@ -266,6 +266,125 @@ $("#sleepCancelBtn").addEventListener("click", async () => {
   }
 });
 
+/* ---------------- 一键宏 ---------------- */
+// 预置宏来自 /api/macros；自定义宏只存浏览器 localStorage（state.json 不放可编辑内容）。
+// 执行在服务端线程里串行跑，这里只负责发起、显示状态和取消。
+const MACRO_LS = "atv_macros_v1";
+let macroTick = null;
+
+const customMacros = () => {
+  try { return JSON.parse(localStorage.getItem(MACRO_LS)) || []; } catch (e) { return []; }
+};
+
+function macroButton(m, custom) {
+  const b = document.createElement("button");
+  b.className = "btn";
+  b.dataset.macro = m.id || m.name;
+  b.textContent = (custom ? "⭐ " : "") + m.name;
+  b.title = (m.steps || []).map((st) => st.type + (st.delay ? `+${st.delay}ms` : "")).join(" → ");
+  b.addEventListener("click", () => runMacro(m));
+  if (custom) {
+    const del = document.createElement("button");
+    del.className = "btn tiny danger";
+    del.textContent = "✕";
+    del.title = "删除这个自定义宏";
+    del.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const left = customMacros().filter((x) => x.name !== m.name);
+      localStorage.setItem(MACRO_LS, JSON.stringify(left));
+      loadMacros();
+      toast("已删除", true);
+    });
+    const wrap = document.createElement("span");
+    wrap.className = "withdel";
+    wrap.append(b, del);
+    return wrap;
+  }
+  return b;
+}
+
+async function loadMacros() {
+  const row = $("#macroRow");
+  if (!row) return;
+  row.textContent = "";
+  try {
+    const j = await api("/api/macros");
+    ([...(j.presets || []), ...customMacros()]).forEach((m, i) => {
+      row.append(macroButton(m, i >= (j.presets || []).length));
+    });
+    renderMacroState(j);
+  } catch (e) {
+    row.textContent = "";
+    $("#macroState").textContent = "⚠ 宏列表加载失败：" + e.message;
+  }
+}
+
+function renderMacroState(j) {
+  clearInterval(macroTick);
+  macroTick = null;
+  const cancelBtn = $("#macroCancelBtn");
+  const stateEl = $("#macroState");
+  const running = !!(j && j.running);
+  if (cancelBtn) cancelBtn.classList.toggle("hidden", !running);
+  if (!running) {
+    stateEl.textContent = "宏会按顺序执行多步操作（应用包名会依次尝试 Android / tvOS）。";
+    return;
+  }
+  stateEl.textContent = "⏳ 宏执行中……（可取消；每步结果见下方日志）";
+  macroTick = setInterval(async () => {
+    try {
+      const again = await api("/api/macros");
+      renderMacroState(again);
+    } catch (e) { /* 轮询失败不打扰：宏还在服务端跑 */ }
+  }, 1500);
+}
+
+async function runMacro(m) {
+  try {
+    log(`⚡ 执行宏「${m.name}」…`);
+    const r = await api("/api/cmd", { type: "macro", name: m.name, steps: m.steps });
+    renderMacroState(r);
+    toast(`宏「${m.name}」开始执行`);
+  } catch (e) {
+    toast("⚠ " + e.message);
+  }
+}
+
+$("#macroCancelBtn")?.addEventListener("click", async () => {
+  try {
+    const r = await api("/api/cmd", { type: "macro", action: "cancel" });
+    renderMacroState(r);
+    toast("已取消宏", true);
+  } catch (e) {
+    toast("⚠ " + e.message);
+  }
+});
+
+$("#macroRunCustomBtn")?.addEventListener("click", async () => {
+  try {
+    const m = JSON.parse($("#macroText").value);
+    if (!Array.isArray(m.steps) || !m.steps.length) throw new Error("steps 不能为空");
+    await runMacro(m);
+  } catch (e) {
+    toast("⚠ 宏 JSON 解析失败：" + e.message);
+  }
+});
+
+$("#macroSaveCustomBtn")?.addEventListener("click", () => {
+  try {
+    const m = JSON.parse($("#macroText").value);
+    if (!Array.isArray(m.steps) || !m.steps.length) throw new Error("steps 不能为空");
+    if (!m.name) throw new Error("缺少 name");
+    const list = customMacros().filter((x) => x.name !== m.name);
+    list.push({ name: String(m.name).slice(0, 24), steps: m.steps });
+    localStorage.setItem(MACRO_LS, JSON.stringify(list));
+    loadMacros();
+    toast(`已保存「${m.name}」`, true);
+  } catch (e) {
+    toast("⚠ 宏 JSON 解析失败：" + e.message);
+  }
+});
+
 /* ---------------- 状态与连接 ---------------- */
 let statusBusy = null;  // 上一次 /api/status 没回来就不叠加下一次（慢响应会排在按键锁后面）
 
@@ -335,6 +454,7 @@ function renderStatus(s) {
 
   // 睡眠定时状态（倒计时本地走秒，这里只负责发现 set/cancel 的变化）
   renderSleepTimer(s.sleep_timer);
+  renderMacroState(s.macro || { running: false });
 
   // 连接的设备变了才去查输入法（每次查询要 3 条 shell，不能跟着 8s 轮询跑）
   const imeTarget = (isApple ? "atv:" : "adb:") + (s.current || "");
@@ -888,11 +1008,22 @@ $("#shotModal").addEventListener("click", (e) => {
   if (e.target === $("#shotModal")) $("#shotModal").classList.add("hidden");
 });
 
+loadMacros();
+
 /* ---------------- 手机安装引导 ---------------- */
 const installCmd = `curl -sL ${location.origin}/install${TOKEN_Q} | bash`;
 $("#installCmd").value = installCmd;
 $("#qrImg").src = "/api/qr.svg?text=" + encodeURIComponent(installCmd) + TOKEN_AMP;
 $("#qrImg").onerror = () => { document.querySelector(".qrbox").style.display = "none"; }; // 无 qrcode 库时隐藏
+// 未启用令牌时 setupQrBox 保持 hidden；启用后这里换成「带令牌的页面地址」二维码，
+// 手机扫一次即完成首次接入（服务端会种 cookie，之后不再需要令牌）
+if (ATV_TOKEN) {
+  api("/api/setup").then((j) => {
+    if (!j.token) return;
+    $("#setupQrBox").hidden = false;
+    $("#setupQrImg").src = "/api/qr.svg?text=" + encodeURIComponent(j.url + "?token=" + j.token) + TOKEN_AMP;
+  }).catch(() => {});
+}
 
 // 启用令牌后，APK 直链与手机访问地址都得带上它
 const apkLink = $("#apkLink");
