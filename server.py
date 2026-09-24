@@ -454,6 +454,11 @@ def make_status():
             "kb_focus": (kb_focus_cached() if atv_mgr and atv_mgr.connected else None),
         },
         "sleep_timer": timer_state(),
+        "auto_reconnect": {
+            "active": _auto_reconn["active"],
+            "stopped": _auto_reconn["stopped"],
+            "fails": _auto_reconn["fails"],
+        },
     }
 
 
@@ -613,6 +618,112 @@ def _sleep_timer_loop():
         except Exception:
             traceback.print_exc()
         _timer_stop.wait(1.0)   # Event.wait：停机时立刻醒，不等满 1s
+
+
+# ---------------- Android 掉线自动重连 ----------------
+# 在线过又掉了才自动重连（从未连上过的是用户还没连，不去碰）；
+# 连续失败 RECONNECT_MAX 次就停并提示手动，用户手动连上后自动重新武装
+RECONNECT_MAX = 3
+RECONNECT_COOLDOWN = 30.0
+_auto_reconn = {"was_online": False, "fails": 0, "next_retry": 0.0,
+                "active": False, "stopped": False}
+
+
+def auto_reconn_reset():
+    """连接成功（手动 / 自动 / 开机恢复）后重新武装自动重连"""
+    _auto_reconn.update(was_online=True, fails=0, next_retry=0.0,
+                        active=False, stopped=False)
+
+
+def _auto_reconnect_tick():
+    """单次探测：当前 Android 设备在线过又掉了 → 重连一次（带退避与次数上限）"""
+    with state_lock:
+        cur = state.get("current") or {}
+    target = cur.get("target") if cur.get("type") == "android" else None
+    if not target:
+        return
+    st = next((d["state"] for d in adb.devices() if d["serial"] == target), None)
+    if st == "device":
+        _auto_reconn.update(was_online=True, fails=0, next_retry=0.0,
+                            active=False, stopped=False)
+        return
+    if not (_auto_reconn["was_online"] and not _auto_reconn["stopped"]
+            and time.time() >= _auto_reconn["next_retry"]):
+        return
+    _auto_reconn["active"] = True
+    adb.reset_shell()
+    adb.invalidate_devices()
+    try:
+        adb.connect(target)
+    except AdbError:
+        _auto_reconn["fails"] += 1
+        if _auto_reconn["fails"] >= RECONNECT_MAX:
+            _auto_reconn.update(stopped=True, active=False)
+        _auto_reconn["next_retry"] = time.time() + RECONNECT_COOLDOWN
+
+
+def _auto_reconnect_loop():
+    while not _timer_stop.is_set():
+        try:
+            _auto_reconnect_tick()
+        except Exception:
+            traceback.print_exc()
+        _timer_stop.wait(3.0)
+
+
+# ---------------- Android 无线调试：mDNS 扫描 / 配对 ----------------
+def _mdns_hosts():
+    """`adb mdns services`：无线调试设备广播的配对 / 连接端口。
+    只开「网络调试 5555」的老电视不广播 mDNS，扫不到仍要手输 IP。"""
+    try:
+        out = adb.run("mdns", "services", timeout=5)
+    except AdbError as e:
+        raise AdbError("扫描失败：{}".format(e))
+    found = {}
+    for line in out.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        svc, addr = parts[0], parts[1]
+        if "adb-tls-pairing" in svc:
+            kind = "pairing"
+        elif "adb-tls-connect" in svc:
+            kind = "connect"
+        else:
+            continue
+        host, _, port = addr.rpartition(":")
+        if host and port.isdigit():
+            found.setdefault((host, kind), int(port))
+    hosts = {}
+    for (host, kind), port in found.items():
+        hosts.setdefault(host, {})[kind] = port
+    return [{"host": h, "pairing": p.get("pairing"), "connect": p.get("connect")}
+            for h, p in sorted(hosts.items())]
+
+
+def handle_android_scan(_body):
+    return {"hosts": _mdns_hosts()}
+
+
+PAIR_CODE_RE = re.compile(r"^\d{6}$")
+
+
+def handle_android_pair(body):
+    """Android 11+ 无线调试首次使用要先配对：码在电视「网络调试」页面显示"""
+    host = str(body.get("host", "")).strip()
+    port = body.get("port")
+    code = str(body.get("code", "")).strip()
+    if not TARGET_RE.match(host):
+        raise AdbError("主机地址不合法：{}".format(host))
+    if not isinstance(port, int) or isinstance(port, bool) or not (1 <= port <= 65535):
+        raise AdbError("配对端口不合法：{}".format(port))
+    if not PAIR_CODE_RE.match(code):
+        raise AdbError("配对码须为 6 位数字")
+    out = adb.run("pair", "{}:{}".format(host, port), code, timeout=15)
+    if "success" not in out.lower():
+        raise AdbError("配对失败：{}".format(out))
+    adb.invalidate_devices()
+    return {"ok": True}
 
 
 def handle_cmd(body):
@@ -870,6 +981,7 @@ def handle_connect(body):
         if target not in state["recent_android"]:
             state["recent_android"] = ([target] + state["recent_android"])[:5]
         save_state()
+    auto_reconn_reset()
     return {"ok": True, "target": target, "state": st, "info": info,
             "warning": "" if st == "device" else "设备未授权，请在电视屏幕上确认“允许 USB 调试”"}
 
@@ -911,6 +1023,7 @@ def handle_switch(body):
         if target not in state["recent_android"]:
             state["recent_android"] = ([target] + state["recent_android"])[:5]
         save_state()
+    auto_reconn_reset()
     return {"ok": True, "info": info}
 
 
@@ -1009,6 +1122,8 @@ def build_bundle() -> bytes:
 ROUTES = {
     "/api/connect": handle_connect,
     "/api/disconnect": handle_disconnect,
+    "/api/android/scan": handle_android_scan,
+    "/api/android/pair": handle_android_pair,
     "/api/cmd": handle_cmd,
     "/api/ime": handle_ime,
     "/api/forget": handle_forget,
@@ -1275,6 +1390,7 @@ def main():
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.daemon_threads = True
     threading.Thread(target=_sleep_timer_loop, daemon=True, name="sleep-timer").start()
+    threading.Thread(target=_auto_reconnect_loop, daemon=True, name="auto-reconn").start()
 
     url = "http://{}:{}".format("127.0.0.1" if args.host == "0.0.0.0" else args.host, args.port)
     print("=" * 46)
@@ -1299,6 +1415,7 @@ def main():
         print("  恢复连接 : {} (Android TV)".format(cur["target"]))
         try:
             adb.connect(cur["target"])
+            auto_reconn_reset()
         except AdbError as e:
             print("  恢复失败 : {}".format(e))
     elif cur.get("type") == "appletv":

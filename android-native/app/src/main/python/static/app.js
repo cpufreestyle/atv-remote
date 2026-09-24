@@ -135,6 +135,91 @@ $("#privacyBtn").addEventListener("click", () => {
   applyPrivacy();
 });
 
+/* ---------------- 剪贴板 / 常用短语 / 语音 ---------------- */
+// 剪贴板与语音识别都要 secure context：http://127.0.0.1 / https / Mac App 里可用，
+// http://局域网IP 打开时浏览器直接不给用 —— 点击时给出可操作的提示，不静默失败
+$("#pasteBtn").addEventListener("click", async () => {
+  if (!navigator.clipboard || !navigator.clipboard.readText) {
+    return toast("此浏览器不支持读取剪贴板，可长按输入框手动粘贴");
+  }
+  try {
+    const text = await navigator.clipboard.readText();
+    if (!text.trim()) return toast("剪贴板是空的");
+    await sendText(text, false);
+  } catch (e) {
+    toast("读取剪贴板失败：http 局域网打开会被浏览器禁掉，用 Mac App 或本机打开");
+  }
+});
+
+const PHRASE_KEY = "atv.phrases";
+const DEFAULT_PHRASES = ["第一集", "下一集", "原画", "全集"];
+let phrases = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem(PHRASE_KEY));
+    if (Array.isArray(v)) return v.filter((s) => typeof s === "string").slice(0, 12);
+  } catch { /* 损坏就回落默认 */ }
+  return DEFAULT_PHRASES.slice();
+})();
+
+function renderPhrases() {
+  const row = $("#phraseRow");
+  row.innerHTML = "";
+  phrases.forEach((p) => {
+    const c = document.createElement("button");
+    c.className = "btn tiny";
+    c.textContent = p;
+    c.title = "点击发送到电视";
+    c.onclick = () => sendText(p, false);
+    row.appendChild(c);
+  });
+  const edit = document.createElement("button");
+  edit.className = "btn tiny";
+  edit.textContent = "✏️";
+  edit.title = "编辑常用短语（逗号分隔）";
+  edit.onclick = () => {
+    const v = prompt("常用短语（用逗号分隔，点 chips 即发送）：", phrases.join("，"));
+    if (v === null) return;
+    phrases = v.split(/[，,]/).map((s) => s.trim()).filter(Boolean).slice(0, 12);
+    localStorage.setItem(PHRASE_KEY, JSON.stringify(phrases));
+    renderPhrases();
+  };
+  row.appendChild(edit);
+}
+
+let micRec = null;
+function micListening(on) {
+  $("#micBtn").classList.toggle("on", on);
+  $("#micBtn").setAttribute("aria-pressed", on ? "true" : "false");
+}
+$("#micBtn").addEventListener("click", () => {
+  if (micRec) {           // 再点一次 = 停止
+    micRec.stop();
+    micRec = null;
+    micListening(false);
+    return;
+  }
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return toast("此浏览器不支持语音识别（Chrome / Edge / Safari 可以）");
+  if (!window.isSecureContext) {
+    return toast("语音要安全上下文：用 Mac App、本机 localhost 或 https 打开");
+  }
+  const r = new SR();
+  r.lang = "zh-CN";
+  r.interimResults = false;
+  r.maxAlternatives = 1;
+  r.onresult = (e) => {
+    const text = e.results[0][0] ? e.results[0][0].transcript : "";
+    if (text) sendText(text, false);
+    else toast("没听清，再说一次");
+  };
+  r.onerror = (e) => { toast("语音识别失败：" + (e.error || "unknown")); micListening(false); micRec = null; };
+  r.onend = () => { micListening(false); micRec = null; };
+  micRec = r;
+  micListening(true);
+  log("🎤 请说话（说完自动发送）…");
+  r.start();
+});
+
 /* ---------------- 睡眠定时 ---------------- */
 // until 用 epoch 秒由服务端给，倒计时本地走秒：不靠 8s 轮询刷新，按钮秒级响应
 let sleepUntil = 0;
@@ -228,6 +313,11 @@ function renderStatus(s) {
   }
   dot.className = "dot " + (status.connected ? "on" : s.current ? "warn" : "off");
 
+  // Android 掉线自动重连的进度（服务后台线程在试，失败 3 次会停并提示手动）
+  const ar = s.auto_reconnect;
+  if (!isApple && ar && ar.active) info.textContent += " · 自动重连中";
+  else if (!isApple && ar && ar.stopped) info.textContent += " · 重连失败，点连接重试";
+
   // Apple TV 输入框聚焦徽标
   const badge = $("#kbFocus");
   if (isApple && s.appletv.kb_focus === "Focused") badge.classList.remove("hidden");
@@ -312,6 +402,79 @@ async function connect(target) {
     $("#connectBtn").disabled = false;
   }
 }
+
+/* ---------------- Android 无线调试扫描 ---------------- */
+// 无线调试设备（Android 11+）会广播配对 / 连接端口；老电视只开 5555 端口时不广播
+async function adbScan() {
+  const box = $("#adbScanList");
+  box.innerHTML = '<p class="hint">正在扫描局域网无线调试设备（约 5 秒）…</p>';
+  try {
+    const r = await api("/api/android/scan", {});
+    renderAdbScan(r.hosts || []);
+  } catch (e) {
+    box.innerHTML = "";
+    toast(e.message);
+  }
+}
+
+function adbScanRow(h) {
+  const row = document.createElement("div");
+  row.className = "atvrow";
+  const left = document.createElement("div");
+  left.className = "atvname";
+  // 广播内容可被伪造 → textContent，禁止 innerHTML
+  left.appendChild(document.createTextNode("📺 " + h.host + " "));
+  const ip = document.createElement("span");
+  ip.className = "atvip";
+  ip.textContent = "无线调试" + (h.pairing ? "（未配对）" : "");
+  left.appendChild(ip);
+  const btns = document.createElement("div");
+  btns.className = "atvbtns";
+
+  const conn = document.createElement("button");
+  conn.className = "btn primary tiny";
+  conn.textContent = "连接";
+  conn.onclick = () => connect(h.host + ":" + (h.connect || 5555));
+  btns.appendChild(conn);
+
+  if (h.pairing) {
+    const pair = document.createElement("button");
+    pair.className = "btn tiny";
+    pair.textContent = "配对";
+    pair.title = "Android 11+ 无线调试首次使用要先配对（码在电视设置里）";
+    pair.onclick = async () => {
+      const code = prompt("在电视「设置 → 网络调试」里查看 6 位配对码：", "");
+      if (!code) return;
+      pair.disabled = true;
+      try {
+        await api("/api/android/pair", { host: h.host, port: h.pairing, code });
+        log("已配对 " + h.host);
+        toast("配对成功，点「连接」", true);
+      } catch (e) {
+        log("⚠ " + e.message);
+        toast(e.message);
+      } finally {
+        pair.disabled = false;
+      }
+    };
+    btns.appendChild(pair);
+  }
+  row.appendChild(left);
+  row.appendChild(btns);
+  return row;
+}
+
+function renderAdbScan(hosts) {
+  const box = $("#adbScanList");
+  box.innerHTML = "";
+  if (!hosts.length) {
+    box.innerHTML = '<p class="hint">未发现无线调试设备：确认电视「设置 → 网络调试」已打开；老电视只开 5555 端口时不广播 mDNS，请直接输 IP。</p>';
+    return;
+  }
+  hosts.forEach((h) => box.appendChild(adbScanRow(h)));
+}
+
+$("#scanAdbBtn").addEventListener("click", adbScan);
 
 /* ---------------- ADBKeyboard 中文键盘 ---------------- */
 function renderIme(st) {
@@ -764,5 +927,6 @@ document.addEventListener("visibilitychange", () => {
   if (pageVisible) refreshStatus();
 });
 applyPrivacy();
+renderPhrases();
 refreshStatus();
 setInterval(() => { if (pageVisible) refreshStatus(); }, 8000);

@@ -30,7 +30,9 @@
       <div class="conn">
         <input id="targetInput" placeholder="电视 IP，如 192.168.1.50" spellcheck="false" autocomplete="off">
         <button id="connectBtn" class="btn primary">连接</button>
+        <button id="scanAdbBtn" class="btn" title="扫描局域网无线调试设备（老电视只开 5555 端口时不广播，仍需手输 IP）">🔍</button>
       </div>
+      <div id="adbScanList"></div>
       <div class="chips" id="recentChips"></div>
       <div class="chips" id="deviceChips"></div>
     </div>
@@ -108,6 +110,11 @@
         <button id="privacyBtn" class="btn tiny" aria-pressed="false">👁 隐私模式</button>
       </div>
       <p class="hint" id="privacyHint" hidden>隐私模式：发送的内容在日志里只显示 ••、输入框掩码显示 —— 在电视上输密码一类场景用，可随时关掉。</p>
+      <div class="brow">
+        <button id="pasteBtn" class="btn tiny">📋 粘贴发送</button>
+        <button id="micBtn" class="btn tiny" aria-pressed="false">🎤 语音</button>
+      </div>
+      <div class="brow" id="phraseRow"></div>
       <div class="brow" id="kbTools">
         <button id="clearBtn" class="btn">🧹 清空电视输入框</button>
         <button id="searchBtn" class="btn">🔍 电视搜索键</button>
