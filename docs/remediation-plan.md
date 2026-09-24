@@ -26,7 +26,7 @@
 | ✅ | ~~决定默认暴露面~~ → 已选「首启自动生成令牌」（见第二轮进度） | — | — | 已完成 |
 | P0 | 重启 8300 上的 LaunchAgent，让以上修复真正生效（当前运行实例仍是 9 月 10 日的旧代码） | 秒级 | 高 | 会打断正在用的遥控会话 |
 | P1 | 消灭 5 份副本：`build.gradle` 增加从根目录生成 `src/main/python` 的 `Copy` 任务（或直接符号链接），随后停止跟踪这些副本 | 中 | 高 | **必须跑一次 `gradle assembleDebug` 验证**，本轮无构建验证 |
-| P1 | 重建 `android-native/ATVRemote-native.apk`（现含过期前端） | 中 | 高 | 同上（需 SDK + JDK17） |
+| ✅ | ~~重建 `android-native/ATVRemote-native.apk`~~ → 已用降级参数重建并替换 | — | — | 已完成（见第二轮进度 O5） |
 | P2 | `atv_backend._call()` 不要把 RLock 横跨 12s 等待（电视休眠会堵住按键） | 中高 | **低**（涉及 pyatv 线程安全） | 先确认 `interface.AppleTV` 可否并发；否则改成「超时不重试 + 快速失败」这一半可先行 |
 | P2 | 加 CI（`.github/workflows/check.yml` 跑 `./check.sh`）或 pre-commit 钩子 | 低 | 高 | 需确认你希望在哪一层强制 |
 | P3 | 构建可移植性：SDK/JDK 路径与 `arm64-apple-macos26.0` 参数化、端口与默认设备地址不再硬编码（8 处） | 中 | 高 | 换机验证才有意义 |
@@ -52,7 +52,7 @@
 | 项 | 状态 | 证据 |
 |---|---|---|
 | O1 消灭副本 | **机制已落地** | `android-native/app/build.gradle` 的 `syncPythonSrc`（Copy 任务，`preBuild.dependsOn`）从根目录生成副本；5 份副本已停止跟踪并 gitignore；标记传播实测（改根 `static/style.css` → 副本随之更新） |
-| O1/O5 APK 重建 | **阻塞（网络）** | chaquo.com 的 Android wheel 源在本机双路不通（直连 000、系统代理 503），pyatv 0.18 依赖的 `cryptography>=44` / `chacha20poly1305>=0.13` / `pydantic-core` 的 Android wheel 只在 Chaquo 提供；缓存里只有 0.13.2 时代的旧闭包。网络可用后 `./gradlew assembleRelease` 即可刷新 checked-in APK |
+| O5 APK 重建 | **完成（降级版）** | chaquo.com 仍双路不通，改用 `-PnoAppletv`（跳过 pyatv，Apple TV-on-Android 关闭、Android TV 全功能）+ `-PpypiMirror`（qrcode 走腾讯镜像）重建：`ATVRemote-native.apk` 已换成新构建（27MB），验收通过 —— `app.imy` 内 `static/*` 三件与根目录逐字节一致、`server.pyc`/`atv_backend.pyc` 头部源码尺寸与当前文件相符、qrcode 在 `requirements-common.imy`、pyatv 确认不在包内。chaquo.com 恢复后去掉两个参数重打即可补回 Apple TV 功能 |
 | O3 锁横跨 12s | **半程（用户感知已闭环）** | 「快速失败」半边已落地（`atv_backend._call` 进锁前判断超时窗口，`tests/test_atv_fastfail.py` 覆盖）；结构性放开 RLock 仍需确认 pyatv 并发安全，维持原状 |
 | O4 CI | **完成** | `.github/workflows/check.yml`（push/PR 跑 `./check.sh`）；`check.sh` 增加 `.venv` 下的 unittest（覆盖 pyatv 路径） |
 | O6 可移植性 | **完成（本次可验证部分）** | `android/build.sh` 的 SDK/build-tools/platform/JDK 全部可探测与环境变量覆盖；`make_icon.swift` 去掉绝对路径；`strings.xml` 不再预填某台机器的 IP；`Info.plist` 最低系统版本与构建目标对齐为 26.0；Gradle wrapper 钉 8.14.3（README 原「仓库里没有 gradlew」已过时） |

@@ -26,7 +26,15 @@ python3 server.py        # 主入口，启动 Web 服务（默认 0.0.0.0:8300�
 
 ## 构建路径
 
-- **Android APK**: `./android/build.sh`（SDK/JDK 路径均可由 `ANDROID_HOME` / `JAVA_HOME` 覆盖，
+- **Android APK**: `./android/build.sh`
+- **Android 原生 APK**: `android-native/gradlew assembleRelease`（Chaquopy 打包 Python 引擎）
+  - `syncPythonSrc` 把根目录的 `server.py` / `atv_backend.py` / `static/` 拷进
+    `app/src/main/python/`；除 `preBuild.dependsOn` 外，还必须给 `merge*PythonSources`
+    补 `dependsOn syncPythonSrc`，否则 Gradle 并行/增量构建会用空目录或旧副本 merge
+    （「新后端 + 旧前端」幽灵就是这么回来的）
+  - chaquo.com 不可达时的降级构建：`-PnoAppletv`（跳过 pyatv，Android TV 全功能保留）+ 
+    `-PpypiMirror=<可达镜像>`（纯 Python 的 qrcode 走镜像装），验收口径：`app.imy` 里
+    `static/*` 与根目录逐字节一致、`*.pyc` 头部记录的源码尺寸与当前文件相符（SDK/JDK 路径均可由 `ANDROID_HOME` / `JAVA_HOME` 覆盖，
   默认自动探测；版本号从根目录 `VERSION` 注入 manifest）
 - **Android 原生 APK**: `cd android-native && ./gradlew assembleRelease`
   （**必须用 wrapper**：已钉 Gradle 8.14.3，AGP 8.11 与系统里的 Gradle 9.x 不兼容）

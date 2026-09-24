@@ -57,14 +57,32 @@ tasks.register("syncPythonSrc", Copy) {
     into "src/main/python"
 }
 preBuild.dependsOn "syncPythonSrc"
+// Chaquopy 的 merge*PythonSources 直接把 src/main/python 当输入，但它不知道这个目录
+// 是 syncPythonSrc 的产物（任务图里没有依赖）。不补这条，并行/增量构建时可能用手工
+// 副本甚至空目录去 merge，重新引入「新后端 + 旧前端」的幽灵。
+tasks.matching { it.name ==~ /merge.*PythonSources/ }.configureEach {
+    dependsOn "syncPythonSrc"
+}
 
 chaquopy {
     defaultConfig {
         // 版本必须与 requirements.txt 一致：同一份 server.py/atv_backend.py 要能在
         // 不 pin 的 0.13 与 0.18 之间表现一致，靠运气不行（atv_backend 的兼容分支已经踩到）。
         pip {
-            install "pyatv==0.18.0"
-            install "qrcode==8.2"
+            // 纯 Python 包（qrcode）没有平台原生 wheel，任何镜像都能提供；chaquo.com 挂掉
+            // 时用可达镜像兜底（不影响需要 Android 原生 wheel 的包——那种只能在 chaquo 拿）。
+            if (project.hasProperty("pypiMirror")) {
+                options "--index-url", project.property("pypiMirror")
+            }
+            if (project.hasProperty("noAppletv")) {
+                // chaquo.com 不可达时的降级构建：跳过 pyatv（Android 侧 Apple TV 功能关闭，
+                // Android TV 全功能不受影响——server.py/atv_backend.py 对 pyatv 导入失败
+                // 即优雅降级）。只为刷新内嵌的前后端，别当常规发布用。
+                install "qrcode==8.2"
+            } else {
+                install "pyatv==0.18.0"
+                install "qrcode==8.2"
+            }
         }
     }
 }

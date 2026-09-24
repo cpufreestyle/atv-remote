@@ -305,6 +305,20 @@ cd android-native
 ```
 
 > 首次构建 Chaquopy 会下载 Python 解释器和 pip 依赖（pyatv、qrcode，版本跟 `requirements.txt` 对齐），耗时较长。
+
+**chaquo.com 不可达时的降级构建**（只为刷新内嵌的前后端，不附带 Apple TV 功能）：
+
+```bash
+./gradlew assembleRelease -PnoAppletv -PpypiMirror=https://mirrors.cloud.tencent.com/pypi/simple
+```
+
+- `-PnoAppletv`：跳过 pyatv（Android 侧的 Apple TV 遥控不可用；Android TV 全功能不受影响，
+  `server.py` / `atv_backend.py` 对 pyatv 导入失败即优雅降级）；
+- `-PpypiMirror`：纯 Python 包（qrcode）改走可达镜像——chaquo.com 挂着时整个 pip 索引都取不到，
+  没有 Android 原生 wheel 的包任何镜像都能装；
+- 产物 `app/build/outputs/apk/release/app-release.apk` 拷贝为 `android-native/ATVRemote-native.apk`
+  即替代旧包（该文件本地产物，不进 git）；
+- 网络恢复后去掉这两个参数即可构建带 pyatv 的完整版。
 > `src/main/python/` 下的副本**由构建自动生成**：`syncPythonSrc`（Copy 任务，挂在 `preBuild` 前）
 > 每次构建从根目录重新拷贝 `server.py` / `atv_backend.py` / `static/`，这几份已不在 git 里跟踪
 > （单一事实来源是根目录）。不跑构建的手工刷新仍走 `./sync-native.sh`；`./check.sh` 逐字节
