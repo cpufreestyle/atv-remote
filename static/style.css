@@ -681,3 +681,24 @@ body.disc [data-needs-device] { opacity: .45; filter: saturate(.5); }
   #macrosCard, #sleepCard { break-inside: avoid; }
   #log { max-width: 960px; }
 }
+
+/* ---------------- 宏预演（dry-run） ---------------- */
+.mdry { margin: var(--sp-2) 0 0; display: grid; gap: 3px; }
+.mdrysum { font-size: 12.5px; padding: var(--sp-1) var(--sp-2); background: var(--card2);
+  border-radius: var(--r-sm); border-left: 3px solid var(--ok); color: var(--muted); }
+.mdrysum.warn { border-left-color: var(--warn); color: var(--warn-text); }
+.mdrysum.err { border-left-color: var(--danger); color: var(--danger-text); }
+.mdry .drow { display: grid; grid-template-columns: auto auto 1fr auto; gap: var(--sp-2);
+  align-items: baseline; font-size: 12.5px; padding: 3px var(--sp-2);
+  background: var(--card2); border-radius: 0 var(--r-sm) var(--r-sm) 0; border-left: 3px solid var(--line); }
+.mdry .drow.ok { border-left-color: var(--ok); }
+.mdry .drow.warn { border-left-color: var(--warn); }
+.mdry .drow.err { border-left-color: var(--danger); }
+.mdry .drow .idx { color: var(--faint); font-size: 11px; }
+.mdry .drow .lvl { font-size: 11px; }
+.mdry .drow.ok .lvl { color: var(--ok-text); }
+.mdry .drow.warn .lvl { color: var(--warn-text); }
+.mdry .drow.err .lvl { color: var(--danger-text); }
+.mdry .drow .dtext { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mdry .drow .dnote { color: var(--faint); font-size: 11.5px; max-width: 46%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -235,7 +235,12 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
         <div class="brow">
           <button id="macroRunCustomBtn" class="btn primary">▶ 运行文本框里的宏</button>
           <button id="macroSaveCustomBtn" class="btn">💾 存为本机宏</button>
+          <button id="macroDryBtn" class="btn" title="本地静态检查，不发送、不执行（⌘/Ctrl+Enter）">🔍 预演</button>
         </div>
+        <!-- 预演结果：规则逐条镜像服务端 validate_macro_steps（Terraform plan/apply 同源）；
+             整块 hidden——没点过预演就不占地方 -->
+        <div id="macroDry" class="mdry hidden" aria-live="polite"></div>
+        <p class="hint">预演不执行任何操作：只按服务端同一套规则静态检查，给出每步结果与预计耗时。</p>
       </details>
     </section>
 

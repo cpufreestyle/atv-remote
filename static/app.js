@@ -967,6 +967,202 @@ APPS.forEach((a) => {
 });
 renderMacroSteps();
 
+/* ---------------- 宏预演（dry-run） ----------------
+   学 Ansible --check / Terraform plan：点「预演」不发请求、不碰设备，只在本地把这条宏
+   按服务端 validate_macro_steps（server.py）的同一套规则过一遍，告知每步会怎样、
+   整条要跑多久、哪里会被拒。计划与执行同源才不会骗人——下面常量与 server.py 一一
+   对应，tests/test_macro_dryrun.py 逐项比对，改一边忘另一边测试就红。 */
+/* ===== macro-dry-run:begin（纯函数段，node 单测 harness 原样抽取执行；禁引用 DOM / 全局态） ===== */
+const MACRO_DRY_KEY_NAMES = { 3: "主页", 4: "返回", 19: "上", 20: "下", 21: "左", 22: "右",
+  23: "OK", 24: "音量+", 25: "音量-", 66: "回车", 67: "退格", 85: "播放/暂停", 86: "停止",
+  87: "下一曲", 88: "上一曲", 89: "快退", 90: "快进", 164: "静音" };
+const MACRO_MAX_STEPS_FE = 20;                                 // = server.py MACRO_MAX_STEPS
+const MACRO_MAX_DELAY_FE = 10000;                              // = server.py MACRO_MAX_DELAY
+const MAX_KEYCODES_FE = 32;                                    // = server.py MAX_KEYCODES
+const MAX_TEXT_LEN_FE = 5000;                                  // = server.py MAX_TEXT_LEN
+const MACRO_STEP_TYPES_FE = ["key", "text", "app"];            // = server.py MACRO_STEP_TYPES
+const MACRO_APP_ID_RE_FE = /^[A-Za-z][A-Za-z0-9_.\-]+$/;       // = server.py APP_ID_RE
+const MACRO_STEP_EST_FE = { key: 200, text: 600, app: 1200 };  // 单步耗时估值 ms（非服务端行为）
+const macroDryFmtSec = (ms) => (Math.round(ms / 100) / 10).toString().replace(/\.0$/, "") + "s";
+
+/* 与服务端 _macro_step_delay 同规则：非数字按 0、钳到 [0, MACRO_MAX_DELAY]。
+   返回 { ms, warn }——warn 是「服务端不拒绝、但和你想要的不一样」的那种事。 */
+function macroDryDelay(st) {
+  const d = st.delay;
+  if (typeof d !== "number" || !Number.isFinite(d)) return { ms: 0, warn: "延时不是数字，按 0 处理" };
+  if (d < 0) return { ms: 0, warn: "负延时按 0 处理" };
+  if (d > MACRO_MAX_DELAY_FE) {
+    return { ms: MACRO_MAX_DELAY_FE, warn: `延时 ${macroDryFmtSec(d)} 超过上限，会被钳到 ${macroDryFmtSec(MACRO_MAX_DELAY_FE)}` };
+  }
+  return { ms: Math.round(d), warn: "" };
+}
+
+/* 纯函数：m = 解析后的宏对象，env = { imeCurrent, curType, knownPkgs }。
+   返回 { rows: [{ i, level, text, note }], errs, warns, steps, totalMs, ok }。 */
+function macroDryRun(m, env) {
+  env = env || {};
+  const imeCurrent = !!env.imeCurrent;
+  const curType = env.curType || "";
+  const knownPkgs = env.knownPkgs || [];
+  const rows = [];
+  let errs = 0, warns = 0, totalMs = 0;
+  const add = (i, level, text, note) => {
+    rows.push({ i, level, text, note: note || "" });
+    if (level === "err") errs++;
+    else if (level === "warn") warns++;
+  };
+  if (typeof m !== "object" || m === null || Array.isArray(m)) {
+    add(0, "err", "顶层必须是对象（含 name 和 steps）", "服务端会整条拒绝");
+    return { rows, errs, warns, steps: 0, totalMs: 0, ok: false };
+  }
+  const steps = Array.isArray(m.steps) ? m.steps : null;
+  if (!steps || steps.length < 1 || steps.length > MACRO_MAX_STEPS_FE) {
+    add(0, "err", `宏步骤须为 1~${MACRO_MAX_STEPS_FE} 项的数组（当前 ${steps ? steps.length : "不是数组"}）`,
+      "服务端会整条拒绝，下面的逐条结果仅供参考");
+  }
+  if (!m.name) add(0, "warn", "这条宏没有 name", "运行记录里不好认；存为本机宏时也会被拒");
+  (steps || []).forEach((st, idx) => {
+    const i = idx + 1;
+    if (typeof st !== "object" || st === null || Array.isArray(st)) {
+      add(i, "err", "步骤必须是对象", "服务端会拒绝");
+      return;
+    }
+    const t = st.type || "delay";   // 只带 delay 的步骤 = 纯等待（同服务端口径）
+    const dl = "delay" in st ? macroDryDelay(st) : { ms: 0, warn: "" };
+    totalMs += dl.ms;
+    if (MACRO_STEP_TYPES_FE.indexOf(t) < 0 && t !== "delay") {
+      add(i, "err", `类型 ${t} 不支持（可用 ${MACRO_STEP_TYPES_FE.join(" / ")}）`,
+        (dl.warn ? dl.warn + "；" : "") + "服务端会拒绝");
+      return;
+    }
+    if (t === "key") {
+      const raw = "codes" in st ? st.codes : st.code;
+      const codes = Array.isArray(raw) ? raw : [raw];
+      const text = `按键 ${codes.map((c) => MACRO_DRY_KEY_NAMES[c] || `键码 ${c}`).join("、")}${codes.length > 1 ? ` ×${codes.length}` : ""}`;
+      totalMs += MACRO_STEP_EST_FE.key;
+      if (!codes.length || codes.length > MAX_KEYCODES_FE) {
+        add(i, "err", text, (dl.warn ? dl.warn + "；" : "") + `键码数量须为 1~${MAX_KEYCODES_FE} 个`);
+      } else if (!codes.every((c) => /^[0-9]+$/.test(String(c).replace(/^-+/, "")))) {
+        add(i, "err", text, (dl.warn ? dl.warn + "；" : "") + "键码必须是数字");
+      } else {
+        const neg = codes.some((c) => Number(c) < 0);
+        const warn = neg || !!dl.warn;   // 延时告警也要把整行降级，别让「会被钳到 10s」看起来一切正常
+        const knotes = [];
+        if (dl.warn) knotes.push(dl.warn);
+        if (neg) knotes.push("负键码在设备上会执行失败");
+        add(i, warn ? "warn" : "ok", text, knotes.join("；"));
+      }
+      return;
+    }
+    if (t === "text") {
+      const text = typeof st.text === "string" ? st.text : "";
+      totalMs += MACRO_STEP_EST_FE.text;
+      if (!text.trim()) {
+        add(i, "err", "输入空文本", (dl.warn ? dl.warn + "；" : "") + "服务端会拒绝");
+        return;
+      }
+      if (text.length > MAX_TEXT_LEN_FE) {
+        add(i, "err", `输入「${text.slice(0, 12)}…」`, (dl.warn ? dl.warn + "；" : "") + `文本超长（${text.length} > ${MAX_TEXT_LEN_FE}）`);
+        return;
+      }
+      const notes = [];
+      if (dl.warn) notes.push(dl.warn);
+      if (/[^\x20-\x7E]/.test(text) && !imeCurrent && curType !== "appletv") {
+        notes.push("含非 ASCII 且当前输入法不是 ADBKeyboard，中文/Emoji 会静默丢失");
+      }
+      if (/[\r\n]/.test(text)) notes.push("换行会被替换成空格再发送");
+      add(i, notes.length ? "warn" : "ok", `输入「${text.slice(0, 16)}${text.length > 16 ? "…" : ""}」`, notes.join("；"));
+      return;
+    }
+    if (t === "app") {
+      const pkgs = (st.pkg ? [st.pkg] : []).concat(Array.isArray(st.pkgs) ? st.pkgs : []);
+      const good = pkgs.filter((p) => typeof p === "string" && MACRO_APP_ID_RE_FE.test(p));
+      totalMs += MACRO_STEP_EST_FE.app;
+      if (!good.length) {
+        add(i, "err", "启动应用：包名不合法", (dl.warn ? dl.warn + "；" : "") + "pkg/pkgs 至少要有一个形如 com.foo.bar 的包名");
+        return;
+      }
+      const more = good.length > 1 ? `（${good.length} 个候选包，成功一个就停）` : "";
+      const unknown = good.filter((p) => knownPkgs.indexOf(p) < 0);
+      const notes = [];
+      if (dl.warn) notes.push(dl.warn);
+      if (unknown.length) {
+        notes.push(`${unknown.join("、")} 不在常见列表，设备上可能没装（失败不中断整条宏）`);
+      }
+      add(i, notes.length ? "warn" : "ok", `启动 ${good[0]}${more}`, notes.join("；"));
+      return;
+    }
+    add(i, dl.warn ? "warn" : "ok", `等 ${macroDryFmtSec(dl.ms)}`, dl.warn);
+  });
+  return { rows, errs, warns, steps: steps ? steps.length : 0, totalMs, ok: errs === 0 };
+}
+/* ===== macro-dry-run:end ===== */
+
+/* 预演的 DOM 侧：环境信息（输入法 / 设备类型 / 常见包名）只在调用时取，
+   上面的纯函数段因此可以整段搬进 node 单测。行内容全部来自用户 JSON，一律 textContent。 */
+const KNOWN_PKGS_FOR_DRY = () => Array.from(new Set(APPS.map((a) => a.pkg).concat(Object.keys(NP_APPS))));
+
+function macroShowDryRun() {
+  const box = $("#macroDry");
+  let m;
+  try {
+    m = macroParse();
+  } catch (e) {
+    box.classList.remove("hidden");
+    box.textContent = "";
+    const s = document.createElement("p");
+    s.className = "mdrysum err";
+    s.textContent = "⚠ JSON 解析失败：" + e.message;
+    box.appendChild(s);
+    return;
+  }
+ const r = macroDryRun(m, {
+   imeCurrent: imeState.current,
+   curType: status.curType,
+   knownPkgs: KNOWN_PKGS_FOR_DRY(),
+ });
+  // 忘了这行 = 内容渲染好了但面板仍带 hidden，用户点了「预演」什么都没发生
+  box.classList.remove("hidden");
+  box.textContent = "";
+  const sum = document.createElement("p");
+  sum.className = "mdrysum " + (r.errs ? "err" : r.warns ? "warn" : "ok");
+  const parts = [`${r.steps} 步`, `预计约 ${macroDryFmtSec(r.totalMs)}`];
+  if (r.errs) parts.push(`${r.errs} 处会被服务端拒绝`);
+  if (r.warns) parts.push(`${r.warns} 处提醒`);
+  sum.textContent = (r.errs ? "✕ " : r.warns ? "⚠ " : "✓ ") + parts.join(" · ")
+    + (r.errs ? "——先修再跑" : r.warns ? "——可以跑，提醒看着办" : "——可以放心跑");
+  box.appendChild(sum);
+  r.rows.forEach((row) => {
+    const el = document.createElement("div");
+    el.className = "drow " + row.level;
+    const idx = document.createElement("span");
+    idx.className = "idx";
+    idx.textContent = row.i ? String(row.i) : "·";
+    const lvl = document.createElement("span");
+    lvl.className = "lvl";
+    lvl.textContent = row.level === "err" ? "✕" : row.level === "warn" ? "⚠" : "✓";
+    const tx = document.createElement("span");
+    tx.className = "dtext";
+    tx.textContent = row.text;
+    tx.title = row.text + (row.note ? " — " + row.note : "");
+    const note = document.createElement("span");
+    note.className = "dnote";
+    note.textContent = row.note;
+    el.append(idx, lvl, tx, note);
+    box.appendChild(el);
+  });
+  buzz(r.errs ? 30 : 12);
+}
+
+$("#macroDryBtn")?.addEventListener("click", macroShowDryRun);
+// Ctrl/Cmd + Enter 预演：与「运行」分开——预演是零副作用的
+$("#macroText").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    macroShowDryRun();
+  }
+});
+
 /* ---------------- 正在播放（Now Playing） ----------------
    学 Google TV 官方遥控 / Kodi Remote 的常驻信息条。数据源 /api/nowplaying
    （服务端 dumpsys media_session，3.5s 缓存 + 休眠不查）；轮询蹭 8s 状态轮询的
