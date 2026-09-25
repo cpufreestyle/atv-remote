@@ -1174,3 +1174,66 @@ toast(msg)，而它是「一条盖一条」：上一条永远被下一条顶掉�
   - IP / MAC 均为 span 且 innerHTML === textContent（未按 HTML 渲染）；discover 异常 → 提示「⚠ 读取本机 ARP 表失败：…」。
 - 落盘 /tmp/atv-wol-1-list.png、/tmp/atv-wol-2-send.png、/tmp/atv-wol-3-online.png。
 
+
+## 第二十三轮：收藏夹 / 快捷启动（1.26.0 / versionCode 27）
+
+### 学习源
+- Speed Dial（老牌扩展）+ 手机启动器：把常用项钉成一键直达的网格。
+- VS Code Favorites：把文件 / 符号标星，侧栏聚合，不用记路径。
+- Plex「Continue Watching」/ 视频 App「我的追剧」：把正在看的置顶，省掉重复查找。
+- 共同点：**减少重复查找**——高频项固定到最省手的位置，而不是每次翻长列表。
+
+### 为什么选它
+- 遥控器真正高频的其实就几个 App（Netflix / YouTube / Music…），但现在每换设备、每开一次「📦 应用」都要重新找。
+- 现有 card 全是「设备侧」能力（宏 / WoL / 触控板 / 通知…），缺一个「跨设备复用的个人常用」入口，收藏夹正好补这段。
+
+### 设计
+- 一张独立卡片 `#favCard`，置于「📦 应用」上方：徽标显示已固定数量、空态带引导 hint。
+- 星标是唯一入口：预设列表 + Apple TV 列表每行右侧一个 ★（`favStarBtn`），点一下固定 / 再点取消。
+- 上限 `FAV_MAX = 8`：满了不硬塞，toast「收藏夹最多 8 个，先取消一个再固定」。
+- 满员语义要和「正常取消」分开：`favToggle` 满了返回 `null`（假失败），固定返回新条目、取消返回删后数组。
+- 名称解析四级兜底 `favResolve`：pin 名 → 预设名 → 最近用名 → 包名末段（`com.foo.bar` → `bar`）——别渲染空行。
+- 顺序即优先级：新固定的排最前。收藏行 = 名字按钮（`launchApp`）+ ✕（取消）。
+- **只活在浏览器**：收藏写 `localStorage` 的 `atv.favApps`，不进 `state.json`——state.json 会进 `bundle.tgz`，可重放内容不进敏感文件。
+- 名字 / IP 一律 `textContent`（局域网广播可伪造，禁 innerHTML）；每个固定项再 push 一条命令面板项（`fav:<pkg>`，group「收藏」、icon ★）。
+- **零新增后端**：`server.py` / `atv_backend.py` 一行不改（收藏是纯客户端偏好）。
+
+### 落地
+- static/app.js：
+  - 纯函数段 `/* ===== favorites:begin ===== */`（255 行）→ `/* ===== favorites:end ===== */`（309 行）：`FAV_MAX=8`（270）/ `favNorm` / `favIsPinned` / `favToggle`（满员 null）/ `favResolve`。
+  - DOM 胶水（2703 起）：`FAV_KEY`（2704）/ `favLoad` + `favSave` / `favTogglePin`（满员 toast）/ `favRender`（`#favList` 行 `.atvrow.favrow`、`#favCount` badge、`#favEmpty` 空态、统一刷新所有 `.favstar` 的 aria-pressed/★☆）/ `favStarBtn` / `renderAppPresets`（`#apps` 行式 + class `rows`）。
+  - `loadAtvApps()`（2506）：ATV 列表每行加星标。boot：`renderAppPresets(); renderRecentApps(); favRender();`。
+  - 命令面板（3532，rapp 之后）：每个收藏项 push `("fav:"+pkg, "收藏", "★", …)`。
+- static/index.html：`#favCard`（186，在 `#appsCard` 前），含 `#favList` / `#favEmpty` / `#favCount`。
+- static/style.css：末尾「收藏夹」段（814 起）：`.favrow .btn`、`.favrow .btn.tiny`、`.favstar[aria-pressed="false"]`（muted）/ `[aria-pressed="true"]`（warn-text）。
+- tests/fav_harness.js（新）：5 用例 → ALL_FAV_CASES_PASSED。
+- tests/test_favorites.py（新）：16 个 test 方法，含 `test_storage_key_is_defined_once`。
+- VERSION：versionName=1.26.0 / versionCode=27。
+
+### 踩到的坑
+- **`FAV_KEY` 漏定义被 try 吞掉（本轮最阴的 bug）**：`FAV_KEY` 只在 `favLoad`/`favSave` 里被 `localStorage.getItem(FAV_KEY)` 用到，却从没定义；`favLoad` 的 try 吞掉 ReferenceError → 页面不崩、星标照切换，但收藏**永远不落盘**。用法齐全、功能看着对，就是不持久化，肉眼和普通断言都查不出。只有两招拦得住：`test_storage_key_is_defined_once`（断言常量「定义恰好一次」）+ CDP 的 `no_undefined_reference_errors` 哨兵。
+- **`Array.prototype.slice.call(new Set(...))` 返回空**：Set 没有 `length`，要 `Array.from(new Set(...))`，否则去重后数组空了。
+- **`.favrow .btn` 会同时命中 ✕**：✕ 也是 `.btn`，选择器要 `:not(.tiny)` 才能只点名字按钮。
+- **坏存储要清洗**：localStorage 里躺历史脏数据时（`[null,{pkg:""},{pkg:"   "},Dup,Again,42,Keep]`），`favNorm` 要滤空 / 去重 / 归一化，实测归一成 `["★ Dup","★ Keep"]`。
+- **双态色要先有个 pin**：验证 pinned / unpinned 星颜色不同前，得先固定一个预设项，否则没有 pinned 星可比。
+- **CDP 脚本自身的大小写**：`T16`/`t16` 拼写不一致也会炸，脚本错误和产品错误要分开看。
+
+### 验证
+- python3 -c "import server; import atv_backend"、node --check static/app.js + sw.js 通过。
+- ./sync-native.sh：280 单测 OK (skipped=7) + 内嵌副本逐字节一致 → ALL CHECKS PASSED。
+- node harness 5/5 → ALL_FAV_CASES_PASSED。
+- CDP 实测（http://127.0.0.1:8411/，Network.setCacheDisabled）64 项断言全过：
+  - 空态（无行 / badge `—` / hint 含「收藏」）→ 固定（行 `★ YouTube`、badge 1、预设星 aria/text 同步、localStorage 落盘、toast「★ 已收藏 YouTube」）；
+  - textContent-only（行 innerHTML === textContent）；
+  - 点收藏行 → `launchApp`；✕ 取消（行清空 / 星回 ☆ / 存储清空 / toast「已取消收藏」）；
+  - 预设星再固定；`favStarBtn` 元数据；
+  - 满员：6 预设 + 第 8 个 accepted，第 9 个返回 false + toast「收藏夹最多 8 个…」，badge / 存储仍 8；
+  - 腾位后固定未知包名 → 兜底 `★ lastseg`；
+  - 坏存储清洗（… → `["★ Dup","★ Keep"]`，badge 2）；
+  - ATV 列表行 + 星标固定（Music 置顶）；
+  - 命令面板 3 条（group 收藏 / icon ★ / hint 收藏夹 / label 均以（收藏）结尾 / terms 含 favorite / run 真启动）；
+  - 纯函数（FAV_MAX=8 / norm 去重 / ispinned / toggle 满员 null / resolve 优先级）；
+  - 星标双态颜色不同：pinned `rgb(145, 99, 8)` vs unpinned `rgb(92, 99, 112)`；
+  - 刷新后 4 个收藏仍在、badge 4、`★ Netflix` 置顶、YouTube 星回 false、Netflix 星 true、存储不重复；
+  - `no_uncaught_exceptions` / `no_undefined_reference_errors` 均为空。
+- 落盘截图 /tmp/atv-fav-1-pin.png、/tmp/atv-fav-2-full.png、/tmp/atv-fav-3-atvstar.png、/tmp/atv-fav-4-reload.png；明细 /tmp/atv-fav-result.json。
