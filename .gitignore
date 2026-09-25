@@ -42,3 +42,4 @@ android-native/ATVRemote-native.apk
 
 # 系统
 .DS_Store
+.playwright-cli/
