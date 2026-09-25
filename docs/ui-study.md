@@ -312,3 +312,44 @@ Google TV 官方遥控 / Kodi Remote：顶部常驻 now-playing 条——片名�
   Apple TV 类型保持隐藏、播放暂停按钮 POST `{"type":"key","code":85}` 且无设备时
   toast 报错不崩；深浅两主题截图过
 - `./check.sh` 全绿 + `./sync-native.sh` 副本一致
+---
+
+# 第九轮：音量 OSD（2026-09-25 晚）
+
+## 学习源
+
+Android TV / Google TV 官方遥控与 Apple TV Remote：按音量键立刻弹出 OSD
+（图标 + 格子 + 数字），约 1 秒后淡出。本项目的音量键此前是「盲按」——
+手机端零反馈，只能抬头看电视。
+
+## 设计
+
+- **钩子只挂一处**：所有音量入口（按键区 🔊＋/－/🔇、物理键盘媒体键、
+  触摸板双指、长按连发）最终都汇到 `sendKey()`，于是在 `sendKey` 里按
+  `VOL_KEYS = {24, 25, 164}` 调 `volBump()`——本地先画 OSD，不等 adb 回包。
+- **乐观步进 + 真值校正**：本地按 `level+1`（静音键直接进静音态）先推一格；
+  220ms 防抖后打 `/api/volume` 取真值校正，1.6s 无新按键自动隐藏。
+- **后端 `/api/volume`**：`media volume --stream 3 --get` 为主通道，
+  `dumpsys audio` 的 STREAM_MUSIC 段兜底；`VOLUME_TTL=0.8` 秒缓存，
+  长按连发不会把 adb 打爆；非 Android 设备返回 `{"connected": false}`。
+- **降级**：设备断开/不支持时退化成纯图标模式（不出格子）；
+  `prefers-reduced-motion` 下停过渡动画；配色全部走既有令牌。
+
+## 实测抓到的 bug（CDP 真机浏览器）
+
+静音后 OSD 只闪约 60ms 就被真值校正抹掉。链路：`media volume --get`
+**不返回静音位**，后端原实现默认 `muted: False`，前端 `Vol.muted = !!v.muted`
+把「静音」清成了格数。修复为三态：
+
+- 后端 `muted` 默认 `None`（未知），只有 `dumpsys audio` 读到
+  `Muted:` / `Mute count:[1-9]` 才给布尔值；
+- 前端 `typeof v.muted === "boolean"` 才采纳真值，否则保留本地乐观值；
+- 单测补 `assertIsNone` + `test_dumpsys_mute_state_reaches_frontend` 钉住。
+
+## 验证
+
+- `tests/test_volume.py` 新增 14 个用例（解析 5 + volume() 查询 6 + 路由 3，FakeAdb 替身）
+- CDP 实测：静音后 80ms / 780ms 均为 `{cls:"vosd ismuted", icon:"🔇", num:"静音", fill:"53%"}`，
+  不再回弹；音量 8/15 正常
+- `curl /api/volume` → `{"connected":true,"supported":true,"level":8,"max":15,"muted":null}`
+- `./check.sh` 全绿（72 单测）+ `./sync-native.sh` 副本一致
