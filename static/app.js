@@ -1447,6 +1447,29 @@ $("#clearMacrosBtn").addEventListener("click", () => {
   toast("自定义宏已清空", true);
 });
 $("#coachBtn").addEventListener("click", () => startCoach());   // 随时能重看引导
+
+/* ---------------- 主题 ----------------
+   默认跟随系统（prefers-color-scheme），但看电视常在暗房间、手机却是浅色模式——
+   所以给显式选择。写 html[data-theme]，CSS 里属性选择器特异性压过媒体查询；
+   head 内联脚本负责首帧不闪，这里负责同步 UI 与持久化。 */
+const THEME_KEY = "atv.theme";
+function applyTheme(v) {
+  if (v) document.documentElement.dataset.theme = v;
+  else delete document.documentElement.dataset.theme;
+  $$("#themeSeg button").forEach((b) => {
+    const on = b.dataset.themeVal === (v || "");
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+}
+$$("#themeSeg button").forEach((b) => b.addEventListener("click", () => {
+  const v = b.dataset.themeVal;
+  if (v) localStorage.setItem(THEME_KEY, v);
+  else localStorage.removeItem(THEME_KEY);
+  applyTheme(v);
+  buzz(12);
+}));
+applyTheme(localStorage.getItem(THEME_KEY));
 $("#appSettingsBtn").addEventListener("click", () => {
   $("#phraseCount").textContent = phrases.length;
   renderHapticBtn();

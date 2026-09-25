@@ -53,8 +53,13 @@
    Radix 浅色档方法论：同一色相编号步进不变、明暗整体反转——实心交互仍是「该色最深档」，
    低对比文字用中间档，背景用最浅两档。深色下的「发亮」语义色在浅色下要压暗才能保证
    对比度，所以 ok/warn/danger 的文字值单独覆写，不是简单反色。 */
-@media (prefers-color-scheme: light) {
-  :root {
+/* ---------- 浅色主题 ----------
+   两条路径共用同一套令牌（必须同步改）：
+   1. 显式选择：html[data-theme="light"]——属性选择器特异性 (0,2,0) 压过 :root，
+      所以用户在设置了里选了浅色，就算系统是深色也拦住媒体查询；
+   2. 跟随系统：@media 里用 :not([data-theme])——用户一旦显式选过，媒体查询退场。
+   深色是 :root 基座，显式 dark 不需要重复声明。 */
+:root[data-theme="light"] {
     --bg:        hsl(220, 24%, 97%);
     --card:      hsl(220, 20%, 100%);
     --card2:     hsl(220, 18%, 95%);
@@ -83,9 +88,39 @@
     --key-edge:    0 2px 0 hsl(220 14% 78% / .9);
     --scrim:       rgba(15, 23, 42, .45);
     --log-bg:      hsl(220 20% 98% / .94);
-  }
 }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --bg:        hsl(220, 24%, 97%);
+    --card:      hsl(220, 20%, 100%);
+    --card2:     hsl(220, 18%, 95%);
+    --card3:     hsl(220, 16%, 90%);
+    --line:      hsl(220, 14%, 86%);
+    --line-soft: hsl(220, 14%, 91%);
+    --text:      hsl(220, 20%, 14%);
+    --muted:     hsl(220, 10%, 40%);
+    --faint:     hsl(220, 8%, 56%);
 
+    --accent:      hsl(212, 90%, 44%);
+    --accent-solid:hsl(212, 95%, 48%);
+    --accent-soft: hsl(212, 80%, 92%);
+    --accent-text: hsl(212, 85%, 36%);
+    --ok:          hsl(151, 55%, 34%);
+    --ok-text:     hsl(151, 60%, 27%);
+    --warn:        hsl(40, 85%, 38%);
+    --warn-text:   hsl(40, 90%, 30%);
+    --danger:      hsl(358, 65%, 45%);
+    --danger-text: hsl(358, 70%, 37%);
+
+    /* 浅色下阴影换成灰调（黑阴影叠白底会脏），立体棱改用浅灰下探边 */
+    --shadow-card: 0 1px 2px hsl(220 20% 55% / .14);
+    --shadow-pop:  0 8px 24px hsl(220 25% 40% / .16);
+    --shadow-press: inset 0 1px 3px hsl(220 20% 50% / .22);
+    --key-edge:    0 2px 0 hsl(220 14% 78% / .9);
+    --scrim:       rgba(15, 23, 42, .45);
+    --log-bg:      hsl(220 20% 98% / .94);
+}
+}
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
 html, body {
@@ -373,6 +408,14 @@ code {
 .switch[aria-checked="true"] { background: var(--accent-solid); border-color: var(--accent-solid); }
 .switch[aria-checked="true"] .knob { transform: translateX(18px); background: #fff; }
 .switch:active .knob { width: 24px; }   /* 按住时滑块微撑宽（物理开关的手感细节） */
+
+/* 主题三分段控件（跟系统/浅色/深色，参照 Radix Themes 的 theme switcher 形态） */
+.seg { display: inline-flex; background: var(--card3); border-radius: var(--r-full); padding: 2px; gap: 2px; }
+.seg button {
+  border-radius: var(--r-full); padding: 5px 12px; font-size: 12.5px; color: var(--muted);
+  min-height: 0; transition: background var(--dur-fast), color var(--dur-fast);
+}
+.seg button.on { background: var(--card); color: var(--text); box-shadow: var(--shadow-card); }
 
 /* ---------- modal ---------- */
 .modal {

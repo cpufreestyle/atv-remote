@@ -6,6 +6,10 @@
 <meta name="theme-color" content="#121315" media="(prefers-color-scheme: dark)">
     <meta name="theme-color" content="#f7f8fa" media="(prefers-color-scheme: light)">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<script>
+/* 首帧前套上已存主题，避免深色偏好用户先看到一帧白幕 */
+try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="ATV Remote">
 <link rel="manifest" href="/static/manifest.webmanifest">
@@ -239,6 +243,12 @@
       <button id="clearPhrasesBtn" class="btn tiny danger">清空</button></div>
     <div class="setrow"><span>自定义宏</span>
       <button id="clearMacrosBtn" class="btn tiny danger">清空</button></div>
+    <div class="setrow"><span>主题</span>
+      <div class="seg" id="themeSeg" role="group" aria-label="主题">
+        <button data-theme-val="" aria-pressed="true">跟随</button>
+        <button data-theme-val="light" aria-pressed="false">浅色</button>
+        <button data-theme-val="dark" aria-pressed="false">深色</button>
+      </div></div>
     <div class="setrow"><span>使用指引</span>
       <button id="coachBtn" class="btn tiny">查看</button></div>
     <p class="hint" id="verHint"></p>
