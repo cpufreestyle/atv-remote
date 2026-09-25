@@ -779,3 +779,98 @@ script 实体只回答「跑到哪了」，trace 再回答「每一步发生了�
   - 几何：视口 1200×800 下弹窗 173–627 完整可见（顶栏 32 / 舞台 270 / 缩略图条 59 /
     底栏 44），8 个缩略图，关闭按钮可见；
   - 落盘 /tmp/atv-shot-workbench.png（274% 缩放 + 平移态，2400×1600@2x，844 色）。
+
+## 第十八轮：学 Kodi keymap 分层覆盖 / macOS 修饰键重映射 / HA remote command 目录 → 按键自定义（1.21.0 / versionCode 22）
+
+### 学习源
+- Kodi 的 keymap.xml：用户改键从不重写整张键位表，只在用户目录放一份「差异」——没写的键
+  全部落回内置默认。ATV Remote 的 18 个实体键指令本来就写死在 data-key 上，学它做成
+  kmMap 只存差异，未改绑的键直接 sendKey(code)。
+- macOS 系统设置→键盘→快捷键的修饰键重映射：一个物理键可被映射到另一个功能，且「轻点 /
+  长按」是两种天然分工的手势（长按在 macOS 上还是「连续重复」的另一入口）。
+- Home Assistant 的 remote.send_command 命令目录：命令是一份有限清单（HA 文档列成表），
+  UI 渲染成可点选列表而不是让用户记字符串——#kmList 就是这份「动作目录」。
+
+### 为什么选它
+前三轮把「内容层」（截屏工作台、宏 trace、命令面板）补齐后，剩下的高频痛点是按键本身：
+音量键在某些 App 里不管用、OK 键想一键开 Netflix、D-pad 上下想连发更快。过去这些要么改
+代码、要么用宏绕。改键是高频诉求，但不能为它牺牲零学习成本——新用户打开就该和以前一模一样。
+所以设计目标定为：未改绑的键行为逐字节不变，改绑只加不减。
+
+### 设计
+- 分层覆盖：kmMap 只记差异；绑回自己 = delete（kmBind 里 action === "key:" + code 即删键）；
+  kmSend 未改绑走 if (!action) return sendKey(code);——零回归路径。
+- 动作目录 18 项，四种 id 形态：key:<code>（另一个键位）/ app:<pkg>（启动 App）/
+  macro:<id|name>（跑宏）/ none（空操作）。复用既有 sendKey / launchApp / runMacro，
+  不新增执行通道。
+- 长按是附加入口而非替代：pointerdown 仍即发（保住「一点就发」的旧手感），
+  KM_EDIT_MS=550ms 到时先 stop() 再弹 #keymapModal；连发改为跟着绑定走——
+  kmHoldable(bound()) 绑定目标是可连发键（HOLD_KEYS）才起连发，替换写死的 HOLD_KEYS.has(code)。
+- 持久化只进 localStorage（atv.keymap_v1）：AGENTS.md 规定自定义内容不进 state.json
+  （敏感文件），宏同理。
+- 可见性：改过的键带 • 圆点 + title「按下：<动作>」；#kmHintBar 一条说清三件事
+  （长按可改绑 / • 标记 / 连发跟随绑定）。
+- 命令面板加 km 与 km:reset 两条，键盘用户不用摸鼠标。
+- 无障碍：#keymapModal role=dialog + aria-modal + aria-label；#kmList role=list；当前行
+  aria-current="true"（选中态同时有描边，不只靠颜色）；关闭按钮 data-autofocus。
+
+### 落地
+- static/index.html：.brow 后加提示条（#kmHintBar + #kmResetAllBtn）；#keymapModal 放在
+  「音量 OSD」注释前。
+- static/app.js：「按键自定义」段约 120 行——KM_LS / KM_EDIT_MS / KM_KEY_ACTIONS /
+  loadKeymap / saveKeymap / kmKeyName / kmFind / kmSend / kmHoldable / kmActions /
+  kmRenderList / kmOpen / kmBind / kmResetAll / kmRefreshMarks；控件绑定段重接 tick/bound/stop
+  与 edit 定时器；palCommands 插 km / km:reset。
+- static/style.css：插「按键自定义」段（列表 max-height:46vh、当前行 accent-soft 底 +
+  accent-solid 描边、.remapped 的 ::after 圆点只吃 var(--*)）；static/sw.js CACHE → atv-shell-v4。
+- tests/test_keymap.py：19 个测试（弹窗契约 / wiring / 未改绑回落 sendKey / none 空操作 /
+  列表禁 innerHTML / classList.toggle 标记 / 自定义数据不进 state.json / 段边界与 kmSend
+  恰好 3 次 / CSS 段无 hex / $("#id") 引用一致性），单测 111 → 130 全过。
+- VERSION：versionName=1.21.0 / versionCode=22。
+
+### 踩到的坑
+- apply_patch 插段时上下文行同时出现在删除列表里会被整行删掉：第一次往 style.css 插段误删了
+  .palfoot .paltip { margin-left: auto; }。以后插入改用「上一段最后一行」做纯 + 上下文。
+- 往函数 def 后插回归测试会产生 pass stub + 重名 def（app.js 里 def test_none_action_runs_noop
+  后插内容把原函数体挤重复）。插测试要选方法边界的空行，别贴着一个 def 开头。
+- 长按与「按下即发」会打架：pointerdown 即发必须保留（旧手感），长按只是附加入口、
+  触发时先 stop() 再 kmOpen()，否则粘连的连发会跟着弹窗一起跑。另外 CDP 派发按键只派
+  pointerdown/pointerup、不要派 click——合成 click 的 detail===0 会被 click 分支拦掉，
+  但真实鼠标点击 e.detail !== 0 才放行，这条 if 两种输入都不能少。
+- kmFind(action) 不防空会引发全链路过载：未改绑键刷新标记时 kmFind(undefined) 抛
+  TypeError，表现是「每次加载刷新标记就崩、长按没反应」，而 kmEditCode 已被置上、
+  kmUnbind 照样能写出 "19":"none"——极具迷惑性。修法是首行 if (!action) return null;，
+  并留 test_find_guards_empty_action 回归。
+- CDP 脚本里 [data-key=19] 不是合法选择器（属性值必须加引号，数字开头的标识符不行）：
+  querySelector 抛 SyntaxError，而 ev() helper 只读 r.result.value，异常被吞成 undefined、
+  直到远处 writeFileSync 才炸。教训：helper 必须打印 exceptionDetails，失败要早点炸。
+- 圆点像素验收别拍局部 clip：clip 经 dsf×scale 放大后落点难算（105 CSS px 出来 420 px，
+  且没落在按钮上），且鼠标可能悬停制造 :hover 边框杂讯。改用「同页绑定前 A1 / A2 噪声
+  基线 / 绑定后 B」全页 diff——差异簇与 bbox 直接说话；再注入品红调试盒（content:"D" +
+  26px 品红背景）暴露 ::after 真实绘制盒，反证 top:1/right:5 相对按钮生效。
+
+### 验证
+- node --check static/app.js + static/sw.js、python3 -c 'import server; import atv_backend' 通过。
+- ./check.sh + ./sync-native.sh：130 单测 OK（新增 19）+ 内嵌副本逐字节一致 →
+  ALL CHECKS PASSED。
+- CDP 实测（fake adb，http://127.0.0.1:8411/，unregister SW + reload ignoreCache）：
+  - 零回归：点 [data-key="3"] 只派 pointerdown/pointerup，Network 恰 1 次
+    {"type":"key","code":3}，弹窗不现、无 remapped；
+  - 长按 [data-key="19"] 900ms 不松：pointerdown 那一发之外无第二发，弹窗开出、
+    label=上、cur=当前：默认、rows=30（18+7+5）、groups=3；
+  - 绑 app:com.google.android.youtube.tv → ls 落 localStorage、mark19=true、
+    title=按下：打开 YouTube；再按 19 恰 1 次 {"type":"app",...}（走 launchApp）；
+  - #kmUnbind → ls={"19":"none"}、再按 0 新请求（空操作生效）；
+  - #kmResetAllBtn → ls={}、remapped 清空；
+  - 几何：视口 1200×800 下弹窗 list 534×368、row 519×36、row_bg rgb(34,37,43)(=card2)、
+    row_font 13.5px；落盘 /tmp/atv-keymap.png（2400×1600@2x）。
+- 圆点像素级验收（新手法，可复用）：同页「绑定前 A1 / A2（噪声基线）/ 绑定后 B / 注入
+  品红调试盒 C」四张全页截图做差——
+  - A1-vs-A2 仅 187px 噪声（中下部一个会变的元素）；A1-vs-B 在其之外多出
+    device(1720..1759, 600..639) 的 76px 簇 = CSS(860..880, 300..320)，正是键 19 右上角
+    （按钮 CSS 798.66..875.33 × 298..374.66，top:1/right:5 应在处）；
+  - 该簇 48px 为强蓝 (51,117,246)（≈ --accent-solid = hsl(212,100%,50%)）；B 全局强蓝
+    像素比 A1 多 65、bbox 起点一致；
+  - C 的品红盒落 CSS x 844..870 × y 299..325，与 top:1px/right:5px 相对按钮严丝合缝
+    （position:relative 挂在 .dk.remapped 上，未改绑时 computed position 是 static）；
+  - 落盘 /tmp/atv-keymap-dot.png（键 19 带点 / 键 20 无点对比，270×560，点区 65 个强蓝像素）。
