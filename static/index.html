@@ -306,6 +306,13 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
   </div>
 </div>
 
+<!-- 音量 OSD：学 Google TV 官方遥控——按音量键手机端先出声，不盯着电视也知键已送达 -->
+<div class="vosd hidden" id="volOsd" role="status" aria-live="polite">
+  <span class="vosdIcon" id="volIcon">🔊</span>
+  <div class="vosdbar"><div class="vosdfill" id="volFill"></div></div>
+  <span class="vosdnum" id="volNum"></span>
+</div>
+
 <script src="/static/app.js"></script>
 </body>
 </html>

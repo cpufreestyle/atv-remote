@@ -433,10 +433,82 @@ def now_playing(serial):
     if screen_awake(serial):
         try:
             val.update(parse_media_session(
-                adb.shell(serial, "dumpsys media_session", timeout=6)))
+            adb.shell(serial, "dumpsys media_session", timeout=6)))
         except AdbError as e:
             val["error"] = str(e)
     _nowplaying_cache.update(ts=now, serial=serial, val=val)
+    return val
+
+
+# ---------------- 音量 ----------------
+# 按音量键后手机端要立刻有反馈（学 Google TV 官方遥控的本地 OSD）：电视自己也会弹
+# 系统音量条，但 adb 发键是「发完就走」，手机端一片安静——用户不知道键送到没有。
+# 两条读通道，都不保证存在，认不出就安静降级（supported: False），绝不抛：
+#   1. `media volume --stream 3 --get`（新系统：volume is 7 in range [0..15]）
+#   2. `dumpsys audio` 的 STREAM_MUSIC 段（Current: 7，老 ROM 兜底）
+#   `muted` 三态：True/False 只有 dumpsys audio 读得出来；`media volume --get`
+#   不带静音位，走这条通道时 muted=None（「不知道」）。前端据此保留本地乐观值——
+#   否则按静音后 220ms 的真值校正会把「静音」抹成格数，反馈等于没有。
+# 音量只有我们的按键和电视遥控会改，0.8s TTL 扛得住连按（同一次查询多人共享）。
+VOLUME_TTL = 0.8
+STREAM_MUSIC = 3                      # Android 媒体流固定 3（音乐/视频/游戏都走它）
+_volume_cache = {"ts": 0.0, "serial": None, "val": None}
+
+
+def parse_media_volume(text) -> dict:
+    """`media volume --get` 输出 → {"level", "max"}；认不出返回 {}。"""
+    m = re.search(r"volume\s+is\s+(\d+)\s+in\s+range\s*\[0\.\.(\d+)\]",
+                  text or "", re.IGNORECASE)
+    return {"level": int(m.group(1)), "max": int(m.group(2))} if m else {}
+
+
+def parse_dumpsys_audio(text) -> dict:
+    """dumpsys audio 的 STREAM_MUSIC 段 → {"level", "max"?, "muted"?}。
+
+    段头 `- STREAM_MUSIC:`（各 ROM 缩进不一），块内 `Current: 7, Latest: 7`；
+    部分 ROM 还带 `Max: 15` / `Muted: true`（或 `Mute count: 1`）。字段缺省就缺，
+    别抛——这条通道本身就是给新系统 `media` 命令兜底的。"""
+    m = re.search(r"-\s*STREAM_MUSIC\s*:(.*?)(?=\n\s*-\s*STREAM_[A-Z]|\Z)",
+                  text or "", re.DOTALL | re.IGNORECASE)
+    if not m:
+        return {}
+    seg = m.group(1)
+    cur = re.search(r"\bCurrent\s*:\s*(\d+)", seg)
+    if not cur:
+        return {}
+    r = {"level": int(cur.group(1))}
+    mx = re.search(r"\bMax\s*:\s*(\d+)", seg)
+    if mx:
+        r["max"] = int(mx.group(1))
+    if re.search(r"\bMuted\s*[:=]\s*true\b", seg, re.IGNORECASE) or \
+            re.search(r"\bMute\s+count\s*:\s*[1-9]", seg):
+        r["muted"] = True
+    return r
+
+
+def volume(serial):
+    """当前媒体音量。套路同 now_playing：同设备 TTL 缓存、休眠也照查
+    （settings/dumpsys 类命令不挂，和 input 相反；sleeping 只管电视屏幕亮不亮）。"""
+    now = time.time()
+    c = _volume_cache
+    if c["serial"] == serial and now - c["ts"] < VOLUME_TTL:
+        return c["val"]
+    val = {"connected": True, "supported": False, "level": -1, "max": 15, "muted": None}
+    got = {}
+    try:
+        got = parse_media_volume(
+            adb.shell(serial, "media volume --stream %d --get" % STREAM_MUSIC, timeout=5))
+    except AdbError:
+        got = {}
+    if not got:
+        try:
+            got = parse_dumpsys_audio(adb.shell(serial, "dumpsys audio", timeout=6))
+        except AdbError as e:
+            val["error"] = str(e)
+    if got:
+        val.update(got)
+        val["supported"] = True
+    _volume_cache.update(ts=now, serial=serial, val=val)
     return val
 
 
@@ -1516,6 +1588,14 @@ class Handler(BaseHTTPRequestHandler):
                 if cur.get("type") != "android" or not cur.get("target"):
                     return self._send(200, {"connected": False})
                 return self._send(200, now_playing(cur["target"]))
+            if path == "/api/volume":
+                # 只覆盖 Android TV：Apple TV 侧 pyatv 读不到音量（前端收 supported: False
+                # 就走「图标模式」，照样给送达反馈，只是不出具体格数）
+                with state_lock:
+                    cur = dict(state.get("current") or {})
+                if cur.get("type") != "android" or not cur.get("target"):
+                    return self._send(200, {"connected": False})
+                return self._send(200, volume(cur["target"]))
             if path == "/api/screenshot":
                 with state_lock:
                     cur = dict(state.get("current") or {})

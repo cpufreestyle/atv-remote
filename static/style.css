@@ -388,6 +388,29 @@ code {
 #toast.info { color: var(--accent-text); border-color: var(--accent-solid); }
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
+
+/* ---------- 音量 OSD（本地反馈，学 Google TV 官方遥控） ----------
+   位置取屏幕上部三分之一：不挡顶部设备信息、也不压底部按键区；纯浮层不吞点击。 */
+.vosd {
+  position: fixed; left: 50%; top: 34%; transform: translate(-50%, -50%);
+  z-index: 60; pointer-events: none;
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--log-bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--r-full);
+  box-shadow: var(--shadow-pop);
+}
+.vosd .vosdIcon { font-size: 20px; line-height: 1; }
+.vosdbar { width: 132px; height: 8px; background: var(--card3); border-radius: var(--r-full); overflow: hidden; }
+.vosdfill { height: 100%; width: 0; background: var(--accent-solid); border-radius: var(--r-full);
+  transition: width var(--dur) var(--ease); }
+.vosd.ismuted .vosdfill { background: var(--faint); }
+/* 电视不报音量（老 ROM 两个查询命令都不认）：不出格数，退化成图标模式 */
+.vosd.unknown .vosdbar, .vosd.unknown .vosdnum { display: none; }
+.vosdnum { font-size: 12px; color: var(--muted); min-width: 3ch; text-align: right;
+  font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce) { .vosdfill { transition: none; } }
+
 /* ---------- 首次使用引导（coach mark，对标 Material feature discovery） ----------
    暗场里只给目标元素留一块光圈（spotlight 的巨型 box-shadow 充当遮罩），
    说明卡吸附在目标下方/上方；新弹窗基础设施直接复用 .modal + openModal。 */

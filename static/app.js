@@ -245,6 +245,7 @@ async function sendKey(code) {
   if (lastSent[code] && now - lastSent[code] < 90) return; // 按住自动重复时节流
   lastSent[code] = now;
   flashKey(code);
+  if (VOL_KEYS.has(code)) volBump(code);   // 音量 OSD：本地先反馈，不等 adb 回包
   try {
     await api("/api/cmd", { type: "key", code });
     log(`→ keyevent ${code}`);
@@ -783,6 +784,88 @@ $("#npToggle").addEventListener("click", async () => {
   } catch (e) { toast(e.message); }
 });
 
+/* ---------------- 音量 OSD（本地反馈） ----------------
+   学 Google TV 官方遥控：按音量键手机端先出声，不盯着电视也知键已送达。电视自己
+   也会弹系统音量条，但 adb 发键是「发完就走」——本地一片安静，用户不知道送到没有。
+   所有音量入口（按键区 / 物理键盘 / 触摸板双指 / 长按连发）最后都汇到 sendKey，
+   所以挂钩只写这一处。乐观步进 + 后端校正：查询要走 adb 有延迟，OSD 先动、220ms
+   后拿真值纠偏；真值拿不到（老 ROM 两个命令都不认）就退成图标模式，不出格数。 */
+const VOL_KEYS = new Set([24, 25, 164]);
+const VOL_HIDE_MS = 1600, VOL_SYNC_DEBOUNCE = 220;
+const Vol = { level: -1, max: 15, muted: false, dead: false, hideTimer: null, syncTimer: null };
+let volTargetKey = "";
+
+function volIcon() {
+  if (Vol.muted) return "🔇";
+  if (Vol.level < 0) return "🔊";
+  const p = Vol.level / Vol.max;
+  return p >= 0.6 ? "🔊" : p > 0 ? "🔉" : "🔈";
+}
+
+function volPaint() {
+  const osd = $("#volOsd");
+  osd.classList.toggle("ismuted", Vol.muted);
+  osd.classList.toggle("unknown", Vol.level < 0);
+  $("#volIcon").textContent = volIcon();
+  $("#volFill").style.width = Vol.level < 0 ? "100%" :
+    Math.round(Vol.level / Vol.max * 100) + "%";
+  $("#volNum").textContent = Vol.level < 0 ? "" : Vol.muted ? "静音" : Vol.level;
+}
+
+function volHide() {
+  clearTimeout(Vol.hideTimer);
+  Vol.hideTimer = null;
+  $("#volOsd").classList.add("hidden");
+}
+
+async function volSync() {
+  if (Vol.dead) return;
+  try {
+    const v = await api("/api/volume");
+    if (!v) return;
+    if (!v.connected || !v.supported) {
+      // 没连电视 / 电视不报音量：本会话不再查，OSD 退化成图标模式（照样有送达反馈）
+      Vol.dead = true;
+      Vol.level = -1;
+      volPaint();
+      return;
+    }
+    Vol.dead = false;
+    Vol.max = v.max || 15;
+    Vol.level = v.level;
+    // muted 只有后端真读到时（dumpsys audio）才是布尔值；media volume 通道读不到
+    // 静音位，muted=null 表示「不知道」——保留本地乐观值，别把静音反馈抹掉
+    if (typeof v.muted === "boolean") Vol.muted = v.muted;
+    volPaint();
+  } catch (e) { /* 网络抖动：保留乐观值，下一次按音量再纠 */ }
+}
+
+function volRetarget(key) {
+  if (volTargetKey === key) return;
+  volTargetKey = key;
+  // 换设备（Apple↔Android、换电视）必须重新探：级数差得远（10 格 vs 25 格），
+  // 拿 A 电视的级数显示 B 电视的音量会越调越错
+  Vol.level = -1; Vol.dead = false; Vol.muted = false;
+  volPaint();
+}
+
+// 按音量：本地先动（等 adb 回包就晚了），再防抖打一次真值纠正乐观值的漂移
+function volBump(code) {
+  if (!status.connected) return;          // 没连上按啥都报错，别弹多余的 OSD
+  if (code === 24) { Vol.muted = false; if (Vol.level >= 0) Vol.level = Math.min(Vol.max, Vol.level + 1); }
+  else if (code === 25) { Vol.muted = false; if (Vol.level >= 0) Vol.level = Math.max(0, Vol.level - 1); }
+  else if (code === 164) { Vol.muted = !Vol.muted; }
+  else return;                            // 非音量键，与 OSD 无关
+  volPaint();
+  $("#volOsd").classList.remove("hidden");
+  clearTimeout(Vol.hideTimer);
+  Vol.hideTimer = setTimeout(volHide, VOL_HIDE_MS);
+  if (!Vol.dead) {
+    clearTimeout(Vol.syncTimer);
+    Vol.syncTimer = setTimeout(volSync, Vol.level < 0 ? 60 : VOL_SYNC_DEBOUNCE);
+  }
+}
+
 /* ---------------- 状态与连接 ---------------- */
 let statusBusy = null;  // 上一次 /api/status 没回来就不叠加下一次（慢响应会排在按键锁后面）
 
@@ -790,10 +873,14 @@ async function refreshStatus() {
   if (statusBusy) return statusBusy;
   statusBusy = (async () => {
     try {
-      renderStatus(await api("/api/status"));
+      const s = await api("/api/status");
+      renderStatus(s);
       // 正在播放蹭状态轮询的车（Android 且已连接才查；页面隐藏时整个轮询本来就停着）
       if (status.curType === "android" && status.connected) refreshNowPlaying();
       else renderNowPlaying(null);
+      // 音量 OSD 的种子按「当前设备」走：换了设备要重新探级数（不主动查，
+      // 下一次按音量时 volBump → volSync 顺手取真值）
+      volRetarget((s.cur_type || "") + "|" + (s.current || ""));
     } catch (e) {
       // 原来是静默 ignore：服务端挂了状态栏却还留着上一次的「已连接」，
       // 用户对着一个已经死掉的遥控器按半天。
