@@ -787,3 +787,26 @@ body.disc [data-needs-device] { opacity: .45; filter: saturate(.5); }
 .prow .pms { font-size: 11px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
 .prow .pnote { min-width: 0; font-size: 11px; color: var(--danger-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #perfOnlyBtn[aria-pressed="true"] { border-color: var(--warn); color: var(--warn-text); }
+
+/* ---------- 远程开机（Wake-on-LAN；学 Linux wakeonlan / HA wake_on_lan 的「失败必须可区分」） ----------
+   关机后设备列表里没有这台，所以这张卡的形态不是「在线设备」而是「可唤醒目标」：
+   一行一个 IP + 缩写 MAC + 一个开机按钮。等待上线用脉冲点表达「正在等」，且必须可
+   中止——一次误唤醒不该永久占着轮询。颜色只用语义令牌，不写死 hex / rgb / hsl。 */
+#wolList { display: grid; gap: var(--sp-2); margin-top: var(--sp-2); }
+.wolwatch { display: inline-flex; align-items: center; gap: 6px; min-width: 0;
+  font-size: 12px; color: var(--warn-text); }
+.woldot { width: 8px; height: 8px; flex: none; border-radius: var(--r-full);
+  background: var(--warn); animation: woldot-pulse 1.2s var(--ease) infinite; }
+.wolrow .atvname { font-weight: 600; }
+.wolrow .atvip { letter-spacing: .2px; font-variant-numeric: tabular-nums; }
+.wolrow .wolmac { flex: 1; min-width: 0; color: var(--muted); font-size: 12px; }
+.wolrow .btn { flex: none; }
+.wolrow.online .wolmac { color: var(--ok-text); }
+@keyframes woldot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .3; transform: scale(.66); }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* 脉冲只是「别以为卡死了」的安慰剂，关闭动效时不该变成注意力焦点 */
+  .woldot { animation: none; }
+}

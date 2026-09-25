@@ -178,6 +178,80 @@ function notifSanitizeHistory(list, max) {
 }
 /* ===== notif-queue:end ===== */
 
+/* ===== wake-on-lan:begin =====
+   Wake-on-LAN 纯函数段：禁 DOM / localStorage / fetch（tests/wol_harness.js 直接抽这段执行）。
+   动机是遥控器的唯一真盲区：电视关机后 adb 掉线，设备列表里连这台都没有，方向键 / 截屏 /
+   宏全都无从谈起。所以「远程开机」不是又一个按钮，而是三件事的组合：从本机 ARP 表反查
+   MAC（省得用户去路由器后台手抄）、按惯例双端口发包、发包后守着状态等它自己上线并重连。
+   三条口径：
+   1) MAC 宽容解析与后端同口径——用户抄回来的格式五花八门，解析不了要说清而不是硬发；
+   2) 等待必须有上限（24 次 × 2.5s = 60s）且可中止，否则一次误唤醒会永久占着轮询；
+   3) IP / MAC 一律交给 textContent——局域网广播可伪造，渲染路径上出现 innerHTML 即违约。 */
+const WOL_WATCH_MS = 2500;
+const WOL_WATCH_MAX = 24;      // 24 × 2.5s = 60s 上限
+const WOL_IP_MAX = 8;          // 一次最多问这么多 IP（后端上限 20，这里留余量）
+const WOL_ASK_MIN_MS = 15000;  // 自动发现的最小间隔：ARP 表秒级不变，别跟着 8s 轮询刷
+
+// 与 server.py 的 wol_norm_mac 同一口径：全收冒号 / 连字符 / 点分 / 无分隔，但不猜位数
+function wolNormMac(v) {
+  if (typeof v !== "string") return null;
+  const s = v.trim().toLowerCase().replace(/-/g, ":").replace(/[.]/g, ":");
+  const mac = s.split(":").filter((p) => p).join("");
+  if (!/^[0-9a-f]{12}$/.test(mac)) return null;
+  const g = [];
+  for (let i = 0; i < 12; i += 2) g.push(mac.slice(i, i + 2));
+  return g.join(":");
+}
+
+// adb 无线调试目标是 host:port（192.168.0.52:5555），ARP 表里只有 IP
+function wolIpOf(t) {
+  return String(t === null || t === undefined ? "" : t).split(":")[0].trim().toLowerCase();
+}
+
+// 从一次 /api/status 快照里取「值得问一遍」的 IP：当前设备 + 最近连过，去重、限量。
+// appletv 的 current 是 uuid，没有点号，天然被过滤掉——Apple TV 不走 adb，也就没有 ARP 条目。
+function wolIpsFromStatus(s) {
+  const st = s || {};
+  const out = [];
+  const add = (v) => {
+    const ip = wolIpOf(v);
+    if (ip && ip.indexOf(".") >= 0 && out.indexOf(ip) < 0 && out.length < WOL_IP_MAX) out.push(ip);
+  };
+  add(st.current);
+  (Array.isArray(st.recent) ? st.recent : []).forEach(add);
+  return out;
+}
+
+// 每次探测的结果怎么解释：上线了就停并收尾；attempt 用满还没上就停并报超时。
+// online 优先于 attempt——别为了跑满次数把已经上线的设备再晾 30 秒。
+function wolWatchPlan(attempt, online) {
+  if (online === true) return { stop: true, why: "online" };
+  if (attempt >= WOL_WATCH_MAX) return { stop: true, why: "timeout" };
+  return { stop: false, why: "waiting" };
+}
+
+// 问了却没拿到 MAC 的 IP：要么关机后从没跟本机通信过（ARP 表里就没有它），
+// 要么它不在同一个二层网络里。这两种要分开说，用户才知道该去开机还是去查网络。
+function wolMissing(asked, found) {
+  const has = [];
+  (Array.isArray(found) ? found : []).forEach((t) => { if (t && t.ip) has.push(t.ip); });
+  return (Array.isArray(asked) ? asked : []).filter((ip) => has.indexOf(ip) < 0);
+}
+
+// MAC 只承担「确认是这台」的辅助信息：缩成 aa:bb:cc…ee:ff，别整条糊在按钮上
+function wolMacShort(mac) {
+  const g = String(mac === null || mac === undefined ? "" : mac).split(":").filter((p) => p);
+  return g.length === 6 ? g.slice(0, 3).join(":") + "…" + g.slice(4).join(":") : String(mac || "");
+}
+
+// 徽标一个数字说不清三件事：发现几台、其中几台真有 MAC、还缺几台
+function wolSummary(targets) {
+  const arr = Array.isArray(targets) ? targets : [];
+  const withMac = arr.filter((t) => t && t.mac).length;
+  return { total: arr.length, withMac: withMac, missing: arr.length - withMac };
+}
+/* ===== wake-on-lan:end ===== */
+
 /* ---- 通知队列 DOM 胶水：规则在上面纯函数段，这里只管渲染 / 计时 / 持久化 ---- */
 const notifQueue = [];
 let notifHistory = [];
@@ -1928,6 +2002,7 @@ function renderStatus(s) {
 
   // 连接上了就补「连接后」那一段引导（connect() 回来的这次渲染走这儿最合适）
   maybePostCoach();
+  wolMaybeDiscover(s);
 }
 
 async function connect(target) {
@@ -1948,6 +2023,168 @@ async function connect(target) {
     $("#connectBtn").disabled = false;
   }
 }
+
+/* ---------------- 远程开机（Wake-on-LAN） ----------------
+   规则在同名纯函数段里，这里只管渲染 / 发包 / 等待。
+   等待是必需的：魔法包等效于「按一下电源键」，主板还要几十秒才起来并重新注册进 adb；
+   不盯着状态，用户发完包只会对着一块黑屏发呆，不知道是没生效还是生效得慢。 */
+let wolIpsCache = [];
+let wolBusy = false;
+let wolTimer = null;
+let wolWaitLeft = 0;
+let wolWaitIp = "";
+let wolAskSig = "";
+let wolAskAt = 0;
+let wolLastStatus = null;
+
+function wolSetWatch(text) {
+  $("#wolWatch").classList.toggle("hidden", !text);
+  if (text) $("#wolWatchText").textContent = text;
+}
+
+async function wolDiscover(ips) {
+  const ask = (Array.isArray(ips) && ips.length ? ips : wolIpsCache).slice(0, WOL_IP_MAX);
+  if (!ask.length) {
+    $("#wolCount").textContent = "—";
+    // 说清「为什么是空的」：ARP 表只记得跟本机通信过的对端，这是 WoL 的前置条件
+    $("#wolHint").textContent = "还没有可问的地址。先连过一次电视——本机 ARP 表里只会有"
+      + "跟它通信过的条目，而 MAC 正是从那里来的。";
+    return [];
+  }
+  wolIpsCache = ask;
+  wolAskAt = Date.now();
+  wolBusy = true;
+  $("#wolRefreshBtn").disabled = true;
+  try {
+    const r = await api("/api/wol?action=discover&ips=" + encodeURIComponent(ask.join(",")));
+    wolRender(r.targets || [], r.asked || ask);
+    return r.targets || [];
+  } catch (e) {
+    $("#wolHint").textContent = "⚠ 读取本机 ARP 表失败：" + e.message;
+    return [];
+  } finally {
+    wolBusy = false;
+    $("#wolRefreshBtn").disabled = false;
+  }
+}
+
+function wolRender(targets, asked) {
+  const box = $("#wolList");
+  box.textContent = "";
+  (Array.isArray(targets) ? targets : []).forEach((t) => {
+    const row = document.createElement("div");
+    row.className = "atvrow wolrow";
+    const name = document.createElement("span");
+    name.className = "atvname";
+    name.textContent = t.ip;         // IP 一律 textContent：局域网广播可伪造
+    const mac = document.createElement("span");
+    mac.className = "wolmac";
+    mac.textContent = wolMacShort(t.mac);
+    const btn = document.createElement("button");
+    btn.className = "btn tiny";
+    btn.type = "button";
+    btn.textContent = "⚡ 开机";
+    btn.onclick = () => wolSend(t, btn);
+    row.append(name, mac, btn);
+    box.appendChild(row);
+  });
+  const n = (targets || []).length;
+  $("#wolCount").textContent = n ? String(n) : "—";
+  const miss = wolMissing(asked, targets);
+  $("#wolHint").textContent = miss.length
+    ? "未发现 MAC：" + miss.join("、") + "（开机后通信过一次就会进本机 ARP 表；不在同一二层网络则永远发现不到）"
+    : (n ? "电视关机后网卡仍在低功耗监听广播。多数电视要在「网络设置」里打开 WoL / 远程唤醒。"
+         : "本机 ARP 表里暂时没有这些地址的条目。");
+  $("#wolRefreshBtn").disabled = false;
+}
+
+async function wolSend(t, btn) {
+  const ip = (t && t.ip) || "";
+  if (!t || !t.mac) return toast("⚠ 没有 " + (ip || "该设备") + " 的 MAC 地址，无法远程开机");
+  const label = btn ? btn.textContent : "";
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api("/api/wol", { action: "send", mac: t.mac });
+    const ports = (r.sent || []).join("/");
+    toast("✓ 开机包已发往 " + ip + "（端口 " + ports + "）");
+    log("⚡ 魔法包 → " + ip + " :" + ports);
+    wolWaitStart(ip);
+  } catch (e) {
+    toast("⚠ 开机包发送失败：" + e.message);
+    log("⚠ 魔法包发送失败：" + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+  }
+}
+
+function wolWaitStart(ip) {
+  wolWaitStop();
+  wolWaitIp = ip;
+  wolWaitLeft = WOL_WATCH_MAX;
+  wolSetWatch("等待 " + ip + " 上线 · 最多 1 分钟");
+  wolTimer = setTimeout(wolWaitTick, WOL_WATCH_MS);
+}
+
+function wolWaitStop() {
+  if (wolTimer) { clearTimeout(wolTimer); wolTimer = null; }
+  wolWaitLeft = 0;
+  wolSetWatch("");
+}
+
+// 一次探测的结果只做一件事：决定继续等、还是收尾。online 判定必须同时看 IP 和 state
+// （adb 会把 unauthorized / offline 也列在 devices 里），否则会以为早就上线了。
+async function wolWaitTick() {
+  if (!wolWaitLeft) return;          // 已被 wolWaitStop 抢先一步
+  const ip = wolWaitIp;
+  let online = false;
+  try {
+    const s = await api("/api/status");
+    online = (s.devices || []).some((d) =>
+      d && String(d.serial || "").split(":")[0] === ip && d.state === "device");
+  } catch (e) {
+    log("⚠ 等待上线期间状态查询失败：" + e.message);
+  }
+  wolWaitLeft -= 1;
+  const plan = wolWatchPlan(WOL_WATCH_MAX - wolWaitLeft, online);
+  if (plan.stop) {
+    wolWaitStop();
+    if (plan.why === "online") {
+      toast("✓ " + ip + " 已开机上线，正在重连");
+      log("✓ " + ip + " 已上线");
+      wolMarkOnline(ip);
+      connect(ip);
+    } else {
+      toast("⚠ 等了 1 分钟 " + ip + " 仍未上线：确认电视开了 WoL，且没被路由器 AP 隔离挡住");
+    }
+    return;
+  }
+  wolSetWatch("等待 " + ip + " 上线 · 剩余 " + wolWaitLeft + " 次探测");
+  wolTimer = setTimeout(wolWaitTick, WOL_WATCH_MS);
+}
+
+function wolMarkOnline(ip) {
+  const box = $("#wolList");
+  Array.prototype.forEach.call(box.children, (row) => {
+    const nm = row.querySelector(".atvname");
+    row.classList.toggle("online", !!(nm && nm.textContent === ip));
+  });
+}
+
+// 挂在设备 chips 渲染之后：ARP 表秒级不变，所以按 IP 签名 + 最短间隔节流，
+// 别跟着 8s 状态轮询把本机 ARP 表反复读一遍。
+function wolMaybeDiscover(s) {
+  const ips = wolIpsFromStatus(s);
+  const sig = ips.join(",");
+  if (!sig) return;
+  if (sig === wolAskSig && Date.now() - wolAskAt < WOL_ASK_MIN_MS) return;
+  wolAskSig = sig;
+  wolDiscover(ips);
+}
+
+$("#wolRefreshBtn").addEventListener("click", () => {
+  if (wolBusy) return;
+  wolDiscover(wolIpsCache.length ? wolIpsCache : wolIpsFromStatus(window.__atvLastStatus || {}));
+});
 
 /* ---------------- Android 无线调试扫描 ---------------- */
 // 无线调试设备（Android 11+）会广播配对 / 连接端口；老电视只开 5555 端口时不广播
@@ -3189,6 +3426,10 @@ function palCommands() {
     kmResetAll, Object.keys(kmMap).length + " 个已改");
  push("settings", "工具", "⚙", "打开设置", "设置 settings 偏好", () => $("#appSettingsBtn").click());
  push("notif", "工具", "🔔", "打开通知中心", "翻最近的出错 / 成功提示，可整段重看", () => notifToggle($("#notifBtn")));
+  push("wol", "工具", "⚡", "远程开机（Wake-on-LAN）", "开机 唤醒 冷启动 wake wol 魔法包", () => {
+    $("#wolCard").scrollIntoView({ behavior: "smooth", block: "center" });
+    wolDiscover(wolIpsCache.length ? wolIpsCache : wolIpsFromStatus(wolLastStatus || {}));
+  });
   push("coach", "工具", "🎓", "重看使用指引", "引导 教程 coach help", () => $("#coachBtn").click());
   return cmds;
 }

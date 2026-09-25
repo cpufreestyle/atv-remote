@@ -1628,6 +1628,177 @@ def handle_macros(_body):
     return {"presets": PRESET_MACROS, **macro_state()}
 
 
+# ===== wake-on-lan:begin =====
+# 冷开机是遥控器唯一的真盲区：电视关机后 adb 直接掉线，设备列表里连这台都没有，
+# 这时方向键 / 截屏 / 宏全都无从谈起。Wake-on-LAN（魔法包）是局域网内唤醒关机状态
+# 主板的通用手段——电视的有线 / 无线网卡在关机后仍保持低功耗监听二层广播。
+#
+# 学习源：Linux 的 wakeonlan CLI 与 Home Assistant 的 wake_on_lan 集成。
+# 移植两条方法论：
+#   1) MAC 宽容解析——用户是从路由器后台 / 电视「关于」页手抄来的，冒号 / 连字符 /
+#      点分 / 无分隔 / 大小写混用全都该收；解析不了要能说清是哪一段不对；
+#   2) 失败必须可区分——socket 起不来、MAC 写法不合法、压根没在 ARP 表里发现它，
+#      是三件不同的事，对应三种不同的用户动作（查防火墙 / 改地址 / 先开一次机）。
+WOL_PORTS = (9, 7)                       # 9=discard（业界惯例），7=echo（部分固件只听 7）
+WOL_BCAST_DEFAULT = "255.255.255.255"    # 受限广播：同一二层网络内必然可达
+WOL_ARP_FILE = Path("/proc/net/arp")     # Linux / Android 的 ARP 表；macOS 没有，走 arp -an
+WOL_IP_MAX = 20                          # 一次最多问这么多 IP（每个都在表里扫一遍）
+WOL_MAC_MAX = 64                         # 单个入参长度上限，防超长串喂进正则
+WOL_MAC_RE = re.compile(r"^[0-9a-f]{12}$")
+WOL_IPV4_RE = re.compile(r"^[0-9]{1,3}([.][0-9]{1,3}){3}$")
+# macOS arp -an：? (192.168.0.52) at aa:bb:cc:dd:ee:ff on en0 ifscope [ethernet]
+WOL_ARP_LINE_RE = re.compile(r"[^ ]+ +[(]([0-9.]+)[)] +at +([0-9a-f:]{17})")
+
+
+def wol_norm_mac(value):
+    """宽容解析 MAC → aa:bb:cc:dd:ee:ff；解析不了返回 None（由调用方决定文案）。
+
+    用户在路由器后台抄到的 MAC 什么格式都有：aa:bb:cc:dd:ee:ff / aa-bb-cc-dd-ee-ff /
+    aabb.ccdd.eeff / AABBCCDDEEFF。这里全收，但不猜：位数不对就是 None，绝不去补位
+    ——补出来的地址发出去只会唤醒另一台机器。"""
+    if not isinstance(value, str):
+        return None
+    s = value.strip().lower().replace("-", ":").replace(".", ":")
+    mac = "".join(p for p in s.split(":") if p)
+    if not WOL_MAC_RE.match(mac):
+        return None
+    return ":".join(mac[i:i + 2] for i in range(0, 12, 2))
+
+
+def wol_build_packet(mac):
+    """标准魔法包：6 字节 0xFF + 目标 MAC 重复 16 遍，共 102 字节。"""
+    return bytes((0xFF,)) * 6 + bytes.fromhex(mac.replace(":", "")) * 16
+
+
+def wol_ip_of(target):
+    """adb 无线调试目标带端口（192.168.0.52:5555）；ARP 表里只有 IP。"""
+    return str(target if target is not None else "").split(":")[0].strip().lower()
+
+
+def wol_parse_arp(text):
+    """解析 ARP 表文本 → [(ip, mac)]。
+
+    /proc/net/arp 每行 6 列：IP HWtype Flags MAC Mask Device。flags=0x0 的行是
+    「已知此 IP 但没解析出 MAC」的占位，MAC 是全 0——不过滤它，前端就会冒出一排
+    空 MAC 的按钮，点一个失败一个，而失败原因还查不出来。"""
+    rows = []
+    for line in (text or "").splitlines():
+        f = line.split()
+        if len(f) >= 6 and WOL_IPV4_RE.match(f[0]):
+            if f[2] in ("0x0", "0"):        # 占位行，见 docstring
+                continue
+            mac = wol_norm_mac(f[3])
+            if mac:
+                rows.append((f[0], mac))
+            continue
+        m = WOL_ARP_LINE_RE.match(line)
+        if m:
+            mac = wol_norm_mac(m.group(2))
+            if mac:
+                rows.append((m.group(1), mac))
+    return rows
+
+
+def wol_read_arp():
+    """读本机 ARP 表。读不到返回 []——发现不到不是错误（可能压根没通信过）。"""
+    try:
+        if WOL_ARP_FILE.is_file():
+            return wol_parse_arp(WOL_ARP_FILE.read_text(errors="replace"))
+    except OSError:
+        pass
+    exe = shutil.which("arp")
+    if not exe:
+        return []
+    try:
+        out = subprocess.run([exe, "-an"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return wol_parse_arp(out.stdout)
+
+
+def wol_targets(ips, rows):
+    """只回答被问到且真查到了 MAC 的 IP；一条 IP 至多一行，顺序跟随询问顺序。"""
+    want = []
+    for ip in ips or []:
+        if ip not in want:
+            want.append(ip)
+    return [{"ip": ip, "mac": m} for ip in want
+            for m in [next((m for r, m in (rows or []) if r == ip), None)] if m]
+
+
+def wol_ips(value):
+    """ips 入参兼容三种形态：逗号串（GET）、数组（POST）、以及二者的嵌套——
+    parse_qs 返回的 list 里躺着一条逗号串，不展开的话整串会被当成一个非法 IP 丢掉。"""
+    if isinstance(value, str):
+        raw_items = [value]
+    elif isinstance(value, (list, tuple)):
+        raw_items = list(value)
+    else:
+        return []
+    ips = []
+    for raw in raw_items:
+        for part in str(raw).replace("，", ",").split(","):
+            piece = part.split()      # 容忍 "192.168.0.52 5555" 这类带空格的粘贴
+            if not piece or len(piece[0]) > WOL_MAC_MAX:
+                continue
+            ip = wol_ip_of(piece[0])
+            if WOL_IPV4_RE.match(ip) and ip not in ips:
+                ips.append(ip)
+                if len(ips) >= WOL_IP_MAX:   # 到顶就收，别再往后扫
+                    return ips
+    return ips
+
+
+def wol_send(mac, bcast, sock_factory=None):
+    """往两个端口逐发广播包。单个 socket 失败只收集，全失败才抛 AdbError——
+    与其在一条链路上抛一串异常，不如一次说清「两个端口都没发出去」。"""
+    factory = sock_factory or socket.socket
+    pkt = wol_build_packet(mac)
+    sent, errs = [], []
+    for port in WOL_PORTS:
+        try:
+            sk = factory(socket.AF_INET, socket.SOCK_DGRAM)
+        except OSError as e:
+            errs.append("端口 {} 建不了 socket：{}".format(port, e))
+            continue
+        try:
+            sk.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sk.sendto(pkt, (bcast, port))
+            sent.append(port)
+        except OSError as e:
+            errs.append("端口 {}：{}".format(port, e))
+        finally:
+            try:
+                sk.close()
+            except OSError:
+                pass
+    if not sent:
+        raise AdbError("魔法包发送失败（{}）；常见原因是本机防火墙拦截 UDP 广播"
+                       .format("，".join(errs) or "没有可用 socket"))
+    return sent
+
+
+def handle_wol(body):
+    """discover：从本机 ARP 表反查 MAC（省得用户手抄）；send：发魔法包。"""
+    body = body or {}
+    action = str(body.get("action") or "discover")
+    if action == "discover":
+        ips = wol_ips(body.get("ips"))
+        rows = wol_read_arp()
+        return {"ok": True, "asked": ips, "targets": wol_targets(ips, rows)}
+    if action == "send":
+        mac = wol_norm_mac(body.get("mac"))
+        if not mac:
+            raise AdbError("MAC 地址不合法：{}（应为 aa:bb:cc:dd:ee:ff）"
+                           .format(body.get("mac")))
+        bcast = str(body.get("bcast") or WOL_BCAST_DEFAULT).strip()
+        if not WOL_IPV4_RE.match(bcast):
+            raise AdbError("广播地址不合法：{}".format(bcast))
+        return {"ok": True, "mac": mac, "sent": wol_send(mac, bcast)}
+    raise AdbError("未知操作: {}（可用 discover / send）".format(action))
+# ===== wake-on-lan:end =====
+
+
 # ---------------- HTTP ----------------
 # 模块级路由表：不要每次 POST 都重建
 ROUTES = {
@@ -1645,6 +1816,7 @@ ROUTES = {
     "/api/atv/disconnect": handle_atv_disconnect,
     "/api/atv/forget": handle_atv_forget,
     "/api/atv/apps": handle_atv_apps,
+    "/api/wol": handle_wol,
 }
 
 
@@ -1828,6 +2000,15 @@ class Handler(BaseHTTPRequestHandler):
                                   "application/vnd.android.package-archive")
             if path == "/api/macros":
                 return self._send(200, handle_macros(None))
+            if path == "/api/wol":
+                # GET 也要能发现：卡片可以只靠 GET 刷新，省掉一次 POST 的哨兵。
+                # parse_qs 给的是 list，先 join 成逗号串——wol_ips 虽然也能吃嵌套，
+                # 但「GET 侧的合法形态就是逗号串」这个口径写在这里更直白。
+                q = parse_qs(urlparse(self.path).query)
+                return self._send(200, handle_wol({
+                    "action": (q.get("action") or ["discover"])[0],
+                    "ips": ",".join(q.get("ips") or []),
+                }))
             if path == "/api/setup":
                 # 给已授权用户（通常是本机浏览器）看「手机首次接入」用的令牌和带令牌的
                 # 页面地址，用于渲染二维码。能把令牌给已授权客户端是已知取舍：持令牌者

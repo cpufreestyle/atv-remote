@@ -203,6 +203,19 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
       </div>
     </section>
 
+    <!-- 远程开机：电视机顶盒一关机就 adb 掉线，设备列表里连这台都没有，方向键/截屏/宏
+         全都无从谈起。Wake-on-LAN 是从本机 ARP 表反查 MAC 再发广播魔法包，把「关机」
+         这个唯一盲区补上。注意不带 data-needs-device：它存在的意义正是设备不在线时。 -->
+    <section class="card" id="wolCard">
+      <h2>⚡ 远程开机 <span id="wolCount" class="badge">—</span></h2>
+      <div class="brow">
+        <button id="wolRefreshBtn" class="btn tiny" type="button">↻ 刷新 MAC</button>
+        <span id="wolWatch" class="wolwatch hidden" role="status" aria-live="polite"><i class="woldot"></i><span id="wolWatchText"></span></span>
+      </div>
+      <div id="wolList"></div>
+      <p class="hint" id="wolHint">电视关机后 adb 会掉线，这张卡仍能把它唤回来：先连过一次电视，本机 ARP 表里才会有它的 MAC。</p>
+    </section>
+
     <!-- 调用时间线：学 Chrome DevTools Network 面板 / Android Studio App Inspection 的瀑布流。
          数据来自 /api/perf（服务端环形缓冲，只在被问到时给快照）；右端=现在，横条=耗时 -->
     <section class="card" id="perfCard" data-needs-device>
