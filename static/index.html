@@ -178,6 +178,17 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
       <p class="hint" id="kbdHint">点一下页面空白处，然后直接用键盘遥控：<b>方向键</b> 移动 · <b>回车</b>=OK · <b>Esc</b>=返回 · <b>退格</b>=删除 · <b>PageUp/Down</b> 翻页 · <b>媒体键</b> 播放控制。在输入框里打字则作为文本发送。</p>
     </section>
 
+    <!-- 收藏夹 / 快捷启动：学浏览器 Speed Dial / VS Code Favorites / Plex「Continue Watching」
+         的「固定常用、一键直达」。一天的遥控动作其实集中在三五个 App 上——让它们不随
+         「最近使用」滚动消失。固定入口在下方预设列表与 Apple TV 应用列表的星标；
+         纯前端 localStorage（键 atv.favApps），不进 state.json——后者会被打进 bundle.tgz
+         分发给局域网任何设备。 -->
+    <section class="card" id="favCard">
+      <h2>⭐ 快捷启动 <span id="favCount" class="badge">—</span></h2>
+      <div id="favList"></div>
+      <p class="hint hidden" id="favEmpty">还没有收藏。在下方「📦 应用」里点 ★ 把常用 App 固定到这里——顺序即优先级，新固定的排在最前。</p>
+    </section>
+
     <section class="card" id="appsCard">
       <h2>📦 应用</h2>
       <div id="appsAndroid">

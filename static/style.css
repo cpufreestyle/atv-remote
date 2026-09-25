@@ -810,3 +810,16 @@ body.disc [data-needs-device] { opacity: .45; filter: saturate(.5); }
   /* 脉冲只是「别以为卡死了」的安慰剂，关闭动效时不该变成注意力焦点 */
   .woldot { animation: none; }
 }
+
+/* ---------- 收藏夹 / 快捷启动（学 Speed Dial / VS Code Favorites / Plex「Continue Watching」） ----------
+   形态与设备行 / 远程开机同一套：名字 flex:1 + 右侧小按钮。预设区与 Apple TV 列表从
+   chip 横排切成行（.rows）——星标要有位置，且「钉子」和「流水」的形态必须一眼分出来。
+   星标状态走 aria-pressed，颜色即状态，不靠动效；不写死任何 hex / rgb / hsl。 */
+#favList { display: grid; gap: var(--sp-2); margin-top: var(--sp-2); }
+.favrow .btn { flex: 1; min-width: 0; justify-content: flex-start; }
+.favrow .btn.tiny { flex: none; }
+.brow.apps.rows { display: grid; gap: var(--sp-2); margin-top: var(--sp-2); }
+.brow.apps.rows .btn { flex: 1; min-width: 0; justify-content: flex-start; }
+.brow.apps.rows .btn.tiny { flex: none; }
+.favstar[aria-pressed="false"] { color: var(--muted); }
+.favstar[aria-pressed="true"] { color: var(--warn-text); border-color: var(--warn); }

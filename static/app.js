@@ -252,6 +252,62 @@ function wolSummary(targets) {
 }
 /* ===== wake-on-lan:end ===== */
 
+/* ===== favorites:begin =====
+   收藏夹 / 快捷启动纯函数段：禁 DOM / localStorage / fetch / innerHTML / $(
+   （tests/fav_harness.js 直接抽这段执行）。
+   学的是三家的同一个观察：浏览器 Speed Dial 把天天进的站钉在新标签页，VS Code
+   Favorites 让常用文件不靠回忆路径，Plex 的「Continue Watching」把没看完的顶到第一排。
+   遥控器上的对应物就是那三五个 App——功能越加越多，用户一天里真正点的还是它们。
+   所以收藏夹不是新能力，而是把既有的启动通道（launchApp → /api/cmd 的 type=app）
+   缩短到一键：固定常用、顺序即优先级、点到即播。零新增后端。
+   三条口径：
+   1) 持久化只落浏览器 localStorage（键 atv.favApps）——state.json 会被打进
+      bundle.tgz 分发给局域网任何设备，可重放内容不该进去；
+   2) 数量必须设上限：收藏夹超过一屏就退化成「全部应用」，失去「省得找」的意义；
+      满员时拒绝并让调用方提示，绝不静默丢弃；
+   3) 名字解析逐级兜底（pin 自带 → 预设表 → 最近使用 → 包名末段）——坏数据不炸，
+      也不把 com.google.android.youtube.tv 这种长串糊在按钮上。 */
+const FAV_MAX = 8;                 // 上限：超过一屏的收藏夹没有「省得找」的意义
+function favNorm(list) {
+  const out = [];
+  if (!Array.isArray(list)) return out;
+  const seen = {};
+  for (let i = 0; i < list.length && out.length < FAV_MAX; i++) {
+    const it = list[i];
+    if (!it || typeof it !== "object") continue;
+    const pkg = typeof it.pkg === "string" ? it.pkg.trim() : "";
+    if (!pkg || seen[pkg]) continue;
+    seen[pkg] = 1;
+    const name = typeof it.name === "string" ? it.name.trim() : "";
+    out.push({ name: name, pkg: pkg });
+  }
+  return out;
+}
+function favIsPinned(list, pkg) {
+  return favNorm(list).some((a) => a.pkg === pkg);
+}
+function favToggle(list, pkg, name) {
+  const cur = favNorm(list);
+  if (cur.some((a) => a.pkg === pkg)) return cur.filter((a) => a.pkg !== pkg);
+  if (cur.length >= FAV_MAX) return null;   // 满员拒绝：调用方 toast，别静默丢
+  cur.unshift({ name: typeof name === "string" ? name.trim() : "", pkg: pkg });
+  return cur;
+}
+function favResolve(list, apps, recent) {
+  const lookup = {};
+  const feed = (arr) => (Array.isArray(arr) ? arr : []).forEach((a) => {
+    if (a && typeof a.pkg === "string" && a.pkg && !lookup[a.pkg])
+      lookup[a.pkg] = typeof a.name === "string" ? a.name : "";
+  });
+  feed(apps);
+  feed(recent);
+  return favNorm(list).map((p) => ({
+    pkg: p.pkg,
+    name: p.name || lookup[p.pkg] || p.pkg.split(".").slice(-1)[0],
+  }));
+}
+/* ===== favorites:end ===== */
+
 /* ---- 通知队列 DOM 胶水：规则在上面纯函数段，这里只管渲染 / 计时 / 持久化 ---- */
 const notifQueue = [];
 let notifHistory = [];
@@ -2453,13 +2509,17 @@ async function loadAtvApps() {
   try {
     const r = await api("/api/atv/apps", {});
     box.innerHTML = "";
+    box.classList.add("rows");   // Apple 应用列表同样切行：每行带星标可固定
     (r.apps || []).forEach((a) => {
+      const row = document.createElement("div");
+      row.className = "atvrow favrow pinrow";
       const b = document.createElement("button");
       b.className = "btn";
       b.textContent = a.name || a.id;
       MACRO_PKG_NAMES[a.id] = a.name || a.id;   // 让宏步骤列表能显示中文名
       b.onclick = () => launchApp(a.name || a.id, a.id);
-      box.appendChild(b);
+      row.append(b, favStarBtn(a.name || a.id, a.id));   // 星标 → 固定到收藏夹
+      box.appendChild(row);
     });
     if (!box.children.length) box.innerHTML = '<span class="hint">未获取到应用列表</span>';
   } catch (e) {
@@ -2640,15 +2700,86 @@ async function launchApp(name, pkg) {
   try { await api("/api/cmd", { type: "app", pkg }); log(`→ 启动 ${name}`); }
   catch (e) { log("⚠ " + e.message); toast(e.message); }
 }
-const appsEl = $("#apps");
-APPS.forEach((a) => {
-  const b = document.createElement("button");
-  b.className = "btn";
-  b.textContent = a.name;
-  b.onclick = () => launchApp(a.name, a.pkg);
-  appsEl.appendChild(b);
-});
+/* ---- 收藏夹 DOM 胶水：规则在上面 favorites 纯函数段，这里只管 localStorage / 渲染 / 星标 ---- */
+const FAV_KEY = "atv.favApps";      // 只活在浏览器里：state.json 会被打进 bundle.tgz，可重放内容不进敏感文件
+const favLoad = () => {
+  try { return favNorm(JSON.parse(localStorage.getItem(FAV_KEY)) || []); }
+  catch (e) { return []; }
+};
+const favSave = (list) => {
+  try { localStorage.setItem(FAV_KEY, JSON.stringify(favNorm(list))); }
+  catch (e) { /* 隐私模式写不进 localStorage：这轮会话照常能用，重启不记得 */ }
+  favRender();
+};
+function favTogglePin(name, pkg) {
+  const next = favToggle(favLoad(), pkg, name);
+  if (next === null) { toast("收藏夹最多 " + FAV_MAX + " 个，先取消一个再固定"); return false; }
+  favSave(next);
+  const on = favIsPinned(next, pkg);
+  toast(on ? "★ 已收藏 " + name : "已取消收藏 " + name);
+  return on;
+}
+function favRender() {
+  const box = $("#favList");
+  const pins = favLoad();
+  const list = favResolve(pins, APPS, recentApps());
+  box.textContent = "";
+  $("#favEmpty").classList.toggle("hidden", !!list.length);
+  $("#favCount").textContent = list.length ? String(list.length) : "—";
+  list.forEach((a) => {
+    const row = document.createElement("div");
+    row.className = "atvrow favrow";
+    const b = document.createElement("button");
+    b.className = "btn";
+    b.textContent = "★ " + a.name;
+    b.onclick = () => launchApp(a.name, a.pkg);
+    const x = document.createElement("button");
+    x.className = "btn tiny";
+    x.type = "button";
+    x.title = "取消收藏";
+    x.textContent = "✕";
+    x.onclick = () => favTogglePin(a.name, a.pkg);
+    row.append(b, x);
+    box.appendChild(row);
+  });
+  // 预设区 / Apple TV 列表里的星标都是收藏夹的视图：一个数据源，这里统一刷新
+  $$(".favstar").forEach((s) => {
+    const on = favIsPinned(pins, s.dataset.pkg);
+    s.textContent = on ? "★" : "☆";
+    s.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+}
+function favStarBtn(name, pkg) {
+  const s = document.createElement("button");
+  s.className = "btn tiny favstar";
+  s.type = "button";
+  s.title = "收藏 / 取消收藏";
+  s.dataset.pkg = pkg;
+  s.setAttribute("aria-pressed", "false");
+  s.textContent = "☆";
+  s.onclick = () => favTogglePin(name, pkg);
+  return s;
+}
+/* Android 预设一行一枚：名字按钮（点击即启动）+ 星标（固定到收藏夹）。
+   横排芯片留给「最近使用」——那是流水，收藏是钉子，形态要一眼分出来（样式见 .rows）。 */
+function renderAppPresets() {
+  const box = $("#apps");
+  box.textContent = "";
+  box.classList.add("rows");
+  APPS.forEach((a) => {
+    const row = document.createElement("div");
+    row.className = "atvrow favrow pinrow";
+    const b = document.createElement("button");
+    b.className = "btn";
+    b.textContent = a.name;
+    b.onclick = () => launchApp(a.name, a.pkg);
+    row.append(b, favStarBtn(a.name, a.pkg));
+    box.appendChild(row);
+  });
+}
+renderAppPresets();
 renderRecentApps();
+favRender();
 $("#pkgBtn").addEventListener("click", async () => {
   const pkg = $("#pkgInput").value.trim();
   if (!pkg) return;
@@ -3399,6 +3530,9 @@ function palCommands() {
     "打开 启动 app open launch " + a.name + " " + a.pkg, () => launchApp(a.name, a.pkg), a.pkg));
   recentApps().forEach((a) => push("rapp:" + a.pkg, "应用", "🕘", `打开 ${a.name}（最近使用）`,
     "最近 recent " + a.name + " " + a.pkg, () => launchApp(a.name, a.pkg), "最近"));
+  favResolve(favLoad(), APPS, recentApps()).forEach((a) => push("fav:" + a.pkg, "收藏", "★",
+    `打开 ${a.name}（收藏）`, "收藏 固定 常用 favorite pin quick " + a.name + " " + a.pkg,
+    () => launchApp(a.name, a.pkg), "收藏夹"));
   // —— 按键 ——（与页面上的物理键同一出口 sendKey，长按连发/音量 OSD 都带着）
   const PAL_KEYS = [[19, "上"], [20, "下"], [21, "左"], [22, "右"], [23, "确定"], [4, "返回"],
     [3, "主页"], [82, "菜单"], [26, "电源"], [224, "唤醒"], [24, "音量+"], [25, "音量-"], [164, "静音"],
