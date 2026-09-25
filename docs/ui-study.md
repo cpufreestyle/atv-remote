@@ -484,3 +484,67 @@ Plyr（sampotts/plyr，MIT）src/js/controls.js + defaults.js：
   E 设置「重看一遍」→ stage "all" 共 5 步，顺序为 连接电视 → 方向键长按连发 → 触摸板四种手势 → 直接用键盘遥控 → ⏪15/⏩15 快进快退；
   F 隐藏 #touchpad 后 showCoachStep(2) → 直接跳到第 4 步「直接用键盘遥控」；隐藏 #npSeek 后 showCoachStep(4) → finishCoach() 收尾、弹窗关闭、key 落盘。
 - 截图交付：post 第 1 步、chained 连接成功接 post、常态 UI。
+
+## 第十四轮：学 Home Assistant script 实体 → 宏执行进度可视化（1.17.0 / versionCode 18）
+
+### 学习源
+homeassistant/components/script（Home Assistant 的 script 实体）。它把一次后台执行的
+「当前第几步 / 完成几步 / 失败几步 / 是否被取消」当一等状态暴露给前端，UI 只做投影、
+不自己推断跑到哪。同一思路也见 HA 的 automation 实体 trace（每步显式列举）。
+
+### 为什么选它
+项目里唯一在服务端线程里异步执行的命令就是 type=macro（_macro_worker），
+20 步 × 每步 10s 延时会超过前端 fetch 的耐心。服务端明确「单步失败不中断整条宏」，
+但失败原因只进 stderr，手机上完全看不到：哪一步挂了、跑到第几步、是不是被取消了。
+进度可见性是这块唯一的窟窿。
+
+### 落地
+- server.py：_macro_lock + _macro_prog = {run, name, total, index, done, failed, cancelled}，
+  macro_state() 扩为持锁的完整快照（dict 拷贝）；_macro_mark(**kw) / _macro_fail()
+  （done / failed 是自增，必须锁内读-改-写）；handle_macro() 的 run 分支递增 run
+  并重置进度——run 是单调运行代号，前端靠它区分「新的一次刚结束」和「从没跑过」。
+- static/index.html：#macroCancelBtn 之后插 #macroProg（aria-live=polite，
+  含 #macroProgFill / #macroProgStep / #macroProgFail）。
+- static/app.js：renderMacroState() 重写。首帧只吸收历史结果不当成新事件；结束后汇总
+  留在进度条原位，直到下一次运行顶掉；prog 字段缺失时降级、不阻断 8s 轮询。
+  Macro.steps 只存步骤描述（自定义宏的步骤只在浏览器 localStorage）。
+- static/style.css：.mprog / .mprogtrack / .mprogfill / .mprogmeta / .mprogfail + .ok/.warn/.bad
+  语义色（复用音量 OSD 那一套画法），prefers-reduced-motion 下关 transition。
+- 顺带两处同主题打磨：
+  1. 宏按钮 tooltip 改用 macroStepText()（与进度条共一套步骤描述）——纯延时步以前在
+     b.title 里被渲染成字面 undefined（app → undefined+2500ms）。
+  2. macroShowResult() 里给 #macroState 收尾——少了这句，宏结束后状态行还停在
+     「执行中」，和进度条自相矛盾。
+
+### 踩到的坑
+- Service Worker 会骗你：改完 static/app.js 后 reload，页面拿到的是 atv-shell-v1
+  缓存里的旧代码，Page.reload / Network.setCacheDisabled 都不管用（SWR 分支先返缓存）。
+  必须先 navigator.serviceWorker.getRegistrations() → unregister + caches.delete()，
+  再 reload 才拿到新文件。本轮第一轮 CDP 断言里进度条生效但状态行没变，就是这个原因。
+- repl 里 const 重声明不会抛到我眼前：第二次用同名变量时 evaluate 直接返回 undefined，
+  仿佛页面逻辑坏了。换新变量名即可。
+- iab 标签页跨 repl 调用会失效（Tab 20 is not part of browser session …），reload 失败就用
+  cua.createBrowserTab("iab", url) 重开，别在旧 tab 上死磕。
+- 本 harness 的 nodeRepl.emitImage 两种入参形态都不接受，repl 也没有网络（fetch 本地收件
+  服务器失败），CDP 截图要落盘只能把 base64 经我这边中转，成本远高于收益——本轮改用 DOM
+  断言做验收，截图不交付。
+
+### 验证
+- node --check static/app.js、python3 -c 'import server; import atv_backend' 通过。
+- ./sync-native.sh：90 单测 OK（含 3 个新进度断言）+ 内嵌副本逐字节一致 → ALL CHECKS PASSED。
+- CDP 实测（fake adb，http://127.0.0.1:8411/，8 次真实运行）：
+  - 未执行：#macroProg = mprog hidden（getComputedStyle().display = none）、
+    #macroCancelBtn 隐藏、状态行是默认提示词；
+  - 执行中（点「看 YouTube」）：mprog running、width 50%、
+    第 1 / 2 步 · 🎬 启动 YouTube（2 个候选包），1.5s 轮询一次持续推进；
+  - 全部成功（点「回主页」）：mprog ok、100%、「回主页」完成 · 1/1 步、
+    ✅ 宏「回主页」完成 · 1 步；
+  - 有步骤失败（fake adb 下启动 app 必失败）：mprog warn、1 步失败、
+    ⚠ 宏「看 YouTube」完成，2 步里有 1 步失败，#log 同步一行 ⚠ 汇总；
+  - 取消（点「观影模式」后立刻点取消）：mprog bad、100%、「观影模式」已取消 · 1/3 步、
+    ⏹ 宏「观影模式」已取消 · 执行了 1/3 步，取消按钮重新隐藏；
+  - 刷新页面：进度条回到 hidden、步骤文案清空、状态行回默认提示——历史结果不会被
+    当成「刚跑完的一条」再报一遍；
+  - 服务端 /api/macros：run 每次 +1，末次 {run: 8, total: 3, index: 1, done: 1, failed: 0, cancelled: true}；
+  - 5 个宏按钮 tooltip 均为可读步骤描述（🎬 启动 Netflix（2 个候选包） → ⏱ 等 2.5s → ⌨ 音量-、音量-、音量- ×3）。
+
