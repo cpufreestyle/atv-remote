@@ -472,6 +472,20 @@ code {
   border: 1px dashed var(--line); border-radius: var(--r-md); }
 .madd { margin-bottom: var(--sp-2); }
 .merr:not(:empty) { color: var(--danger-text); }
+/* ---------- 宏执行进度 ----------
+   学 Home Assistant script 实体的「进度是一等状态」：服务端报了第几步/失败几步，
+   这里只负责把它画出来。轨道用 card3、填充按结果切语义色，跟音量 OSD 同一套画法。 */
+.mprog { margin: var(--sp-2) 0 0; }
+.mprogtrack { height: 6px; background: var(--card3); border-radius: var(--r-full); overflow: hidden; }
+.mprogfill { height: 100%; width: 0; background: var(--accent-solid); border-radius: var(--r-full);
+  transition: width var(--dur) var(--ease); }
+.mprog.ok .mprogfill { background: var(--ok); }
+.mprog.warn .mprogfill { background: var(--warn); }
+.mprog.bad .mprogfill { background: var(--danger); }
+.mprogmeta { display: flex; justify-content: space-between; align-items: baseline; gap: var(--sp-2);
+  margin-top: 5px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.mprogfail:not(:empty) { color: var(--danger-text); }
+@media (prefers-reduced-motion: reduce) { .mprogfill { transition: none; } }
 .mform {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   background: var(--card2); border: 1px solid var(--accent); border-radius: var(--r-md);

@@ -76,6 +76,7 @@ class MacroRunTest(unittest.TestCase):
     def setUp(self):
         self.saved = (server.adb, dict(server.state),
                       server._macro_running.is_set(), server._macro_stop.is_set())
+        self.saved_prog = (dict(server._macro_prog), server._macro_seq)
         server.adb = _FakeAdb()
         server.state.clear()
         server.state.update({"current": {"type": "android", "target": "s"}})
@@ -88,6 +89,10 @@ class MacroRunTest(unittest.TestCase):
          run, stop) = self.saved
         server._macro_running.set() if run else server._macro_running.clear()
         server._macro_stop.set() if stop else server._macro_stop.clear()
+        prog, seq = self.saved_prog
+        server._macro_prog.clear()
+        server._macro_prog.update(prog)
+        server._macro_seq = seq
 
     def test_steps_run_in_order_and_stop_event_halts_mid_run(self):
         steps = [{"type": "key", "code": 25},
@@ -153,6 +158,61 @@ class MacroRunTest(unittest.TestCase):
             server._macro_worker = real
         self.assertTrue(r["running"])
         self.assertTrue(done.wait(2))
+
+    def _wait_idle(self):
+        """等线程里的宏跑完（最多 3s），返回结束后的进度快照"""
+        for _ in range(300):
+            if not server._macro_running.is_set():
+                break
+            time.sleep(0.01)
+        self.assertFalse(server._macro_running.is_set(), "宏没在 3s 内跑完")
+        return server.macro_state()
+
+    def test_progress_reports_total_done_and_failed(self):
+        server.adb = _FakeAdb(fail_pkgs=["not.installed.pkg"])
+        server.handle_macro({"name": "演示", "steps": [
+            {"type": "app", "pkg": "not.installed.pkg"},
+            {"type": "key", "code": 25},
+            {"type": "key", "code": 24}]})
+        s = self._wait_idle()
+        self.assertEqual(s["total"], 3)
+        self.assertEqual(s["done"], 3)
+        self.assertEqual(s["failed"], 1)      # 失败计数：以前只进 stderr，现在可见
+        self.assertEqual(s["name"], "演示")
+        self.assertFalse(s["cancelled"])
+        self.assertFalse(s["running"])
+        self.assertGreater(s["run"], 0)
+        # 三步都真的跑了：单步失败不中断整条宏
+        self.assertEqual(server.adb.calls,
+                         ["monkey -p not.installed.pkg -c android.intent.category.LAUNCHER 1",
+                          "input keyevent 25",
+                          "input keyevent 24"])
+
+    def test_cancel_sets_cancelled_flag_in_progress(self):
+        real_wait = server._macro_stop.wait
+        server._macro_stop.wait = lambda t: True    # 模拟「取消发生在延时里」
+        try:
+            server.handle_macro({"name": "演示", "steps": [
+                {"type": "key", "code": 25},
+                {"type": "key", "code": 24, "delay": 3000}]})
+        finally:
+            server._macro_stop.wait = real_wait
+        s = self._wait_idle()
+        self.assertTrue(s["cancelled"])
+        self.assertEqual(s["done"], 1)
+        self.assertEqual(server.adb.calls, ["input keyevent 25"])
+
+    def test_run_id_increments_between_runs(self):
+        first = server.macro_state()["run"]
+        server._macro_worker("直跑", [{"type": "key", "code": 25}])
+        self.assertEqual(server.macro_state()["run"], first)   # worker 不碰运行代号
+        server.handle_macro({"name": "甲", "steps": [{"type": "key", "code": 25}]})
+        a = self._wait_idle()
+        server.handle_macro({"name": "乙", "steps": [{"type": "key", "code": 24}]})
+        b = self._wait_idle()
+        self.assertGreater(a["run"], first)
+        self.assertGreater(b["run"], a["run"])
+        self.assertEqual(b["name"], "乙")
 
 
 class TokenPolicyTest(unittest.TestCase):

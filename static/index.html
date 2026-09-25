@@ -202,6 +202,14 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
       <div class="brow apps" id="macroRow"></div>
       <p class="hint" id="macroState">宏会按顺序执行多步操作（应用包名会依次尝试 Android / tvOS）。</p>
       <button id="macroCancelBtn" class="btn danger hidden">⏹ 取消执行中的宏</button>
+      <!-- 执行进度：数字来自服务端 macro_state()，前端只做投影；结束后汇总留到下次运行 -->
+      <div class="mprog hidden" id="macroProg" aria-live="polite">
+        <div class="mprogtrack"><div class="mprogfill" id="macroProgFill"></div></div>
+        <div class="mprogmeta">
+          <span id="macroProgStep"></span>
+          <span class="mprogfail" id="macroProgFail"></span>
+        </div>
+      </div>
       <details id="macroCustom">
         <summary>自定义宏（可视化编辑，保存在本浏览器）</summary>
         <div id="macroSteps" class="msteps" aria-live="polite"></div>

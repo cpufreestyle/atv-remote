@@ -577,7 +577,8 @@ function macroButton(m, custom) {
   b.className = "btn";
   b.dataset.macro = m.id || m.name;
   b.textContent = (custom ? "⭐ " : "") + m.name;
-  b.title = (m.steps || []).map((st) => st.type + (st.delay ? `+${st.delay}ms` : "")).join(" → ");
+  /* 和进度条共用同一套步骤描述：纯延时步以前在这里渲染成 "undefined" */
+  b.title = (m.steps || []).map(macroStepText).join(" → ");
   b.addEventListener("click", () => runMacro(m));
   if (custom) {
     const del = document.createElement("button");
@@ -615,18 +616,78 @@ async function loadMacros() {
   }
 }
 
+/* ---------------- 宏执行进度 ----------------
+   学 Home Assistant 的 script 实体（homeassistant/components/script）：后台任务把
+   「第几步 / 完成几步 / 失败几步 / 是否被取消」当一等状态暴露（服务端 macro_state()），
+   前端只做投影、不推断跑到哪。run 是递增运行代号：区分「新的一次刚结束」与「从没跑过」，
+   也保证汇总只记一条日志。自定义宏的步骤只存在浏览器 localStorage，所以本地留一份
+   Macro.steps 供步骤描述用；刷新页面后丢了就只报步号——总步数服务端仍然给得出。 */
+const Macro = { run: 0, steps: [], primed: false };
+
+function macroStepText(step) {
+  if (!step) return "";
+  const { icon, text } = macroStepLabel(step);
+  return `${icon} ${text}`;
+}
+
+/* 一次运行结束：汇总留在进度条原位，直到下一次运行把它顶掉。
+   失败计数终于对用户可见——以前它只进服务端 stderr，手机上没人知道哪一步挂了。 */
+function macroShowResult(j) {
+  const prog = $("#macroProg");
+  if (!prog) return;
+  const total = j.total || 0, failed = j.failed || 0;
+  prog.classList.remove("hidden");
+  prog.className = "mprog " + (j.cancelled ? "bad" : failed ? "warn" : "ok");
+  $("#macroProgFill").style.width = "100%";
+  const what = j.cancelled ? "已取消" : failed ? "完成，但有失败" : "完成";
+  $("#macroProgStep").textContent =
+    `「${j.name || "宏"}」${what} · ${j.done || 0}/${total} 步`;
+  $("#macroProgFail").textContent = failed ? `${failed} 步失败` : "";
+  log(`${j.cancelled ? "⏹" : failed ? "⚠" : "✅"} 宏「${j.name || "宏"}」${what}：` +
+      `${j.done || 0}/${total} 步${failed ? `，${failed} 步失败` : ""}`);
+  /* 状态行收尾：进度条说「第几步 / 完成到哪」，状态行说「这次跑成了什么」。
+     少了这句，宏结束后状态行还停在「⏳ 执行中」，和进度条自相矛盾。 */
+  const state = $("#macroState");
+  if (state) {
+    const name = j.name || "宏";
+    state.textContent = j.cancelled
+      ? `⏹ 宏「${name}」已取消 · 执行了 ${j.done || 0}/${total} 步`
+      : failed ? `⚠ 宏「${name}」完成，${total} 步里有 ${failed} 步失败`
+               : `✅ 宏「${name}」完成 · ${total} 步`;
+  }
+}
+
 function renderMacroState(j) {
   clearInterval(macroTick);
   macroTick = null;
   const cancelBtn = $("#macroCancelBtn");
   const stateEl = $("#macroState");
+  const prog = $("#macroProg");
   const running = !!(j && j.running);
   if (cancelBtn) cancelBtn.classList.toggle("hidden", !running);
   if (!running) {
-    stateEl.textContent = "宏会按顺序执行多步操作（应用包名会依次尝试 Android / tvOS）。";
+    if (j && j.run && j.run !== Macro.run) {
+      Macro.run = j.run;
+      if (Macro.primed) { macroShowResult(j); return; }
+      Macro.primed = true;   // 首帧只吸收历史结果，不当成「刚跑完的一条」来报
+    }
+    if (Macro.run) return;   // 汇总已在展示，留到下一次运行顶掉
+    if (stateEl) stateEl.textContent = "宏会按顺序执行多步操作（应用包名会依次尝试 Android / tvOS）。";
+    if (prog) prog.classList.add("hidden");
     return;
   }
-  stateEl.textContent = "⏳ 宏执行中……（可取消；每步结果见下方日志）";
+  Macro.primed = true;
+  if (stateEl) stateEl.textContent = "⏳ 宏执行中……（可取消；每步结果见下方日志）";
+  if (prog) {
+    const total = Math.max(1, j.total || 0);
+    const idx = Math.min(total, Math.max(0, j.index || 0));
+    prog.classList.remove("hidden");
+    prog.className = "mprog running";
+    $("#macroProgFill").style.width = (idx / total * 100) + "%";
+    const desc = macroStepText(Macro.steps[idx - 1]);
+    $("#macroProgStep").textContent = `第 ${idx} / ${total} 步` + (desc ? ` · ${desc}` : "");
+    $("#macroProgFail").textContent = j.failed ? `${j.failed} 步失败` : "";
+  }
   macroTick = setInterval(async () => {
     try {
       const again = await api("/api/macros");
@@ -637,6 +698,7 @@ function renderMacroState(j) {
 
 async function runMacro(m) {
   try {
+    Macro.steps = Array.isArray(m.steps) ? m.steps.slice() : [];   // 只用于步骤描述
     log(`⚡ 执行宏「${m.name}」…`);
     const r = await api("/api/cmd", { type: "macro", name: m.name, steps: m.steps });
     renderMacroState(r);
