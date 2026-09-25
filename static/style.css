@@ -610,6 +610,42 @@ code {
   border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font-size: 11px; }
 .palfoot .paltip { margin-left: auto; }
 
+/* ---------- 按键自定义（第十八轮；学 Kodi keymap 分层覆盖 / macOS 修饰键重映射 / HA remote command 目录） ----------
+   物理键 -> 动作的绑定表存 localStorage（与自定义宏同规矩：state.json 敏感，不放可编辑
+   内容）。动作列表复用命令面板行式布局：≥36px 触控目标、accent 边 + 软底表示当前绑定
+   （与 .shotthumb[aria-current] 同语义）。改绑过的键在键面镶 • 圆点，一眼看出「这个
+   键动过」；D-pad 圆点收在角落，不挡方向/OK glyph。颜色只引用令牌。 */
+.kmhintbar { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2); }
+.kmhintbar .hint { flex: 1; min-width: 0; margin: 0; }
+.kmbox { width: min(560px, 94vw); }
+.kmbar { display: flex; align-items: baseline; gap: var(--sp-2); padding: 0 var(--sp-1) var(--sp-2); }
+.kmkey { flex: none; font-size: 15px; font-weight: 600; color: var(--text); }
+.kmcur { flex: 1; min-width: 0; font-size: 12.5px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kmlist { max-height: 46vh; overflow-y: auto; overscroll-behavior: contain; }
+.kmgroup { padding: var(--sp-2) var(--sp-1) var(--sp-1); color: var(--faint);
+  font-size: 11px; font-weight: 600; letter-spacing: .04em; }
+.kmrow { display: flex; align-items: center; gap: var(--sp-2); width: 100%; min-height: 36px;
+  padding: var(--sp-1) var(--sp-2); border: 1px solid transparent; border-radius: var(--r-sm);
+  background: var(--card2); color: var(--text); font-size: 13.5px; text-align: left;
+  margin-bottom: var(--sp-1); }
+.kmrow:hover { border-color: var(--accent); }
+.kmrow[aria-current="true"] { border-color: var(--accent-solid); background: var(--accent-soft); }
+.kmrow[aria-current="true"] .kmlabel { color: var(--accent-text); }
+.kmlabel { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kmrow .kmhint { flex: none; max-width: 45%; color: var(--faint); font-size: 11.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kmfoot { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2);
+  padding-top: var(--sp-2); border-top: 1px solid var(--line-soft); }
+.kmfoot .btn:last-child { margin-left: auto; }
+.kmempty { padding: var(--sp-3) var(--sp-1); color: var(--faint); font-size: 13px; line-height: 1.7; }
+/* 改绑过的键镶 • 圆点 */
+.dk.remapped, .btn.remapped { position: relative; }
+.dk.remapped::after, .btn.remapped::after {
+  content: "•"; position: absolute; top: 1px; right: 5px; font-size: 13px; line-height: 1;
+  color: var(--accent-solid); pointer-events: none; }
+.dk.ok.remapped::after { top: auto; bottom: 4px; right: 9px; }
+
 .hidden { display: none !important; }
 
 /* ---------- 手机安装引导 ---------- */

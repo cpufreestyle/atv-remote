@@ -1618,23 +1618,28 @@ document.addEventListener("visibilitychange", () => { if (document.hidden) stopA
 
 $$("[data-key]").forEach((btn) => {
   const code = +btn.dataset.key;
-  let hold = null, rep = null;
+  let hold = null, rep = null, edit = null;
   const stop = () => {
-    clearTimeout(hold); clearInterval(rep); hold = rep = null;
+    clearTimeout(hold); clearInterval(rep); clearTimeout(edit);
+    hold = rep = edit = null;
     btn.classList.remove("pressed");
     if (activeHoldStop === stop) activeHoldStop = null;
   };
-  const tick = () => sendKey(code);
+  const tick = () => kmSend(code);
+  const bound = () => kmMap[String(code)];
 
   btn.addEventListener("pointerdown", (e) => {
     if (e.pointerType === "mouse" && e.button !== 0) return;
     stopActiveHold();                 // 换键重按：先停掉上一个
     buzz();                           // 先震后发：延迟由网络决定，反馈不能等
-    sendKey(code);
+    kmSend(code);                     // 统一出口：没改绑就发自己（历史行为）
     btn.classList.add("pressed");     // 按压态全程保持，stop() 里摘掉
-    if (!HOLD_KEYS.has(code)) return;
-    hold = setTimeout(() => { rep = setInterval(tick, HOLD_RATE); }, HOLD_DELAY);
-    activeHoldStop = stop;
+    if (kmHoldable(bound())) {         // 连发按绑定目标推导：启动器/宏不连发
+      hold = setTimeout(() => { rep = setInterval(tick, HOLD_RATE); }, HOLD_DELAY);
+      activeHoldStop = stop;
+    }
+    // 长按进改键弹窗：触发时先停连发，别让用户白白多发几个键
+    edit = setTimeout(() => { stop(); kmOpen(code, btn); }, KM_EDIT_MS);
   });
   ["pointerup", "pointerleave", "pointercancel"].forEach((ev) =>
     btn.addEventListener(ev, stop));
@@ -1643,7 +1648,7 @@ $$("[data-key]").forEach((btn) => {
   btn.addEventListener("click", (e) => {
     if (e.detail !== 0) return;
     buzz();
-    sendKey(code);
+    kmSend(code);
   });
 });
 
@@ -2152,6 +2157,179 @@ document.addEventListener("keydown", (e) => {
 
 loadMacros();
 
+/* ---------------- 按键自定义（第十八轮；学 Kodi keymap 分层覆盖 / macOS 修饰键重映射 / HA remote command 目录） ----------------
+   物理键 -> 动作。绑定表存 localStorage（与自定义宏同规矩：state.json 敏感，不放可编辑
+   内容），默认行为是「发这个键自己的 keyevent」——没改绑的键走 sendKey(code)，与历史
+   版本行为一致。动作目录全部复用既有出口（sendKey / launchApp / runMacro），零新增后端
+   路由。连发性跟随绑定目标推导：方向/音量/seek 类 keyevent 可连发；启动器与宏不连发
+   （连发启动器 = 连环重启 App）。长按键 550ms 进改键弹窗：pointerdown 即发送保持旧
+   手感，长按只是附加入口，触发时先停连发，不让用户白白多发几个键。 */
+const KM_LS = "atv.keymap_v1";
+const KM_EDIT_MS = 550;
+// 可绑定的 keyevent 目录（与命令面板 PAL_KEYS 同源，补回车：文本框场景常用）
+const KM_KEY_ACTIONS = [[19, "上"], [20, "下"], [21, "左"], [22, "右"], [23, "确定"], [4, "返回"],
+  [3, "主页"], [82, "菜单"], [26, "电源"], [224, "唤醒"], [24, "音量+"], [25, "音量-"], [164, "静音"],
+  [85, "播放 / 暂停"], [87, "下一集"], [88, "上一集"], [86, "停止"], [66, "回车"]];
+let kmMap = loadKeymap();          // {"19": "app:com…"}；空对象 = 全部默认
+let kmEditCode = null;             // 正在改绑的物理键（null = 引导态）
+
+function loadKeymap() {
+  try {
+    const v = JSON.parse(localStorage.getItem(KM_LS));
+    return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+  } catch (e) { return {}; }
+}
+function saveKeymap() { localStorage.setItem(KM_LS, JSON.stringify(kmMap)); }
+
+function kmKeyName(code) {
+  const hit = KM_KEY_ACTIONS.find((k) => k[0] === code);
+  return hit ? hit[1] : "键码 " + code;
+}
+
+// 动作 id -> {label, hint, run}；null = 绑定已失效（应用被删 / 宏被清）
+function kmFind(action) {
+  if (!action) return null;          // 没改绑：默认行为，不是「绑定失效」
+  if (action === "none") return { label: "无操作", hint: "按下什么都不做", run: () => {} };
+  if (action.startsWith("key:")) {
+    const code = +action.slice(4);
+    return { label: "按键 " + kmKeyName(code), hint: "keyevent " + code, run: () => sendKey(code) };
+  }
+  if (action.startsWith("app:")) {
+    const pkg = action.slice(4);
+    const a = APPS.find((x) => x.pkg === pkg) || recentApps().find((x) => x.pkg === pkg);
+    if (!a) return null;
+    return { label: "打开 " + a.name, hint: a.pkg, run: () => launchApp(a.name, a.pkg) };
+  }
+  if (action.startsWith("macro:")) {
+    const id = action.slice(6);
+    const m = [...(Macro.presets || []), ...customMacros()].find((x) => String(x.id || x.name) === id);
+    if (!m) return null;
+    return { label: "运行宏「" + m.name + "」", hint: (m.steps || []).length + " 步", run: () => runMacro(m) };
+  }
+  return null;
+}
+
+// 统一发送入口：没改绑就发自己（历史行为），改了绑按绑定分发
+async function kmSend(code) {
+  const action = kmMap[String(code)];
+  if (!action) return sendKey(code);
+  const f = kmFind(action);
+  if (!f) { toast("该键的绑定已失效，重新设置一下"); return; }
+  buzz();
+  return f.run();
+}
+
+// 长按是否连发：只认 keyevent，且目标键本身在 HOLD_KEYS 里
+function kmHoldable(action) {
+  if (!action || action === "none") return false;
+  return action.startsWith("key:") && HOLD_KEYS.has(+action.slice(4));
+}
+
+function kmActions() {
+  const groups = [{ name: "按键", items: KM_KEY_ACTIONS.map(([code, name]) =>
+    ({ action: "key:" + code, label: "按键 " + name, hint: "keyevent " + code })) }];
+  const apps = [...APPS, ...recentApps().filter((r) => !APPS.some((a) => a.pkg === r.pkg))];
+  if (apps.length) groups.push({ name: "应用", items: apps.map((a) =>
+    ({ action: "app:" + a.pkg, label: "打开 " + a.name, hint: a.pkg })) });
+  const macros = [...(Macro.presets || []), ...customMacros()];
+  if (macros.length) groups.push({ name: "宏", items: macros.map((m) =>
+    ({ action: "macro:" + (m.id || m.name), label: "运行宏「" + m.name + "」",
+      hint: (m.steps || []).length + " 步" })) });
+  return groups;
+}
+
+function kmRenderList() {
+  const box = $("#kmList");
+  box.textContent = "";            // 全程 DOM API：动作名来自应用目录/宏名，用户可编辑
+  const cur = kmEditCode == null ? null : kmMap[String(kmEditCode)];
+  kmActions().forEach((g) => {
+    const head = document.createElement("div");
+    head.className = "kmgroup";
+    head.textContent = g.name;
+    box.appendChild(head);
+    g.items.forEach((it) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "kmrow";
+      row.setAttribute("role", "listitem");
+      row.dataset.a = it.action;
+      row.title = it.hint;
+      const lab = document.createElement("span");
+      lab.className = "kmlabel";
+      lab.textContent = it.label;
+      const h = document.createElement("span");
+      h.className = "kmhint";
+      h.textContent = it.hint;
+      row.appendChild(lab);
+      row.appendChild(h);
+      if (it.action === cur) row.setAttribute("aria-current", "true");
+      box.appendChild(row);
+    });
+  });
+}
+
+function kmOpen(code, trigger) {
+  kmEditCode = code == null ? null : code;
+  const guide = code == null;
+  $("#kmEmpty").classList.toggle("hidden", !guide);
+  $("#kmList").classList.toggle("hidden", guide);
+  if (guide) {
+    $("#kmKeyLabel").textContent = "按键自定义";
+    $("#kmCur").textContent = "长按任意键 " + KM_EDIT_MS + "ms";
+  } else {
+    const f = kmFind(kmMap[String(code)]);
+    $("#kmKeyLabel").textContent = kmKeyName(code);
+    $("#kmCur").textContent = f ? "当前：" + f.label : "当前：默认";
+  }
+  kmRenderList();
+  openModal("#keymapModal", trigger);
+}
+
+// 绑回自己 = 删条目（不是写 "key:19"）：默认就该是「没有记录」
+function kmBind(code, action) {
+  if (action === "key:" + code) delete kmMap[String(code)];
+  else kmMap[String(code)] = action;
+  saveKeymap();
+  kmRefreshMarks();
+  const f = action === "key:" + code ? null : kmFind(action);
+  log(action === "key:" + code ? `⌨ ${kmKeyName(code)} 恢复默认`
+    : `⌨ ${kmKeyName(code)} → ${f ? f.label : "无操作"}`);
+  closeModal("#keymapModal");
+}
+
+function kmResetAll() {
+  const n = Object.keys(kmMap).length;
+  kmMap = {};
+  saveKeymap();
+  kmRefreshMarks();
+  log(n ? `⌨ 已恢复 ${n} 个默认按键` : "⌨ 没有改过的键");
+  toast(n ? `已恢复 ${n} 个默认按键` : "没有改过的键");
+  if (openModals.includes($("#keymapModal"))) closeModal("#keymapModal");
+}
+
+// 改过的键带 • 标记 + title 提示当前绑定：一眼看出「这个键被我动过」
+function kmRefreshMarks() {
+  $$("[data-key]").forEach((btn) => {
+    const f = kmFind(kmMap[String(+btn.dataset.key)]);
+    btn.classList.toggle("remapped", !!kmMap[String(+btn.dataset.key)]);
+    if (f) btn.title = "按下：" + f.label;
+    else btn.removeAttribute("title");
+  });
+}
+
+$("#kmClose").addEventListener("click", () => closeModal("#keymapModal"));
+$("#keymapModal").addEventListener("click", (e) => {
+  if (e.target === $("#keymapModal")) closeModal("#keymapModal");
+});
+$("#kmList").addEventListener("click", (e) => {
+  const row = e.target.closest("[data-a]");
+  if (row && kmEditCode != null) kmBind(kmEditCode, row.dataset.a);
+});
+$("#kmUnbind").addEventListener("click", () => { if (kmEditCode != null) kmBind(kmEditCode, "none"); });
+$("#kmResetAll").addEventListener("click", kmResetAll);
+$("#kmResetAllBtn").addEventListener("click", kmResetAll);
+kmRefreshMarks();
+
 /* ---------------- 屏幕常亮（Wake Lock） ----------------
    遥控器打开着就是在看电视，中途熄屏要解锁很烦。Screen Wake Lock 在
    Chrome/Edge/Android WebView 可用；iOS Safari 尚不支持 → 静默跳过，
@@ -2360,6 +2538,10 @@ function palCommands() {
   push("theme:light", "工具", "☀", "切换到浅色主题", "主题 浅色 亮色 light theme", () => $('#themeSeg button[data-theme-val="light"]').click());
   push("theme:auto", "工具", "🌓", "主题跟随系统", "主题 跟随 系统 auto", () => $('#themeSeg button[data-theme-val=""]').click());
   push("privacy", "工具", "👁", "切换隐私模式", "隐私 密码 privacy", () => $("#privacyBtn").click());
+  push("km", "工具", "⌨", "按键自定义（长按任意键）", "按键 改键 绑定 自定义 keymap 长按",
+    () => kmOpen(null), "长按物理键 " + KM_EDIT_MS + "ms");
+  push("km:reset", "工具", "♻", "恢复所有默认按键", "恢复 默认 改键 重置 keymap reset",
+    kmResetAll, Object.keys(kmMap).length + " 个已改");
   push("settings", "工具", "⚙", "打开设置", "设置 settings 偏好", () => $("#appSettingsBtn").click());
   push("coach", "工具", "🎓", "重看使用指引", "引导 教程 coach help", () => $("#coachBtn").click());
   return cmds;

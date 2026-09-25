@@ -7,7 +7,7 @@
      下次加载即为新版本；activate 时清旧缓存，不会「新 HTML + 旧 JS」幽灵
    - 只认 origin 相同的 GET；/api/* 一律放行（实时状态进缓存就是 bug）
    - 升级前端若要强制刷新离线副本：递增下面的 CACHE 版本号 */
-const CACHE = "atv-shell-v3";
+const CACHE = "atv-shell-v4";
 const SHELL = [
   "/",
   "/static/app.js",

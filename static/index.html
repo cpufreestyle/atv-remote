@@ -131,6 +131,10 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
         <button class="btn" data-key="87">⏭</button>
         <button class="btn" data-key="86">⏹</button>
       </div>
+      <div class="kmhintbar">
+        <span class="hint" id="kmHintBar">长按任意键可改绑 · 改过的键带 • 标记 · 连发跟随绑定动作自动推导</span>
+        <button class="btn tiny" id="kmResetAllBtn" title="清除所有改键，恢复默认">恢复默认</button>
+      </div>
     </section>
 
     <section class="card" data-needs-device>
@@ -357,6 +361,22 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
         <a id="shotSave" class="btn" download="tv.png">保存图片</a>
         <button id="shotClose" class="btn" data-autofocus>关闭</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<div id="keymapModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="按键自定义">
+  <div class="mbox kmbox">
+    <div class="kmbar">
+      <span class="kmkey" id="kmKeyLabel">按键</span>
+      <span class="kmcur" id="kmCur">当前：默认</span>
+    </div>
+    <div class="kmlist" id="kmList" role="list" aria-label="可绑定动作"></div>
+    <div class="kmempty hidden" id="kmEmpty">先长按遥控器上的一个键，再在这里给它选动作。</div>
+    <div class="kmfoot">
+      <button id="kmUnbind" class="btn tiny" title="按下这个键什么都不做">设为无操作</button>
+      <button id="kmResetAll" class="btn tiny danger" title="清除所有改键">全部恢复默认</button>
+      <button id="kmClose" class="btn" data-autofocus>完成</button>
     </div>
   </div>
 </div>
