@@ -546,6 +546,36 @@ code {
   padding: var(--sp-3); max-width: 92vw; max-height: 92vh; overflow: auto; box-shadow: var(--shadow-pop); }
 .modal img { max-width: 100%; max-height: 70vh; border-radius: var(--r-md); display: block; margin-bottom: var(--sp-2); }
 
+/* ---------- 截屏工作台（第十七轮；学 HA camera snapshot 查看 + Google Photos 近期项目条 + macOS 预览） ----------
+   舞台先适应、后放大：CSS 的 max-width/max-height 就是「适应态」，transform 只负责
+   scale/translate（transform-origin: 0 0，锚点公式见 app.js shotZoomAt）。缩略图条
+   16:9 裁切横向滚动，选中态用 accent 边——只吃既有令牌，不引入新颜色。 */
+.shotbox { width: min(880px, 94vw); }
+.shotbar { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-2); }
+.shotcap { flex: 1; min-width: 0; font-size: 12.5px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-variant-numeric: tabular-nums; }
+.shotzoom { display: flex; align-items: center; gap: var(--sp-1); flex: none; }
+.shotzoom .btn.tiny { min-width: 34px; padding: 6px 8px; }
+.shotzoomval { font-size: 12px; color: var(--text); min-width: 44px; text-align: center;
+  font-variant-numeric: tabular-nums; }
+.shotstage { background: var(--card3); border-radius: var(--r-md); overflow: hidden;
+  touch-action: none; display: grid; place-items: center; cursor: zoom-in; }
+.shotstage.zoomed { cursor: grab; }
+.shotstage.grabbing { cursor: grabbing; }
+.shotstage img { max-width: 100%; max-height: 62vh; display: block; margin-bottom: 0;
+  transform-origin: 0 0; will-change: transform; user-select: none; -webkit-user-drag: none; }
+.shotstrip { display: flex; gap: var(--sp-2); margin-top: var(--sp-2); padding-bottom: var(--sp-1);
+  overflow-x: auto; scrollbar-width: thin; }
+.shotthumb { flex: none; width: 76px; padding: 2px; border: 1px solid var(--line-soft);
+  background: var(--card2); border-radius: var(--r-sm); cursor: pointer; }
+.shotthumb[aria-current="true"] { border-color: var(--accent-solid); }
+.shotthumb img { width: 100%; height: 42px; object-fit: cover; display: block;
+  border-radius: var(--r-sm); margin-bottom: 0; }
+.shotfoot { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2); }
+.shotfoot .hint { flex: 1; min-width: 0; }
+.shotfoot .brow { flex: none; }
+
 /* ---------- 命令面板（Ctrl/⌘+K；学 VS Code Command Palette / HA Quick Bar） ----------
    顶部锚定而不是垂直居中：输入框处于视觉焦点、列表向下展开（Raycast / VS Code 的
    布局约定）。行高 ≥36px 保触控目标；颜色只引用令牌，不写死 hex。 */

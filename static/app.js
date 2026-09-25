@@ -1942,15 +1942,118 @@ pad.addEventListener("pointercancel", (e) => {
   pad.classList.remove("dragging");
 });
 
-/* ---------------- 截屏 / 画面 ---------------- */
-let shotUrl = null; // 上一次截屏的 blob URL，必须显式释放否则每次截屏都泄漏一张 PNG
+/* ---------------- 截屏 / 画面（第十七轮：截屏工作台） ----------------
+   学 Home Assistant 的 camera snapshot 查看（可缩放）、Google Photos 的近期项目条、
+   macOS 预览的 ⌘+ / ⌘0 / 双击 1:1。旧链路「截一张看一张、看完就丢」只改最小部分：
+   抓 blob → 入归档（新→旧，上限 SHOT_MAX），当前显示的是指针 shotUrl——
+   只有被挤出归档的那张才 revoke blob URL（旧代码每张都 revoke，归档会互相踩）。 */
+const SHOT_MAX = 8;                    // 归档上限：blob URL 常驻内存，8 张 ≈ 几十 MB 量级
+const SHOT_ZOOM_MAX = 6;
+const shotShots = [];                  // [{url, ts, dev, w, h}]，新 → 旧
+let shotUrl = null;                    // 当前显示的 blob URL（指针，不独占 revoke 权）
+let shotView = { s: 1, x: 0, y: 0 };   // 缩放倍率 + 平移量（stage 坐标系）
+const shotPtrs = new Map();            // 活跃指针：单指拖拽 + 双指 pinch
+let shotPinch = null;                  // pinch 基准 {d, cx, cy}（上一帧）
 
-function setShot(url) {
-  if (shotUrl) URL.revokeObjectURL(shotUrl); // 释放上一张，避免内存泄漏
-  shotUrl = url;
-  $("#shotImg").src = url;
-  $("#shotSave").href = url;
+function shotFmt(ts) {                 // 文件名用：20260926-013215
+  const d = new Date(ts), p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
+function shotClock(ts) {               // 角标用：01:32:15
+  const d = new Date(ts), p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function shotApply() {
+  const img = $("#shotImg"), st = $("#shotStage");
+  img.style.transform = `translate(${shotView.x}px, ${shotView.y}px) scale(${shotView.s})`;
+  $("#shotZoomLabel").textContent = Math.round(shotView.s * 100) + "%";
+  st.classList.toggle("zoomed", shotView.s > 1);
+  st.classList.toggle("grabbing", shotView.s > 1 && shotPtrs.size > 0);
+}
+
+function shotClamp() {
+  // 别把画面整个拖出口：左/上沿不越过 0，右/下沿不露底色
+  const img = $("#shotImg"), st = $("#shotStage");
+  const w = img.clientWidth * shotView.s, h = img.clientHeight * shotView.s;
+  if (w <= st.clientWidth) shotView.x = 0;
+  else shotView.x = Math.min(0, Math.max(st.clientWidth - w, shotView.x));
+  if (h <= st.clientHeight) shotView.y = 0;
+  else shotView.y = Math.min(0, Math.max(st.clientHeight - h, shotView.y));
+}
+
+function shotFit() { shotView = { s: 1, x: 0, y: 0 }; shotApply(); }
+
+// 以 stage 内的 (cx, cy) 为锚点缩放：锚点对着的内容不动，其余跟着胀缩
+function shotZoomAt(f, cx, cy) {
+  const st = $("#shotStage");
+  if (cx == null) cx = st.clientWidth / 2;
+  if (cy == null) cy = st.clientHeight / 2;
+  const s = Math.min(SHOT_ZOOM_MAX, Math.max(1, shotView.s * f));
+  shotView.x = cx - (cx - shotView.x) * (s / shotView.s);
+  shotView.y = cy - (cy - shotView.y) * (s / shotView.s);
+  shotView.s = s;
+  shotClamp();
+  shotApply();
+}
+
+function shotRenderStrip() {
+  const box = $("#shotStrip");
+  box.textContent = "";            // textContent 清空即销毁子节点，后续全程 DOM API 构建
+  shotShots.forEach((shot, i) => {
+    const item = document.createElement("div");
+    item.className = "shotthumb";
+    item.setAttribute("role", "listitem");
+    if (shot.url === shotUrl) item.setAttribute("aria-current", "true");
+    const b = document.createElement("button");
+    b.type = "button";
+    b.dataset.i = String(i);
+    b.title = shotFmt(shot.ts);
+    b.setAttribute("aria-label", `第 ${i + 1} 张 ${shotClock(shot.ts)}`);
+    const im = document.createElement("img");
+    im.src = shot.url;
+    im.alt = "";
+    im.draggable = false;
+    b.appendChild(im);
+    item.appendChild(b);
+    box.appendChild(item);
+  });
+}
+
+function shotCapText(shot) {
+  return `${shot.w || "?"}×${shot.h || "?"} · ${shotClock(shot.ts)}${shot.dev ? " · " + shot.dev : ""}`;
+}
+
+function shotShow(i) {
+  const shot = shotShots[i];
+  if (!shot) return;
+  shotUrl = shot.url;
+  $("#shotImg").src = shot.url;
+  $("#shotSave").href = shot.url;
+  $("#shotSave").download = `tv-${shotFmt(shot.ts)}.png`;
+  $("#shotCap").textContent = shotCapText(shot);
+  shotFit();
+  shotRenderStrip();
+}
+
+function shotPush(url) {
+  // 设备名从状态栏取（局域网广播可伪造 → 只读 textContent、只写 textContent）
+  const dev = ($("#tvInfo").textContent || "")
+    .split("·")[0].trim().replace(/^[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]\s*/u, "");
+  shotShots.unshift({ url, ts: Date.now(), dev, w: 0, h: 0 });
+  // 只 revoke 被挤出去的那张：在册的每一张都可能被再次点开。调用方紧接着
+  // shotShow(0)，即使挤出的正是当前显示项，也在同一 tick 换掉 src。
+  while (shotShots.length > SHOT_MAX) URL.revokeObjectURL(shotShots.pop().url);
+}
+
+// 图加载完才知道真实像素：回填角标（缩略图条不显示尺寸，保持安静）
+$("#shotImg").addEventListener("load", () => {
+  const shot = shotShots.find((s) => s.url === shotUrl);
+  if (!shot || !$("#shotImg").naturalWidth) return;
+  shot.w = $("#shotImg").naturalWidth;
+  shot.h = $("#shotImg").naturalHeight;
+  $("#shotCap").textContent = shotCapText(shot);
+});
 
 $("#shotBtn").addEventListener("click", async () => {
   log(status.curType === "appletv" ? "正在获取画面…" : "正在截屏…");
@@ -1960,8 +2063,9 @@ $("#shotBtn").addEventListener("click", async () => {
       const j = await r.json().catch(() => ({}));
       throw new Error(j.error || "获取画面失败");
     }
-    setShot(URL.createObjectURL(await r.blob()));
-    openModal("#shotModal");
+    shotPush(URL.createObjectURL(await r.blob()));
+    openModal("#shotModal", $("#shotBtn"));
+    shotShow(0);
     log("完成");
   } catch (e) {
     log("⚠ " + e.message);
@@ -1972,6 +2076,79 @@ $("#shotClose").addEventListener("click", () => closeModal("#shotModal"));
 $("#shotModal").addEventListener("click", (e) => {
   if (e.target === $("#shotModal")) closeModal("#shotModal");
 });
+// 关窗即复位：缩放/平移/手势状态不留到下一张（焦点交还由 openModal/closeModal 管）
+$("#shotModal").addEventListener("modalclosed", () => {
+  shotPtrs.clear();
+  shotPinch = null;
+  shotFit();
+});
+$("#shotStrip").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-i]");
+  if (b) shotShow(Number(b.dataset.i));
+});
+
+$("#shotZoomIn").addEventListener("click", () => shotZoomAt(1.4));
+$("#shotZoomOut").addEventListener("click", () => shotZoomAt(1 / 1.4));
+$("#shotZoomFit").addEventListener("click", () => shotFit());
+$("#shotStage").addEventListener("dblclick", () => {
+  if (shotView.s > 1) shotFit();          // 已放大 → 回适应态
+  else shotZoomAt(1.5);                   // 适应态 → 150%
+});
+$("#shotStage").addEventListener("wheel", (e) => {
+  e.preventDefault();                     //  passive:false，别把弹窗里的滚轮滚到页面
+  const r = e.currentTarget.getBoundingClientRect();
+  shotZoomAt(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX - r.left, e.clientY - r.top);
+}, { passive: false });
+
+function shotLocal(e) {
+  const r = $("#shotStage").getBoundingClientRect();
+  return [e.clientX - r.left, e.clientY - r.top];
+}
+$("#shotStage").addEventListener("pointerdown", (e) => {
+  shotPtrs.set(e.pointerId, shotLocal(e));
+  try { e.currentTarget.setPointerCapture(e.pointerId); }
+  catch (err) { /* 合成指针没有活动 id，放弃捕获照样能拖 */ }
+  if (shotPtrs.size === 2) shotPinch = null;   // 第二根落下：重置基准，防止跳变
+  if (shotView.s > 1) e.preventDefault();      // 放大态阻止原生拖拽/选区
+  shotApply();
+});
+$("#shotStage").addEventListener("pointermove", (e) => {
+  if (!shotPtrs.has(e.pointerId)) return;
+  const p = shotLocal(e), prev = shotPtrs.get(e.pointerId);
+  shotPtrs.set(e.pointerId, p);
+  if (shotPtrs.size >= 2) {                     // 双指 pinch：以中指距为倍率
+    const pts = [...shotPtrs.values()];
+    const d = Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]);
+    const cx = (pts[0][0] + pts[1][0]) / 2, cy = (pts[0][1] + pts[1][1]) / 2;
+    if (shotPinch && shotPinch.d > 0) shotZoomAt(d / shotPinch.d, cx, cy);
+    shotPinch = { d, cx, cy };
+    return;
+  }
+  if (shotView.s <= 1) return;                  // 适应态整体可见，拖动没有意义
+  shotView.x += p[0] - prev[0];
+  shotView.y += p[1] - prev[1];
+  shotClamp();
+  shotApply();
+});
+function shotPtrEnd(e) {
+  shotPtrs.delete(e.pointerId);
+  if (shotPtrs.size < 2) shotPinch = null;
+  shotApply();
+}
+$("#shotStage").addEventListener("pointerup", shotPtrEnd);
+$("#shotStage").addEventListener("pointercancel", shotPtrEnd);
+
+// 快捷键学 macOS 预览：+ / − / 0。注册在 capture 阶段，与命令面板热键同款——
+// 弹窗开着时通用兜底已 stopPropagation（键值到不了电视），同节点后注册的监听照常执行。
+// 只认「截图弹窗是顶层弹窗」：命令面板开着时这些键属于输入框。
+document.addEventListener("keydown", (e) => {
+  if (openModals[openModals.length - 1] !== $("#shotModal")) return;
+  const tag = (e.target && e.target.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea" || tag === "select") return;
+  if (e.key === "+" || e.key === "=") { e.preventDefault(); e.stopPropagation(); shotZoomAt(1.4); }
+  else if (e.key === "-" || e.key === "_") { e.preventDefault(); e.stopPropagation(); shotZoomAt(1 / 1.4); }
+  else if (e.key === "0") { e.preventDefault(); e.stopPropagation(); shotFit(); }
+}, true);
 
 loadMacros();
 

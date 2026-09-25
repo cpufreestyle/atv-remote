@@ -337,11 +337,26 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
 </div>
 
 <div id="shotModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="电视画面">
-  <div class="mbox">
-    <img id="shotImg" alt="电视画面">
-    <div class="brow center">
-      <a id="shotSave" class="btn" download="tv.png">保存图片</a>
-      <button id="shotClose" class="btn" data-autofocus>关闭</button>
+  <div class="mbox shotbox">
+    <div class="shotbar">
+      <span class="shotcap" id="shotCap">—</span>
+      <div class="shotzoom" role="group" aria-label="画面缩放">
+        <button id="shotZoomOut" class="btn tiny" aria-label="缩小" title="缩小（− 键）">−</button>
+        <span class="shotzoomval" id="shotZoomLabel" aria-live="polite">100%</span>
+        <button id="shotZoomIn" class="btn tiny" aria-label="放大" title="放大（+ 键）">＋</button>
+        <button id="shotZoomFit" class="btn tiny" aria-label="适应窗口" title="适应窗口（0 键）">适应</button>
+      </div>
+    </div>
+    <div class="shotstage" id="shotStage">
+      <img id="shotImg" alt="电视画面" draggable="false">
+    </div>
+    <div class="shotstrip" id="shotStrip" role="list" aria-label="最近截屏"></div>
+    <div class="shotfoot">
+      <span class="hint" id="shotHint">双击 1:1 · 拖动平移 · 滚轮 / + / − / 0 缩放</span>
+      <div class="brow">
+        <a id="shotSave" class="btn" download="tv.png">保存图片</a>
+        <button id="shotClose" class="btn" data-autofocus>关闭</button>
+      </div>
     </div>
   </div>
 </div>
