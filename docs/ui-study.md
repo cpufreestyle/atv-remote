@@ -1096,3 +1096,81 @@ toast(msg)，而它是「一条盖一条」：上一条永远被下一条顶掉�
   - 重复消息 1.2s 内合并且仍在屏上（stack 3 = min(cap, base+2)）。
 - 落盘 /tmp/atv-notif-1-stack.png、/tmp/atv-notif-2-panel.png。
 
+
+## 第二十二轮：学 wakeonlan / Home Assistant wake_on_lan 集成 → 远程开机（1.25.0 / versionCode 26）
+
+### 学习源
+- `wakeonlan`（Linux 命令行）：一条命令发 magic packet，端口 9 / 7。
+- Home Assistant 的 `wake_on_lan` 集成：MAC 可手填、广播地址可配、失败要能区分「没配 MAC」和「发不出去」。
+- 二者共同点：**先要拿到 MAC**。HA 让用户手抄，wakeonlan 靠 `arp` / `ip neigh`。本轮差异点就是
+  「尽量别让用户手抄」——从本机 ARP 表反查。
+
+### 为什么选它
+- 遥控器最尴尬的场景：电视关机 → App 连不上 → 用户只能起身找物理遥控器。WoL 正好补这一段。
+- 现有卡片全是「设备在线时」的快捷操作（宏 / 输入法 / 休眠 / 性能），缺一个「设备不在线时」的入口；
+  WoL 是唯一合理的冷启动手段。
+
+### 设计
+- 一张独立卡片 `#wolCard`，**不带 `data-needs-device`**——设备离线正是它的用途，不能因未连接而隐藏。
+- 三步：`发现`（ARP 反查 MAC）→ `开机`（发 magic packet）→ `等上线`（轮状态，上线自动重连）。
+- **发现阶段的三态必须分开讲**（学 HA 的「失败可区分」）：
+  - 还没有可问的地址（本机从没和它通信过）；
+  - 问了但没拿到 MAC（ARP 里没有它 / 不在同一二层网络）；
+  - 拿到了 N 台、其中 M 台有 MAC。
+  三个数分开报，用户才知道该去先连一次、去查网络、还是直接开机。
+- magic packet：6×0xFF + 16×MAC，固定 102 字节；端口 **9 和 7 都发**（不同电视/系统监听端口不一）。
+- 失败必须可区分：单个 socket 失败只收集，**两个端口全失败才报错**，且文案要点到「防火墙」。
+- 等待有上限（最多 24 × 2.5s ≈ 60s）+ 可中止，不能无限轮询拖电量。
+- MAC 只作辅助信息，缩成 `aa:bb:cc…ee:ff`；IP / MAC 一律 `textContent`（局域网广播可伪造）。
+
+### 落地
+- server.py：新增 `# ===== wake-on-lan:begin/end =====` 段（插在 macros 之后、ROUTES 之前）。
+  - `wol_norm_mac`（宽容解析，不猜位数）/ `wol_build_packet`（102B，用 `bytes((0xFF,))`）/
+    `wol_parse_arp` + `wol_read_arp`（读不到返回 `[]`，不是错误）/ `wol_targets` / `wol_ips` /
+    `wol_send`（双端口、`SO_BROADCAST`、`sock_factory` 可注入）/ `handle_wol`（discover/send/未知三态）。
+  - `ROUTES["/api/wol"]` + `do_GET` 的 `/api/wol` 分支。
+- static/index.html：🛠 工具 card 之后插 `#wolCard`（徽标 / 列表 / 提示 / 刷新 / 等待条 role=status）。
+- static/style.css：末尾「远程开机」段；`.woldot` 脉冲动画 + `prefers-reduced-motion` 关闭，全语义 var。
+- static/app.js：`/* ===== wake-on-lan:begin/end ===== */` 纯函数段（禁 DOM/localStorage/fetch，
+  harness 直接抽这段执行）+ DOM 胶水（wolDiscover / wolRender / wolSend / wolWaitStart /
+  wolWaitStop / wolWaitTick / wolMarkOnline / wolMaybeDiscover）。renderStatus 里 15s 节流挂 wolMaybeDiscover；
+  命令面板 push("wol") 复用 wolDiscover。
+- tests/wol_harness.js（新）：9 用例 → ALL_WOL_CASES_PASSED。
+- tests/test_wol.py（新）：约 480 行——MAC / packet / ARP 解析（含 macOS `arp -an` 与 flags=0x0 占位行）/
+  ips 入参三态 / sock 双端口与全失败 AdbError / handle_wol / 真实回环端口 HTTP / 前端契约 / 样式 / harness 对齐。
+- VERSION：versionName=1.25.0 / versionCode=26。
+
+### 踩到的坑
+- **ARP 只在通信后有条目**：关机久了会从表里过期，所以「发现不到」多数正常——文案要引导先连一次，别报错。
+- **`/proc/net/arp` 的 `flags` 有 `0x0` 占位行**：不过滤会把不完整条目当目标，MAC 是空的。
+- **adb 目标 serial 带 `:5555`**：在线判定要 `serial.split(":")[0] === ip`，否则永远匹配不上。
+- **macOS 没有 `/proc/net/arp`**：退化读 `arp -an`，两种格式一起吃；读不到一律返回 `[]` 而非抛错。
+- **受限广播 `255.255.255.255` vs 子网广播**：跨网段的电视收不到，先只发默认广播域，失败文案提示 AP 隔离。
+- **等待要有上限 + 中止**：否则电视迟迟不开会一直轮状态；上线 / 超时都要 `wolWaitStop()` 收尾。
+- **复用第 21 轮 notif 队列**：开机结果走 toast / log，不另起炉灶。
+- **IP / MAC 一律 textContent**：来源是局域网广播，可伪造，禁 innerHTML。
+- **单 socket 失败收集后统一报**：别在一条链路上抛一串异常，一次说清「两个端口都没发出去」。
+- **`parse_qs` 返回 list，里面躺着一条逗号串**：GET 侧不 `",".join(...)` 就把整串当单个非法 IP 静默丢掉，
+  卡片永远「未发现 MAC」——这是本轮抓到的真 bug；`wol_ips` 相应兼容「字符串 / 数组 / 嵌套 list」三态。
+- **常量行带行尾注释**：harness 对齐用的正则 `(.+);$` 匹配不到 `const WOL_WATCH_MAX = 24; // …`，
+  要改成先按 `=` 切、再 `split("//")` 去注释。
+- **`wol_ips` 上限检查写成 `continue` 不会停**：会把上限之后的 IP 继续放进来，必须到顶即 `return`。
+- **CDP 脚本把 JS 的 `.some` / `.length` 用到 Python list 上**：Runtime.evaluate 跨语言返回的是 Python 对象，
+  得用 `any(...)` / `len(...)`；这次实际踩了，改完才 33/33 全绿。
+
+### 验证
+- node --check static/app.js、python3 -c import server, atv_backend 通过。
+- ./sync-native.sh：264 单测 OK（wol 新增若干）+ 内嵌副本逐字节一致 → ALL CHECKS PASSED。
+- node harness 9/9；CDP 实测（http://127.0.0.1:8411/，禁用缓存）33 项检查全过：
+  - discover 渲染两行、IP 以文本渲染在 span 里、MAC 缩成 `aa:bb:cc…ee:ff`、按钮「⚡ 开机」、徽标 2、
+    提示为「电视关机后网卡仍在低功耗监听广播…」、刷新按钮恢复可用；
+  - 缺 MAC 的 IP 进提示「未发现 MAC：192.168.0.70（…）」；空态徽标 `—` + 「还没有可问的地址…」；
+  - 点开机 → toast「✓ 开机包已发往 192.168.0.52（端口 9/7）」+ 等待条「等待 192.168.0.52 上线 · 最多 1 分钟」
+    + 按钮恢复 + 定时器已排；wolWaitStop 清定时器并隐藏；
+  - 无 MAC 发送 → toast「⚠ 没有 192.168.0.99 的 MAC 地址，无法远程开机」；
+  - status 翻 online → 自动 connect("192.168.0.52")（记录到桩）+ toast「✓ … 已开机上线，正在重连」+ 行标 online + 等待关闭；
+  - 超时 → 不重连 + toast「⚠ 等了 1 分钟 … 仍未上线：…AP 隔离挡住」+ 等待关闭；
+  - wolWatchPlan 边界：0 / 23 继续等、24 判超时、online 即停；
+  - IP / MAC 均为 span 且 innerHTML === textContent（未按 HTML 渲染）；discover 异常 → 提示「⚠ 读取本机 ARP 表失败：…」。
+- 落盘 /tmp/atv-wol-1-list.png、/tmp/atv-wol-2-send.png、/tmp/atv-wol-3-online.png。
+
