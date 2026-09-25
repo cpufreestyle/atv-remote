@@ -54,10 +54,31 @@ async function api(path, body) {
   return j;
 }
 
+// 日志滚动带：连按/轮询会瞬间刷屏，所以按前缀分级着色 + 只留最近 60 行 + 自动滚到底。
+// 颜色由 CSS 类承担（--ok/--warn/--danger 令牌），不要在这里写死 hex。
+const LOG_MAX = 60;
 function log(msg) {
   const el = $("#log");
-  el.textContent = msg;
-  el.style.color = msg.startsWith("⚠") ? "#ff9a9a" : "";
+  const line = document.createElement("div");
+  // 一律 textContent：日志内容可能拼进设备名 / IP，不用 innerHTML
+  line.textContent = msg;
+  if (msg.startsWith("⚠") || msg.startsWith("❌") || msg.includes("失败")) line.className = "err";
+  else if (msg.startsWith("✅") || msg.startsWith("已")) line.className = "ok";
+  else if (msg.startsWith("→")) line.className = "go";
+  else if (msg.startsWith("⏳")) line.className = "warn";
+  el.append(line);
+  while (el.childElementCount > LOG_MAX) el.firstElementChild.remove();
+  el.scrollTop = el.scrollHeight;
+}
+
+// 骨架屏：扫描 / 加载要等几秒，先给结构占位，别让用户以为点了没反应
+function skeletonRows(box, n = 3) {
+  box.innerHTML = "";
+  for (let i = 0; i < n; i++) {
+    const sk = document.createElement("div");
+    sk.className = "skel row";
+    box.appendChild(sk);
+  }
 }
 
 let toastTimer = null;
@@ -431,6 +452,8 @@ function renderStatus(s) {
     }
   }
   dot.className = "dot " + (status.connected ? "on" : s.current ? "warn" : "off");
+  // 没连上电视时把遥控区压暗：按钮此时发了也没用，先让「连接」动作 visually 突出
+  document.body.classList.toggle("disc", !status.connected);
 
   // Android 掉线自动重连的进度（服务后台线程在试，失败 3 次会停并提示手动）
   const ar = s.auto_reconnect;
@@ -527,7 +550,7 @@ async function connect(target) {
 // 无线调试设备（Android 11+）会广播配对 / 连接端口；老电视只开 5555 端口时不广播
 async function adbScan() {
   const box = $("#adbScanList");
-  box.innerHTML = '<p class="hint">正在扫描局域网无线调试设备（约 5 秒）…</p>';
+  skeletonRows(box);
   try {
     const r = await api("/api/android/scan", {});
     renderAdbScan(r.hosts || []);
@@ -663,7 +686,7 @@ async function imeEnable() {
 /* ---------------- Apple TV ---------------- */
 async function atvScan() {
   const box = $("#atvList");
-  box.innerHTML = '<p class="hint">正在扫描（约 5 秒）…</p>';
+  skeletonRows(box);
   try {
     const r = await api("/api/atv/scan", {});
     renderAtvFound(r.devices || []);
@@ -786,7 +809,7 @@ async function atvPairCancel() {
 
 async function loadAtvApps() {
   const box = $("#atvApps");
-  box.innerHTML = '<span class="hint">加载中…</span>';
+  skeletonRows(box, 4);
   try {
     const r = await api("/api/atv/apps", {});
     box.innerHTML = "";
@@ -822,8 +845,47 @@ document.addEventListener("keydown", (e) => {
 });
 
 /* ---------------- 控件绑定 ---------------- */
+// 长按连发：滚列表、调音量是遥控最高频动作，单发要点到手酸。
+// 450ms 起发、之后每 120ms 一次；指针抬起/离开/页面隐藏/失焦立即停。
+// 只有方向、音量、seek 允许连发（电源/静音/主页连发会翻转状态，见 HOLD_KEYS）。
+// 键盘 Enter/Space 触发 click 时没有 pointerdown，靠 lastHoldSend 时间戳防双重发送。
+const HOLD_DELAY = 450, HOLD_RATE = 120;
+const HOLD_KEYS = new Set([19, 20, 21, 22, 23, 24, 25, 87, 88, 89, 90]);
+
+// 当前按住的键的停止函数。pointerup 必须「在窗口任何位置收到都停」——手指滑出按钮、
+// 页面滚动、系统吞事件时，只靠按钮自己的 pointerup/leave 会漏，interval 就变孤儿
+// （实测漏过一次：松手后按键还在连发，只能刷新页面）。
+let activeHoldStop = null;
+const stopActiveHold = () => { if (activeHoldStop) { activeHoldStop(); activeHoldStop = null; } };
+["pointerup", "pointercancel", "blur"].forEach((ev) => window.addEventListener(ev, stopActiveHold));
+document.addEventListener("visibilitychange", () => { if (document.hidden) stopActiveHold(); });
+
 $$("[data-key]").forEach((btn) => {
-  btn.addEventListener("click", () => sendKey(+btn.dataset.key));
+  const code = +btn.dataset.key;
+  let hold = null, rep = null;
+  const stop = () => {
+    clearTimeout(hold); clearInterval(rep); hold = rep = null;
+    btn.classList.remove("pressed");
+    if (activeHoldStop === stop) activeHoldStop = null;
+  };
+  const tick = () => sendKey(code);
+
+  btn.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    stopActiveHold();                 // 换键重按：先停掉上一个
+    sendKey(code);
+    btn.classList.add("pressed");     // 按压态全程保持，stop() 里摘掉
+    if (!HOLD_KEYS.has(code)) return;
+    hold = setTimeout(() => { rep = setInterval(tick, HOLD_RATE); }, HOLD_DELAY);
+    activeHoldStop = stop;
+  });
+  ["pointerup", "pointerleave", "pointercancel"].forEach((ev) =>
+    btn.addEventListener(ev, stop));
+  // click 只服务键盘可达性（Enter/Space，detail===0）；指针点击已在 pointerdown 发过。
+  // 用 detail 而不是时间戳判重：慢按（按住 200ms 再松）会越过任何时间窗，双重发送。
+  btn.addEventListener("click", (e) => {
+    if (e.detail === 0) sendKey(code);
+  });
 });
 
 $("#settingsBtn").addEventListener("click", async () => {
@@ -1009,6 +1071,24 @@ $("#shotModal").addEventListener("click", (e) => {
 });
 
 loadMacros();
+
+/* ---------------- 屏幕常亮（Wake Lock） ----------------
+   遥控器打开着就是在看电视，中途熄屏要解锁很烦。Screen Wake Lock 在
+   Chrome/Edge/Android WebView 可用；iOS Safari 尚不支持 → 静默跳过，
+   不影响任何其他功能。需要一次用户手势才能申请，所以在首个 pointerdown 时发起。 */
+let wakeLock = null;
+async function keepAwake() {
+  try {
+    if (!("wakeLock" in navigator)) return;
+    wakeLock = await navigator.wakeLock.request("screen");
+    wakeLock.addEventListener("release", () => { wakeLock = null; });
+  } catch (e) { /* 被拒绝或不可用：遥控本身不受影响 */ }
+}
+document.addEventListener("pointerdown", () => { if (!wakeLock) keepAwake(); }, { once: true });
+// 切回前台时锁可能已被释放，重新申请（同样要求手势栈里有交互，实测可直接调）
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && !wakeLock) keepAwake();
+});
 
 /* ---------------- 手机安装引导 ---------------- */
 const installCmd = `curl -sL ${location.origin}/install${TOKEN_Q} | bash`;

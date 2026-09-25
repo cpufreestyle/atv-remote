@@ -3,6 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#121315">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ATV Remote">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="icon" type="image/svg+xml" href="/static/icon.svg">
 <title>ATV Remote</title>
 <!-- 服务端启用 --token 时会把令牌注入此处的 __ATV_TOKEN__；未启用则为空串，前端行为不变 -->
 <meta name="atv-token" content="__ATV_TOKEN__">
@@ -55,7 +61,7 @@
 
   <main>
 
-    <section class="card">
+    <section class="card" data-needs-device>
       <div class="tabs">
         <button class="tab on" data-tab="dpad">方向键</button>
         <button class="tab" data-tab="pad">触摸板</button>
@@ -99,7 +105,7 @@
       </div>
     </section>
 
-    <section class="card">
+    <section class="card" data-needs-device>
       <h2>⌨ 键盘输入 <span id="kbFocus" class="badge hidden">电视输入框已聚焦</span></h2>
       <div class="inputrow">
         <input id="textInput" placeholder="在此打字，回车发送到电视" autocomplete="off" spellcheck="false">
@@ -161,7 +167,7 @@
       </div>
     </section>
 
-    <section class="card">
+    <section class="card" id="macrosCard" data-needs-device>
       <h2>⚡ 一键宏</h2>
       <div class="brow apps" id="macroRow"></div>
       <p class="hint" id="macroState">宏会按顺序执行多步操作（应用包名会依次尝试 Android / tvOS）。</p>
@@ -177,7 +183,7 @@
       </details>
     </section>
 
-    <section class="card">
+    <section class="card" id="sleepCard">
       <h2>🌙 睡眠定时</h2>
       <div class="brow">
         <button class="btn" data-sleep="30">30 分钟</button>
@@ -215,10 +221,10 @@
 
   </main>
 
-  <div id="log">就绪 · 等待连接电视</div>
+  <div id="log" role="status" aria-live="polite">就绪 · 等待连接电视</div>
 </div>
 
-<div id="toast" class="hidden"></div>
+<div id="toast" class="hidden" role="status" aria-live="polite"></div>
 
 <div id="shotModal" class="modal hidden">
   <div class="mbox">

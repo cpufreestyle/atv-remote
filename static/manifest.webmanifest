@@ -1,0 +1,16 @@
+{
+  "name": "ATV Remote — 电视遥控器",
+  "short_name": "ATV遥控",
+  "description": "Apple TV / Android TV 局域网遥控器",
+  "lang": "zh-CN",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#121315",
+  "theme_color": "#006afd",
+  "icons": [
+    { "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/static/icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

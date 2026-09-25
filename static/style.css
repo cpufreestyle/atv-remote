@@ -1,109 +1,175 @@
-/* ATV Remote — 深色遥控器主题 */
+/* ATV Remote — 深色遥控器主题
+   设计令牌与交互规范参考开源项目：色阶/语义色借鉴 Radix Colors（12 级 slate/blue/
+   green/amber/red 暗色档，9 级为实心交互色、11 级为低对比文字、12 级为高对比文字），
+   CSS 变量主题化做法借鉴 Bulma。约定：
+   - 颜色只允许引用 :root 令牌，新组件不要在规则里写死 hex；
+   - 触控目标 ≥36px（遥控主键 ≥56px），按压反馈统一 :active/.pressed + shadow-press；
+   - iPhone 刘海/小黑条：viewport-fit=cover + env(safe-area-inset-*)；
+   - 动效可被 prefers-reduced-motion 一律关闭；
+   - 键盘可达性统一 :focus-visible 描边。 */
 :root {
-  --bg: #0d0f14;
-  --card: #171a22;
-  --card2: #1d212b;
-  --line: #2a2f3c;
-  --text: #e8eaf0;
-  --muted: #8a91a3;
-  --accent: #4f8cff;
-  --accent2: #3a6fd8;
-  --danger: #e05555;
-  --ok: #37c97a;
-  --radius: 16px;
-}
-* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
-  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
+  /* 中性色（Radix slate 暗色档） */
+  --bg:        hsl(220, 14%, 8%);
+  --card:      hsl(220, 13%, 11%);
+  --card2:     hsl(220, 12%, 15%);
+  --card3:     hsl(220, 11%, 19%);
+  --line:      hsl(220, 10%, 24%);
+  --line-soft: hsl(220, 10%, 19%);
+  --text:      hsl(220, 15%, 93%);
+  --muted:     hsl(220, 8%, 63%);
+  --faint:     hsl(220, 8%, 45%);
+  /* 语义色（Radix 暗色档：9 实心 / 11 文字） */
+  --accent:      hsl(212, 100%, 62%);
+  --accent-solid:hsl(212, 100%, 50%);
+  --accent-soft: hsl(212, 60%, 20%);
+  --accent-text: hsl(212, 100%, 78%);
+  --ok:          hsl(151, 55%, 45%);
+  --ok-text:     hsl(151, 55%, 62%);
+  --warn:        hsl(40, 80%, 52%);
+  --warn-text:   hsl(40, 90%, 66%);
+  --danger:      hsl(358, 65%, 55%);
+  --danger-text: hsl(358, 85%, 70%);
 
-.app { max-width: 480px; margin: 0 auto; padding: 16px 14px 90px; }
+  /* 间距（4 的倍数） */
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px;
+  --sp-4: 16px; --sp-6: 24px;
+  /* 圆角 */
+  --r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-full: 999px;
+  /* 阴影：遥控器是「按下去有回应」的隐喻，press 一律压缩阴影 */
+  --shadow-card: 0 1px 2px hsl(220 30% 4% / .4);
+  --shadow-pop:  0 8px 24px hsl(220 30% 4% / .5);
+  --shadow-press: inset 0 1px 3px hsl(220 30% 4% / .55);
+  /* 动效 */
+  --dur-fast: 60ms; --dur: 160ms; --ease: cubic-bezier(.2, .7, .3, 1);
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  margin: 0; padding: 0; background: var(--bg); color: var(--text);
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+body {
+  /* 小黑条/刘海：内容不被系统 UI 遮住 */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+           env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+/* 触控目标统一：禁用双击缩放/300ms 延迟，禁止误触文本选择 */
+button, .chip, .devtab, .tab, summary { touch-action: manipulation; user-select: none; }
+button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-sm); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+
+.app { max-width: 480px; margin: 0 auto; padding: var(--sp-4) var(--sp-3) 96px; }
 
 /* ---------- header ---------- */
-header { margin-bottom: 14px; }
-.brand { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
-.logo { font-size: 34px; }
+header { margin-bottom: var(--sp-3); }
+.brand { display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-3); }
+.logo { font-size: 34px; line-height: 1; }
 .brand h1 { font-size: 20px; margin: 0; letter-spacing: .5px; }
 .sub { color: var(--muted); font-size: 12.5px; margin-top: 3px; display: flex; align-items: center; gap: 6px; }
-.dot { width: 9px; height: 9px; border-radius: 50%; background: #666; flex: none; }
-.dot.on  { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
-.dot.warn { background: #f0b03c; box-shadow: 0 0 8px #f0b03c; }
-.dot.off { background: #5a5f6d; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; }
+.dot.on  { background: var(--ok); box-shadow: 0 0 8px hsl(151 55% 45% / .8); animation: pulse 2.4s var(--ease) infinite; }
+.dot.warn { background: var(--warn); box-shadow: 0 0 8px hsl(40 80% 52% / .8); }
+.dot.off { background: var(--faint); }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
 
-.conn { display: flex; gap: 8px; }
+.conn { display: flex; gap: var(--sp-2); }
 input {
   background: var(--card2); border: 1px solid var(--line); color: var(--text);
-  border-radius: 10px; padding: 10px 12px; font-size: 14px; outline: none; min-width: 0;
+  border-radius: var(--r-md); padding: 11px var(--sp-3); font-size: 15px; outline: none; min-width: 0;
+  transition: border-color var(--dur-fast) var(--ease);
 }
+/* iOS Safari 键盘弹出时字号 <16px 会页面缩放，输入框统一 16px */
+input, textarea { font-size: 16px; }
 input:focus { border-color: var(--accent); }
-.conn input { flex: 1; }
 
-.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); }
 .chip {
   background: var(--card2); border: 1px solid var(--line); color: var(--muted);
-  border-radius: 999px; padding: 4px 12px; font-size: 12.5px; cursor: pointer; user-select: none;
+  border-radius: var(--r-full); padding: 7px var(--sp-3); font-size: 12.5px; cursor: pointer;
+  min-height: 34px; display: inline-flex; align-items: center;
+  transition: color var(--dur-fast), border-color var(--dur-fast), background var(--dur-fast);
 }
 .chip:hover { color: var(--text); border-color: var(--accent); }
-.chip.active { color: #fff; border-color: var(--accent); background: var(--accent2); }
+.chip:active { transform: scale(.96); }
+.chip.active { color: #fff; border-color: var(--accent-solid); background: var(--accent-soft); }
 
 /* ---------- 设备类型页签 ---------- */
-.devtabs { display: flex; gap: 8px; margin-bottom: 10px; }
+.devtabs { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-2); }
 .devtab {
   flex: 1; background: var(--card2); color: var(--muted); border: 1px solid var(--line);
-  border-radius: 12px; padding: 10px 0; font-size: 14px; cursor: pointer;
+  border-radius: var(--r-md); padding: var(--sp-2) 0; font-size: 14px; cursor: pointer;
+  min-height: 42px; transition: color var(--dur-fast), background var(--dur-fast), border-color var(--dur-fast);
 }
-.devtab.on { color: #fff; background: var(--accent2); border-color: var(--accent); font-weight: 600; }
+.devtab:hover { color: var(--text); }
+.devtab.on { color: #fff; background: var(--accent-solid); border-color: var(--accent-solid); font-weight: 600; }
 .devpane { display: none; }
 .devpane.on { display: block; }
 
 /* ---------- Apple TV 列表 / 配对 ---------- */
 .atvrow {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  background: var(--card2); border: 1px solid var(--line); border-radius: 12px;
-  padding: 10px 12px; margin-top: 8px;
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2);
+  background: var(--card2); border: 1px solid var(--line); border-radius: var(--r-md);
+  padding: var(--sp-2) var(--sp-3); margin-top: var(--sp-2);
 }
 .atvname { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .atvip { color: var(--muted); font-size: 12px; margin-left: 6px; }
 .atvbtns { display: flex; gap: 6px; flex: none; }
-.atvbtns .btn { padding: 7px 12px; font-size: 13px; }
+.atvbtns .btn { padding: 7px var(--sp-3); font-size: 13px; }
 .pairbox {
-  background: #20263a; border: 1px solid var(--accent); border-radius: 12px;
-  padding: 12px; margin-top: 10px;
+  background: var(--accent-soft); border: 1px solid var(--accent-solid); border-radius: var(--r-md);
+  padding: var(--sp-3); margin-top: var(--sp-2);
 }
-.pairtitle { font-size: 13px; margin-bottom: 8px; color: #9ec1ff; }
+.pairtitle { font-size: 13px; margin-bottom: var(--sp-2); color: var(--accent-text); }
 .badge {
-  background: var(--accent2); color: #cfe2ff; border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent-text); border-radius: var(--r-full);
   font-size: 11px; padding: 2px 10px; margin-left: 6px; font-weight: 400;
 }
 
 /* ---------- card ---------- */
 .card {
-  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 14px; margin-bottom: 14px;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg);
+  padding: var(--sp-3) var(--sp-3) var(--sp-4); margin-bottom: var(--sp-3);
+  box-shadow: var(--shadow-card);
 }
-.card h2 { font-size: 13.5px; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+.card h2 { font-size: 13.5px; color: var(--muted); margin: 0 0 var(--sp-2); font-weight: 600; }
 
 /* ---------- tabs ---------- */
-.tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+.tabs { display: flex; gap: var(--sp-1); margin-bottom: var(--sp-3); }
 .tab {
   flex: 1; background: var(--card2); color: var(--muted); border: 1px solid var(--line);
-  border-radius: 10px; padding: 8px 0; font-size: 14px; cursor: pointer;
+  border-radius: var(--r-md); padding: var(--sp-2) 0; font-size: 14px; cursor: pointer;
+  min-height: 40px; transition: color var(--dur-fast), background var(--dur-fast), border-color var(--dur-fast);
 }
-.tab.on { color: #fff; background: var(--accent2); border-color: var(--accent); }
+.tab:hover { color: var(--text); }
+.tab.on { color: #fff; background: var(--accent-solid); border-color: var(--accent-solid); }
 .tabpane { display: none; }
 .tabpane.on { display: block; }
 
 /* ---------- dpad ---------- */
 .dpad {
   display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr);
-  gap: 8px; width: 246px; height: 246px; margin: 0 auto;
+  gap: var(--sp-2); width: min(246px, 72vw); aspect-ratio: 1; margin: 0 auto;
 }
 .dk {
   background: var(--card2); border: 1px solid var(--line); color: var(--text);
-  border-radius: 18px; font-size: 22px; cursor: pointer; user-select: none;
-  transition: transform .05s, background .05s;
+  border-radius: var(--r-lg); font-size: 22px; user-select: none; min-height: 56px;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 2px 0 hsl(220 10% 10% / .6);
+  transition: transform var(--dur-fast) var(--ease), background var(--dur-fast), border-color var(--dur-fast);
 }
-.dk:active, .dk.pressed { background: var(--accent2); border-color: var(--accent); transform: scale(.94); }
-.dk.ok { border-radius: 50%; font-size: 16px; font-weight: 700; color: var(--accent); margin: 6px; }
+.dk:hover { border-color: var(--accent); }
+.dk:active, .dk.pressed {
+  background: var(--accent-soft); border-color: var(--accent-solid);
+  transform: scale(.94); box-shadow: var(--shadow-press);
+}
+.dk.ok { border-radius: 50%; font-size: 16px; font-weight: 700; color: var(--accent-text); margin: 6px; }
 .dk.ok:active, .dk.ok.pressed { color: #fff; }
 .dk.up    { grid-area: 1 / 2; }
 .dk.left  { grid-area: 2 / 1; }
@@ -113,95 +179,150 @@ input:focus { border-color: var(--accent); }
 
 /* ---------- touchpad ---------- */
 #touchpad {
-  position: relative; height: 190px; background: var(--card2); border: 1px dashed var(--line);
-  border-radius: 14px; display: flex; align-items: center; justify-content: center;
+  position: relative; height: min(240px, 46vh); background: var(--card2); border: 1px dashed var(--line);
+  border-radius: var(--r-lg); display: flex; align-items: center; justify-content: center;
   touch-action: none; overflow: hidden;
 }
-#touchpad.dragging { border-color: var(--accent); background: #20263a; }
-.padhint { color: var(--muted); font-size: 12.5px; pointer-events: none; text-align: center; padding: 0 12px; }
+#touchpad.dragging { border-color: var(--accent-solid); background: var(--accent-soft); }
+.padhint { color: var(--muted); font-size: 12.5px; pointer-events: none; text-align: center; padding: 0 var(--sp-3); }
 
 /* ---------- buttons ---------- */
-.brow { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; justify-content: center; }
+.brow { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-2); flex-wrap: wrap; justify-content: center; }
 .brow:last-child { margin-bottom: 0; }
 .brow.center { justify-content: center; }
 .btn {
   background: var(--card2); border: 1px solid var(--line); color: var(--text);
-  border-radius: 12px; padding: 11px 14px; font-size: 14px; cursor: pointer;
-  text-decoration: none; user-select: none; transition: transform .05s, background .05s;
-  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--r-md); padding: 11px var(--sp-3); font-size: 14px;
+  text-decoration: none; min-height: 40px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  box-shadow: 0 2px 0 hsl(220 10% 10% / .6);
+  transition: transform var(--dur-fast) var(--ease), background var(--dur-fast),
+              border-color var(--dur-fast), color var(--dur-fast);
 }
 .btn:hover { border-color: var(--accent); }
-.btn:active, .btn.pressed { background: var(--accent2); border-color: var(--accent); transform: scale(.95); }
-.btn.primary { background: var(--accent2); border-color: var(--accent); font-weight: 600; }
-.btn.on { background: var(--accent2); border-color: var(--accent); color: var(--accent); }
-.btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+.btn:active, .btn.pressed {
+  background: var(--accent-soft); border-color: var(--accent-solid);
+  transform: scale(.95); box-shadow: var(--shadow-press);
+}
+.btn.primary { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; font-weight: 600; }
+.btn.primary:hover { background: var(--accent); border-color: var(--accent); }
+.btn.on { background: var(--accent-soft); border-color: var(--accent-solid); color: var(--accent-text); }
+.btn.danger { color: var(--danger-text); }
+.btn.danger:hover { border-color: var(--danger); color: var(--danger-text); }
 .btn.big { font-size: 18px; min-width: 72px; }
+.btn[disabled], .btn[aria-disabled="true"] { opacity: .5; pointer-events: none; }
 
-.inputrow { display: flex; gap: 8px; margin-bottom: 4px; }
+.inputrow { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-1); }
 .inputrow input { flex: 1; }
-.hint { color: var(--muted); font-size: 12px; line-height: 1.7; margin: 8px 0 0; }
-.hint b { color: var(--accent); }
+.hint { color: var(--muted); font-size: 12px; line-height: 1.7; margin: var(--sp-2) 0 0; }
+.hint b { color: var(--accent-text); }
 code {
   background: var(--card2); border: 1px solid var(--line); border-radius: 5px;
-  padding: 1px 5px; font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; color: var(--accent);
+  padding: 1px 5px; font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; color: var(--accent-text);
 }
 
 /* ---------- ADBKeyboard 中文键盘状态行 ---------- */
 .imerow {
-  display: flex; align-items: center; gap: 8px; margin-top: 10px;
-  background: var(--card2); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px;
+  display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2);
+  background: var(--card2); border: 1px solid var(--line); border-radius: var(--r-md); padding: 7px 10px;
 }
 .imelabel { color: var(--muted); font-size: 12.5px; }
-.imestate {
-  flex: 1; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.imestate.ok   { color: var(--ok); }
-.imestate.warn { color: #f0b03c; }
+.imestate { flex: 1; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.imestate.ok   { color: var(--ok-text); }
+.imestate.warn { color: var(--warn-text); }
 .imestate.off  { color: var(--muted); }
 .withdel { display: inline-flex; align-items: center; gap: 2px; }
-.btn.tiny { padding: 5px 10px; font-size: 12px; border-radius: 8px; flex: none; }
-.imeinstall { margin-top: 8px; }
+.btn.tiny { padding: 6px 10px; font-size: 12px; border-radius: var(--r-sm); flex: none; min-height: 32px; }
+.imeinstall { margin-top: var(--sp-2); }
 .imeinstall .hint { margin-top: 0; }
 .steps.tight { font-size: 12.5px; line-height: 1.7; padding-left: 18px; margin: 6px 0 0; color: var(--muted); }
-.steps.tight a { color: var(--accent); }
+.steps.tight a { color: var(--accent-text); }
 
 /* ---------- apps ---------- */
 .apps .btn { min-width: 92px; }
 
+/* ---------- 骨架屏（列表加载中的占位，https://github.com/radix-ui/colors 之外的
+   通用做法：内容区先给结构与 shimmer，减少「点了没反应」的感知） ---------- */
+.skel {
+  border-radius: var(--r-md); background: linear-gradient(90deg, var(--card2) 25%,
+    var(--card3) 50%, var(--card2) 75%);
+  background-size: 200% 100%; animation: shimmer 1.4s linear infinite;
+}
+@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+.skel.row { height: 42px; margin-top: var(--sp-2); }
+@media (prefers-reduced-motion: reduce) { .skel { animation: none; } }
+
 /* ---------- log & toast ---------- */
 #log {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
-  background: rgba(13, 15, 20, .92); backdrop-filter: blur(8px);
+  background: hsl(220 14% 8% / .94); backdrop-filter: blur(8px);
   border-top: 1px solid var(--line); color: var(--muted);
-  font-size: 12px; padding: 9px 16px; text-align: center;
-  max-width: 480px; margin: 0 auto;
+  font-size: 12px; padding: var(--sp-2) var(--sp-4);
+  padding-bottom: calc(var(--sp-2) + env(safe-area-inset-bottom));
+  max-width: 480px; margin: 0 auto; text-align: left;
+  max-height: 88px; overflow-y: auto; overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+  font-family: ui-monospace, Menlo, monospace;
 }
+#log .ok   { color: var(--ok-text); }
+#log .warn { color: var(--warn-text); }
+#log .err  { color: var(--danger-text); }
+#log .go   { color: var(--accent-text); }
+
 #toast {
-  position: fixed; left: 50%; bottom: 54px; transform: translateX(-50%);
-  background: #2b1e1e; color: #ff9a9a; border: 1px solid var(--danger);
-  padding: 10px 18px; border-radius: 12px; font-size: 13px; z-index: 50;
-  max-width: 90vw; text-align: center;
+  position: fixed; left: 50%; bottom: calc(96px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  background: var(--card); color: var(--danger-text); border: 1px solid var(--danger);
+  padding: var(--sp-2) var(--sp-4); border-radius: var(--r-md); font-size: 13px; z-index: 50;
+  max-width: 90vw; text-align: center; box-shadow: var(--shadow-pop);
+  animation: toast-in var(--dur) var(--ease);
 }
-#toast.info { background: #16202e; color: #9ec1ff; border-color: var(--accent); }
+#toast.info { color: var(--accent-text); border-color: var(--accent-solid); }
+@keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
 /* ---------- modal ---------- */
 .modal {
   position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 40;
-  display: flex; align-items: center; justify-content: center; padding: 16px;
+  display: flex; align-items: center; justify-content: center; padding: var(--sp-4);
+  padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom));
 }
-.modal .mbox { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 14px; max-width: 92vw; max-height: 92vh; overflow: auto; }
-.modal img { max-width: 100%; max-height: 70vh; border-radius: 10px; display: block; margin-bottom: 10px; }
+.modal .mbox { background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg);
+  padding: var(--sp-3); max-width: 92vw; max-height: 92vh; overflow: auto; box-shadow: var(--shadow-pop); }
+.modal img { max-width: 100%; max-height: 70vh; border-radius: var(--r-md); display: block; margin-bottom: var(--sp-2); }
 
 .hidden { display: none !important; }
 
 /* ---------- 手机安装引导 ---------- */
 #phoneInstall summary { cursor: pointer; font-size: 13.5px; color: var(--muted);
   font-weight: 600; user-select: none; }
-#phoneInstall[open] summary { margin-bottom: 12px; }
+#phoneInstall[open] summary { margin-bottom: var(--sp-3); }
 .steps { margin: 0; padding-left: 20px; color: var(--text); font-size: 13.5px; line-height: 1.8; }
-.steps a { color: var(--accent); }
-.steps .inputrow { margin: 8px 0 4px; }
+.steps a { color: var(--accent-text); }
+.steps .inputrow { margin: var(--sp-2) 0 var(--sp-1); }
 .steps .inputrow input { font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
-.qrbox { display: flex; align-items: center; gap: 12px; margin-top: 8px; color: var(--muted); font-size: 12px; }
-.qrbox img { width: 132px; height: 132px; background: #fff; border-radius: 8px; padding: 8px; }
+.qrbox { display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-2); color: var(--muted); font-size: 12px; }
+.qrbox img { width: 132px; height: 132px; background: #fff; border-radius: var(--r-sm); padding: 8px; }
+#macroText {
+  width: 100%; background: var(--card2); border: 1px solid var(--line); color: var(--text);
+  border-radius: var(--r-md); padding: var(--sp-2) var(--sp-3); margin-top: var(--sp-2);
+  font-family: ui-monospace, Menlo, monospace; font-size: 12px; resize: vertical;
+}
+
+/* ---------- 未连接电视：遥控区压暗，把注意力引向顶部的连接操作 ---------- */
+[data-needs-device] { transition: opacity var(--dur) var(--ease), filter var(--dur) var(--ease); }
+body.disc [data-needs-device] { opacity: .45; filter: saturate(.5); }
+/* 不置 pointer-events:none：点了让服务端回「未连接电视」比完全没反应更能引导用户 */
+
+/* ---------- 宽屏 / 横屏：单列长滚动改双列，遥控主区保持一屏可见 ---------- */
+@media (min-width: 760px), (min-aspect-ratio: 3/2) and (min-width: 600px) {
+  .app { max-width: 960px; padding-bottom: 72px; }
+  main {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 0 var(--sp-3);
+    align-items: start;
+  }
+  main > .card { margin-bottom: var(--sp-3); }
+  /* 遥控键 + 键盘是高频区，左列；应用/工具/宏/睡眠/安装走右列 */
+  #macrosCard, #sleepCard { break-inside: avoid; }
+  #log { max-width: 960px; }
+}
