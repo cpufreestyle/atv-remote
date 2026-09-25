@@ -694,3 +694,88 @@ script 实体只回答「跑到哪了」，trace 再回答「每一步发生了�
   - 几何：视口 1147×548 下面板 560×385 水平居中（x=294）、输入框 512×41、列表高 285 且
     scrollHeight 1792（可滚动）、行高 36。
   - 截图 /tmp/atv-cmdpal.png（空查询全量列表）与 /tmp/atv-cmdpal-recent.png（最近使用置顶）。
+
+## 第十七轮：学 HA camera 查看器 / Google Photos 近期项目条 / macOS 预览 → 截屏工作台（1.20.0 / versionCode 21）
+
+### 学习源
+- Home Assistant 的 camera more-info：点开摄像头快照后可放大看细节、可拖拽平移，而不是只能
+  看一张缩得小小的原图。截屏在 ATV Remote 里就扮演「camera snapshot」的角色。
+- Google Photos 的近期项目条：底部水平滚动的缩略图条，点哪张看哪张，当前项有 accent 描边。
+- macOS 预览的缩放约定：⌘+ / ⌘− / ⌘0（适应）、双击在 1:1 与适应态之间切换、触控板
+  双指 pinch、单指拖拽平移——一套被验证了二十年的手势语法。
+
+### 为什么选它
+旧截屏弹窗只有一个 img + 两个按钮：480×270 的电视画面塞在 62vh 里，字基本看不清；想对比
+「刚才那下动画到底出没出来」只能不停的截了看、看了截，上一张立刻被顶掉。电视的很多问题
+（输入法候选栏、HDMI 信号丢失提示、视频网站的迷你播放器）恰恰是小字号细节，缩放+归档是
+刚需而非装饰。整轮仍零后端改动——/api/screenshot 早就有，全部工作量在前端。
+
+### 设计
+- 三区结构：顶栏（角标 + 缩放按钮组）/ 舞台 / 缩略图条 + 底栏（hint + 保存/关闭）。
+- 缩放模型：CSS 的 max-width/max-height 就是「适应态」，transform 只做
+  translate+scale（transform-origin: 0 0），倍率 1–6 倍，以 stage 内锚点缩放
+  （shotZoomAt：锚点对着的内容不动）。
+- 手势：滚轮（passive:false，别把弹窗后的页面滚走）、单指拖拽（仅放大态有意义）、
+  双指 pinch（以中指距为倍率，第二指落下重置基准防跳变）、双击 1.5x/回适应态。
+- 拖拽边界 shotClamp：适应态强制归零，放大态左/上沿不越过 0、右/下沿不露底色。
+- 归档 SHOT_MAX=8：blob URL 常驻内存，8 张约几十 MB 量级；驱逐时**只 revoke 被挤出的
+  那一张**——在册的每一张都可能被再次点开；shotShow 换 src 与 revoke 同一 tick，不会
+  「正在显示的图被 revoke」。
+- 快捷键学预览：+ / − / 0，注册在 document capture 阶段（与命令面板同款），仅当截屏弹窗
+  是 openModals 栈顶时生效——命令面板开着时这些键属于输入框。
+- 无障碍：对话框 aria-label、缩放组 role=group + 倍率 aria-live=polite、缩略图条
+  role=list/listitem + aria-current 标记当前项（选中态同时给出描边，不只依赖颜色）。
+- 安全：设备名从状态栏 textContent 读（局域网广播可伪造），缩略图条全程 DOM API
+  构建，无 innerHTML（AGENTS.md 禁令）。
+
+### 落地
+- static/index.html：#shotModal 从「单图 + 两按钮」换成工作台四段结构；#shotImg 加
+  draggable=false（原生拖拽会把 blob 拖成一片空白）。
+- static/style.css：在 .modal img 之后插「截屏工作台」段——等特异性后置生效覆盖
+  margin-bottom / max-height；.shotstage touch-action:none 让浏览器把手势全交给 JS；
+  只用 var(--*) 令牌无 hex。
+- static/app.js：截屏段整块替换约 200 行。shotShots[] 归档（新→旧）/ shotUrl 指针 /
+  shotView{s,x,y} / shotPtrs Map + shotPinch 基准；shotFmt（文件名）/ shotClock（角标）/
+  shotApply / shotClamp / shotFit / shotZoomAt / shotRenderStrip / shotCapText / shotShow /
+  shotPush / shotPtrEnd / shotLocal。#shotImg 的 load 事件回填 naturalWidth 到角标
+  （截屏返回的是字节流，不加载完不知道真实像素）。modalclosed 复位缩放/手势状态。
+- static/sw.js：CACHE atv-shell-v2 → v3。
+- VERSION：versionName=1.20.0 / versionCode=21。
+- tests/test_screenshot_workbench.py：10 个测试——HTML 契约（dialog/ARIA/download
+  默认名）、wiring（14 个函数/常量/模板串）、驱逐正则（段内 URL.revokeObjectURL 恰好
+  一次）、缩略图段禁 innerHTML、热键仅栈顶生效、CSS 段无 hex 含 touch-action:none、
+  $("#id") 引用一致性。102 → 112 全过。
+
+### 踩到的坑
+- 段落边界别拿函数名当锚：测试 setUp 原计划用 loadMacros(); 收尾，它在 app.js 里出现 4 次
+  （含 clearMacrosBtn 里的调用），index 取到第 593 行、早于 SHOT_MAX 的 1950 行，切片直接
+  变空、两个测试报 substring not found。改用下一节唯一锚点「屏幕常亮（Wake Lock）」。
+- 自测的严格度会反噬注释：shotRenderStrip 的注释写了「全程不碰 innerHTML」，被
+  assertNotIn("innerHTML") 抓到——改成「全程 DOM API 构建」。
+- 写测试文件时 heredoc 的反斜杠层数：\\\( 少转义一层变 \\(，findall 就去匹配字面反斜杠，
+  SelectorDrift 假通过（refs 全被过滤掉）。用 od -c 与参照文件逐字节比对才发现。
+- apply_patch 在这个 exec 运行时插 120 行新文件失败（FAIL undefined），改用
+  cat > … <<'EOF' heredoc 成功；印证第十六轮结论——exec 的 stdout 不保证回传，
+  命令输出要么重定向 /tmp 再 cat，要么用 .then(res => text(res.output)) 中转。
+
+### 验证
+- node --check static/app.js + node --check static/sw.js、python3 -c 'import server;
+  import atv_backend' 通过。
+- ./sync-native.sh：112 单测 OK + 内嵌副本逐字节一致 → ALL CHECKS PASSED。
+- CDP 实测（fake adb 480×270 真 PNG，http://127.0.0.1:8411/，unregister SW +
+  reload ignoreCache）：
+  - 判活 typeof shotZoomAt / shotPush === "function"；
+  - 首张截图：弹窗 class 由含 hidden → 无 hidden、#shotImg naturalWidth=480/naturalHeight=270、
+    缩略图条 1 项、角标「480×270 · hh:mm:ss · Google Chromecast」、#shotSave 为
+    blob: href + download「tv-20260926-021324.png」；
+  - 缩放：#shotZoomIn → scale(1.4) / 140%，滚轮 → 1.61x（1.4×1.15），快捷键 + → 140%、
+    − → 100%、0 → scale(1)、适应按钮 → 100%、双击在 1.5x 与适应态间切换；
+  - 拖拽：合成 PointerEvent 单指拖动 60px，translate y 由 -88.2 → -48.2（x 被 clamp 在 0，
+    图宽不足满铺时拖不出底色）；
+  - 归档：第 2 张后条 2 项、点缩略图 0 切回第一张（aria-current 恰 1 项）；连点 10 次
+    截屏后条恒为 8（驱逐生效，共发出 12 次 /api/screenshot）；
+  - 安全：全程 Network 监听 /api/cmd 请求数 = 0（快捷键被截屏弹窗栈顶逻辑消费，
+    不下发到电视）；
+  - 几何：视口 1200×800 下弹窗 173–627 完整可见（顶栏 32 / 舞台 270 / 缩略图条 59 /
+    底栏 44），8 个缩略图，关闭按钮可见；
+  - 落盘 /tmp/atv-shot-workbench.png（274% 缩放 + 平移态，2400×1600@2x，844 色）。
