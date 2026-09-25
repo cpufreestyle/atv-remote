@@ -274,6 +274,7 @@ async function sendText(text, withEnter) {
       ? "•".repeat(Math.min(8, text.length))
       : `"${text.slice(0, 30)}"${text.length > 30 ? "…" : ""}`;
     log(`→ text ${echo}${withEnter ? " + Enter" : ""}`);
+    pushHistory(text);
     $("#textInput").value = "";
     $("#textInput").blur(); // 发送后回到全局键盘遥控状态
   } catch (e) {
@@ -296,7 +297,90 @@ $("#privacyBtn").addEventListener("click", () => {
   privacy.on = !privacy.on;
   localStorage.setItem("atv.privacy", privacy.on ? "1" : "0");
   applyPrivacy();
+  renderHist(); // 隐私模式下整行隐藏，避免旁人瞥到此前的输入记录
 });
+
+/* ---------------- 输入历史（最近发送过的内容） ---------------- */
+// 学习源：@algolia/autocomplete-plugin-recent-searches@1.19.11——submit 时 onAdd、
+// getAll 截 limit、有查询时大小写不敏感子串过滤、localStorage 先试写探测可用性
+// （Safari 隐私模式 setItem 会抛）。补上它的缺口：trim + 去重（它的去重靠服务端
+// Query Suggestions）；隐私模式不记录。
+const HIST_KEY = "atv.kbhist";
+const HIST_MAX = 10;   // 与常用短语同級行宽，再多屏幕也摆不下
+const HIST_LEN = 200;  // 单条截断，防长文把 localStorage 撑爆
+
+let kbHist = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem(HIST_KEY));
+    if (Array.isArray(v)) return v.filter((s) => typeof s === "string").slice(0, HIST_MAX);
+  } catch { /* 损坏就回落空历史 */ }
+  return [];
+})();
+
+function histSave() {
+  try { localStorage.setItem(HIST_KEY, JSON.stringify(kbHist)); }
+  catch { /* 存不进去（隐私模式 / 超额）就只是本次会话没有历史 */ }
+}
+
+function pushHistory(text) {
+  if (privacy.on) return; // 隐私模式不记录
+  const t = String(text).trim().replace(/\s+/g, " ").slice(0, HIST_LEN);
+  if (!t) return;
+  kbHist = [t, ...kbHist.filter((h) => h !== t)].slice(0, HIST_MAX);
+  histSave();
+  renderHist();
+}
+
+// filter = 输入框当前内容：像 Algolia 那样按大小写不敏感子串收窄，打完一半就能从
+// 历史里点回全句；空输入显示全部。隐私模式下整行隐藏。
+function renderHist(filter) {
+  const row = $("#histRow");
+  row.innerHTML = "";
+  if (privacy.on) { row.classList.add("hidden"); return; }
+  const q = String(filter || "").trim().toLowerCase();
+  const items = q ? kbHist.filter((h) => h.toLowerCase().includes(q)) : kbHist;
+  if (!items.length) { row.classList.add("hidden"); return; }
+  row.classList.remove("hidden");
+
+  const label = document.createElement("span");
+  label.className = "histlabel";
+  label.textContent = "最近";
+  row.appendChild(label);
+
+  items.forEach((h) => {
+    const wrap = document.createElement("span");
+    wrap.className = "hist-item";
+    const c = document.createElement("button");
+    c.className = "btn tiny hist-chip";
+    const t = document.createElement("span");
+    t.className = "hist-t";
+    t.textContent = h; // 历史内容一律 textContent，与 phrase chips 一致
+    c.appendChild(t);
+    c.title = h;
+    c.onclick = () => { const inp = $("#textInput"); inp.value = h; inp.focus(); };
+    const del = document.createElement("button");
+    del.className = "btn tiny hist-del";
+    del.textContent = "✕";
+    del.title = "删除这条记录";
+    del.setAttribute("aria-label", "删除这条输入记录");
+    del.onclick = () => {
+      kbHist = kbHist.filter((x) => x !== h);
+      histSave();
+      renderHist();
+    };
+    wrap.append(c, del);
+    row.appendChild(wrap);
+  });
+
+  const clear = document.createElement("button");
+  clear.className = "btn tiny hist-clear";
+  clear.textContent = "🗑 清空";
+  clear.title = "清空全部输入历史";
+  clear.onclick = () => { kbHist = []; histSave(); renderHist(); };
+  row.appendChild(clear);
+}
+
+$("#textInput").addEventListener("input", (e) => renderHist(e.target.value));
 
 /* ---------------- 剪贴板 / 常用短语 / 语音 ---------------- */
 // 剪贴板与语音识别都要 secure context：http://127.0.0.1 / https / Mac App 里可用，
@@ -1828,6 +1912,7 @@ $("#settingsModal").addEventListener("click", (e) => {
 
 applyPrivacy();
 renderPhrases();
+renderHist();
 refreshStatus();
 // 首次使用：等首屏渲染稳定后自动开始引导（跳过/看完都会记住，不再自动弹）
 if (localStorage.getItem(COACH_KEY) !== "1") setTimeout(startCoach, 600);

@@ -338,6 +338,16 @@ code {
 .imestate.off  { color: var(--muted); }
 .withdel { display: inline-flex; align-items: center; gap: 2px; }
 .btn.tiny { padding: 6px 10px; font-size: 12px; border-radius: var(--r-sm); flex: none; min-height: 32px; }
+
+/* ---------- 输入历史 ---------- */
+.brow.hist { justify-content: flex-start; }
+.histlabel { color: var(--muted); font-size: 12px; align-self: center; }
+.hist-item { display: inline-flex; align-items: center; gap: 2px; }
+/* 长句截断成省略号：文本套一层 span 才能ellipsis（flex 子项默认不会小于内容宽） */
+.hist-chip .hist-t { min-width: 0; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hist-del { padding: 6px 8px; color: var(--muted); }
+.hist-del:hover { border-color: var(--danger); color: var(--danger-text); }
+.hist-clear { color: var(--muted); }
 .imeinstall { margin-top: var(--sp-2); }
 .imeinstall .hint { margin-top: 0; }
 .steps.tight { font-size: 12.5px; line-height: 1.7; padding-left: 18px; margin: 6px 0 0; color: var(--muted); }
