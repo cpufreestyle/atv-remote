@@ -1105,19 +1105,49 @@ const padHint = $("#padHint");
 function padHintText(isApple) {
   return "轻点 = 点击 · 拖动 = 滑动（" +
     (isApple ? "Apple TV 触控" : "映射整块电视屏幕") +
-    "）· ✌️ 双指上下滑=音量、左右滑=快进，双轻点=播放/暂停";
+    "）· ✌️ 双指上下滑=音量、左右滑=快进，双轻点=播放/暂停 · 单指长按=连续滚动";
 }
 const GESTURE_STEP = 26;         // 双指每滑过 26px 发一次音量/seek
 let ptr = null;                  // 单指滑动状态
 const padPtrs = new Map();       // 按在触摸板上的指针（含单指）
 let gesture = null;              // 双指手势状态
 
+/* 单指长按=连续滚动：按住不动 450ms 起、之后每 120ms 发一次方向键（复用按键区同款节奏）。
+   静止不动=向下滚（滚列表/片单最高频），之后手指往哪边偏就往哪边滚；松手即停，
+   且这次按压不再触发 tap/swipe——长按和滑动是两种意图，不能都发。 */
+const PAD_HOLD_DELAY = 450, PAD_HOLD_RATE = 120, PAD_HOLD_DIR_PX = 24;
+const PAD_HOLD_LABEL = { 19: "⏫ 连续滚动（上）", 20: "⏬ 连续滚动（下）", 21: "⏪ 连续滚动（左）", 22: "⏩ 连续滚动（右）" };
+let holdTimer = null, holdTick = null, holding = false;
+
+function stopPadHold() {
+  clearTimeout(holdTimer);
+  clearInterval(holdTick);
+  holdTimer = holdTick = null;
+  if (holding) {
+    holding = false;
+    pad.classList.remove("holding");
+    padHint.textContent = padHintText(status.curType === "appletv");
+  }
+}
+function padHoldDir() {
+  if (!ptr) return 20;
+  const dx = ptr.x1 - ptr.x0, dy = ptr.y1 - ptr.y0;
+  if (Math.abs(dx) < PAD_HOLD_DIR_PX && Math.abs(dy) < PAD_HOLD_DIR_PX) return 20;  // 没偏=向下
+  return Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 22 : 21) : (dy > 0 ? 20 : 19);
+}
+function padHoldTick() {
+  const code = padHoldDir();
+  sendKey(code);   // sendKey 自带 90ms 节流，120ms 间隔天然不会超发；顺带点亮屏幕方向键
+  padHint.textContent = PAD_HOLD_LABEL[code];
+}
+
 pad.addEventListener("pointerdown", (e) => {
   pad.setPointerCapture(e.pointerId);
   const r = pad.getBoundingClientRect();
   padPtrs.set(e.pointerId, { x: e.clientX - r.left, y: e.clientY - r.top });
   if (padPtrs.size === 2) {
-    // 第二根手指落下：进入双指手势，作废进行中的单指滑动
+    // 第二根手指落下：进入双指手势，作废进行中的单指滑动与长按
+    stopPadHold();
     ptr = null;
     const [a, b] = [...padPtrs.values()];
     gesture = { t0: performance.now(), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2,
@@ -1128,12 +1158,21 @@ pad.addEventListener("pointerdown", (e) => {
   } else if (padPtrs.size === 1) {
     ptr = { x0: e.clientX - r.left, y0: e.clientY - r.top, x1: e.clientX - r.left, y1: e.clientY - r.top, t0: performance.now() };
     pad.classList.add("dragging");
+    // 长按定时器：450ms 内明显移动（要滑动）就撤掉，静止才进入连续滚动
+    holdTimer = setTimeout(() => {
+      holdTimer = null;
+      holding = true;
+      pad.classList.add("holding");
+      padHoldTick();
+      holdTick = setInterval(padHoldTick, PAD_HOLD_RATE);
+    }, PAD_HOLD_DELAY);
   }
 });
 pad.addEventListener("pointermove", (e) => {
   const r = pad.getBoundingClientRect();
   if (padPtrs.has(e.pointerId)) padPtrs.set(e.pointerId, { x: e.clientX - r.left, y: e.clientY - r.top });
   if (ptr) { ptr.x1 = e.clientX - r.left; ptr.y1 = e.clientY - r.top; }
+  if (holdTimer && Math.hypot(ptr.x1 - ptr.x0, ptr.y1 - ptr.y0) > 12) stopPadHold();
   if (!gesture || padPtrs.size < 2) return;
   const [a, b] = [...padPtrs.values()];
   const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
@@ -1179,6 +1218,7 @@ pad.addEventListener("pointerup", async (e) => {
     return;
   }
   padPtrs.delete(e.pointerId);
+  if (holding) { stopPadHold(); return; }   // 长按结束=停滚，这次按压不再发 tap/swipe
   if (!ptr) return;               // 单指滑动只在「一根手指按下又抬起」时结算
   pad.classList.remove("dragging");
   const { x0, y0, x1, y1, t0 } = ptr;
@@ -1209,6 +1249,7 @@ pad.addEventListener("pointerup", async (e) => {
 pad.addEventListener("pointercancel", (e) => {
   padPtrs.delete(e.pointerId);
   if (gesture) endPadGesture();
+  stopPadHold();
   ptr = null;
   pad.classList.remove("dragging");
 });

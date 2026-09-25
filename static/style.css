@@ -227,6 +227,9 @@ input:focus { border-color: var(--accent); }
   touch-action: none; overflow: hidden;
 }
 #touchpad.dragging, #touchpad.gesturing { border-color: var(--accent-solid); background: var(--accent-soft); }
+/* 长按连续滚动进行中：换成 warn 色边，和拖动/手势区分开（琥珀=「正在滚」） */
+#touchpad.holding { border-color: var(--warn); background: var(--card3); }
+#touchpad.holding .padhint { color: var(--warn-text); }
 .padhint { color: var(--muted); font-size: 12.5px; pointer-events: none; text-align: center; padding: 0 var(--sp-3); }
 
 /* ---------- buttons ---------- */
