@@ -1097,6 +1097,160 @@ function macroDryRun(m, env) {
   return { rows, errs, warns, steps: steps ? steps.length : 0, totalMs, ok: errs === 0 };
 }
 /* ===== macro-dry-run:end ===== */
+/* ===== perf-waterfall:begin（纯函数段，node 单测 harness 原样抽取执行；禁引用 DOM / 全局态） ===== */
+/* 阈值：超过这条线算「慢」（ms）。按 kind 分开定：shell 在常驻连接上跑，一条命令本就该快；
+   adb 每次都要 fork 进程，天然慢一截；devices 命中缓存恒 0，永不告警。 */
+const PERF_SLOW_FE = { adb: 150, shell: 250, pyatv: 250, devices: 0 };
+/* 徽标文字：把 kind 翻成前端说法（AppleTV / 缓存） */
+const PERF_KIND_NAMES_FE = { adb: "adb", shell: "shell", pyatv: "AppleTV", devices: "缓存" };
+const PERF_MAX_BARS_FE = 40;          // 最多画多少行：环形缓冲 60 条，全画太密
+
+const perfClamp01 = (v) => Math.min(1, Math.max(0, v));
+const PERF_MS_FMT_FE = (ms) => {
+  const v = Math.max(0, Number(ms) || 0);
+  if (v < 1000) return Math.round(v) + "ms";
+  const s = Math.round(v / 100) / 10;
+  return (Number.isInteger(s) ? String(s) : s.toFixed(1)) + "s";
+};
+
+/* 行的严重级别：err（有失败原因）> cache（命中缓存，本就快）> warn（超过 kind 阈值）> ok。 */
+function perfLevel(e) {
+  e = e || {};
+  if (e.err) return "err";
+  if (e.cache) return "cache";
+  const slow = PERF_SLOW_FE[e.kind] || 0;
+  return slow > 0 && (Number(e.ms) || 0) >= slow ? "warn" : "ok";
+}
+
+/* 汇总 chips 的统计：与服务端 perf_snapshot().stats 同口径（p50/p95 线性插值）。 */
+function perfPct(sorted, p) {
+  if (!sorted.length) return 0;
+  if (sorted.length === 1) return sorted[0];
+  const k = (sorted.length - 1) * p;
+  const lo = Math.floor(k), hi = Math.min(lo + 1, sorted.length - 1);
+  return Math.round((sorted[lo] + (sorted[hi] - sorted[lo]) * (k - lo)) * 10) / 10;
+}
+function perfSummary(evs) {
+  const list = Array.isArray(evs) ? evs : [];
+  const mss = list.map((e) => Math.max(0, Number(e.ms) || 0)).sort((a, b) => a - b);
+  const n = list.length;
+  const hits = list.filter((e) => e.cache).length;
+  const errs = list.filter((e) => e.err).length;
+  return { n, p50: perfPct(mss, 0.5), p95: perfPct(mss, 0.95),
+    max: mss.length ? mss[mss.length - 1] : 0, errs, cache: hits,
+    cacheRate: n ? Math.round((hits / n) * 1000) / 1000 : 0 };
+}
+
+/* 瀑布窗口（ms）：盖住最老一条并留 1s 余量；没有调用时给默认宽度。
+   与服务端 window_ms 同规则——前端只认 ago，不依赖时钟对齐。 */
+function perfWindowMs(evs) {
+  const list = Array.isArray(evs) ? evs : [];
+  const oldest = list.reduce((m, e) => Math.max(m, Math.max(0, Number(e.ago) || 0)), 0);
+  return Math.max(2000, oldest + 1000);
+}
+
+/* 一条事件 → 行模型。几何：右缘 = win-ago（右端永远是「现在」），长度 = 耗时；
+   两个值都 clamp 到 [0,1]——ago 超过 win 的旧事件服务端已滤掉，这里双保险。
+   可见性交给 CSS min-width，这里不造假宽度。 */
+function perfBar(e, win) {
+  e = e || {};
+  const w = win > 0 ? win : 1;
+  const ago = Math.max(0, Number(e.ago) || 0);
+  const ms = Math.max(0, Number(e.ms) || 0);
+  const right = perfClamp01(1 - ago / w);
+  const width = perfClamp01(ms / w);
+  return { kind: PERF_KIND_NAMES_FE[e.kind] || e.kind || "adb",
+    label: String(e.label == null ? "" : e.label), ms, level: perfLevel(e),
+    note: e.err ? String(e.err) : (e.cache ? "缓存命中" : ""),
+    left: perfClamp01(right - width), width };
+}
+
+/* 事件数组 → 行模型数组：onlyProblems 只留 warn/err；超过 PERF_MAX_BARS_FE 条取最新；
+   返回最新在上。 */
+function perfBars(evs, opts) {
+  opts = opts || {};
+  const win = opts.windowMs > 0 ? opts.windowMs : 2000;
+  let list = (Array.isArray(evs) ? evs : []).slice();
+  if (opts.onlyProblems) {
+    list = list.filter((e) => { const lv = perfLevel(e); return lv === "warn" || lv === "err"; });
+  }
+  if (list.length > PERF_MAX_BARS_FE) list = list.slice(list.length - PERF_MAX_BARS_FE);
+  return list.map((e) => perfBar(e, win)).reverse();
+}
+/* ===== perf-waterfall:end ===== */
+
+/* perf 的 DOM 侧：诊断卡片，轮询与 8s 状态轮询解耦；面板滚出视口或页面隐藏就停。
+   行内容来自服务端快照（label 可能是 adb 命令行），一律 textContent。 */
+let perfOnlyProblems = false;
+let perfLastData = null;
+const PERF_POLL_FE = 2000;
+
+const perfMk = (tag, cls, txt) => {
+  const el = document.createElement(tag);
+  if (cls) el.className = cls;
+  if (txt != null) el.textContent = txt;
+  return el;
+};
+
+function perfRender(data) {
+  perfLastData = data;
+  const evs = (data && data.events) || [];
+  const st = (data && data.stats) || perfSummary([]);
+  const win = (data && data.window_ms) || perfWindowMs(evs);
+  const sum = $("#perfSum");
+  sum.textContent = "";
+  const chips = [st.n + " 次调用", "p50 " + PERF_MS_FMT_FE(st.p50), "p95 " + PERF_MS_FMT_FE(st.p95),
+    "最长 " + PERF_MS_FMT_FE(st.max), "缓存命中 " + st.cache + "/" + st.n];
+  if (st.errs) chips.push("失败 " + st.errs);
+  chips.forEach((c) => sum.append(perfMk("span", "pchip", c)));
+  sum.classList.toggle("err", !!st.errs);
+  const rows = $("#perfRows");
+  rows.textContent = "";
+  perfBars(evs, { onlyProblems: perfOnlyProblems, windowMs: win }).forEach((b) => {
+    const row = perfMk("div", "prow " + b.level);
+    row.append(perfMk("span", "pkind", b.kind));
+    row.append(perfMk("span", "plabel", b.label));
+    const track = perfMk("div", "ptrack");
+    const fill = perfMk("div", "pfill");
+    fill.style.left = (b.left * 100).toFixed(2) + "%";
+    fill.style.width = (b.width * 100).toFixed(3) + "%";
+    track.append(fill);
+    row.append(track);
+    row.append(perfMk("span", "pms", PERF_MS_FMT_FE(b.ms)));
+    if (b.note) row.append(perfMk("span", "pnote", b.note));
+    rows.append(row);
+  });
+  const meta = $("#perfMeta");
+  if (meta) {
+    let m = "";
+    const info = data && data.adb;
+    if (info) {
+      m = "adb " + (info.version || "?") + " · shell " + (info.shell ? "常驻" : "未建立")
+        + " · devices 缓存 " + info.ttl + "s";
+    }
+    if (st.hidden) m += (m ? " · " : "") + st.hidden + " 条超出窗口未显示";
+    meta.textContent = m;
+  }
+}
+
+async function perfFetch() {
+  try { perfRender(await api("/api/perf")); }
+  catch (e) { /* 诊断卡片静默失败：下个轮询周期再试，不打断正常遥控 */ }
+}
+const perfCardInViewport = () => {
+  const el = $("#perfCard");
+  if (!el) return false;
+  const r = el.getBoundingClientRect();
+  return r.bottom > 0 && r.top < window.innerHeight;
+};
+setInterval(() => { if (pageVisible && perfCardInViewport()) perfFetch(); }, PERF_POLL_FE);
+$("#perfRefreshBtn").addEventListener("click", perfFetch);
+$("#perfOnlyBtn").addEventListener("click", () => {
+  perfOnlyProblems = !perfOnlyProblems;
+  $("#perfOnlyBtn").setAttribute("aria-pressed", perfOnlyProblems ? "true" : "false");
+  if (perfLastData) perfRender(perfLastData);   // 本地重画，不再发请求
+});
+
 
 /* 预演的 DOM 侧：环境信息（输入法 / 设备类型 / 常见包名）只在调用时取，
    上面的纯函数段因此可以整段搬进 node 单测。行内容全部来自用户 JSON，一律 textContent。 */

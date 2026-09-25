@@ -678,7 +678,7 @@ body.disc [data-needs-device] { opacity: .45; filter: saturate(.5); }
   }
   main > .card { margin-bottom: var(--sp-3); }
   /* 遥控键 + 键盘是高频区，左列；应用/工具/宏/睡眠/安装走右列 */
-  #macrosCard, #sleepCard { break-inside: avoid; }
+  #macrosCard, #sleepCard, #perfCard { break-inside: avoid; }
   #log { max-width: 960px; }
 }
 
@@ -702,3 +702,35 @@ body.disc [data-needs-device] { opacity: .45; filter: saturate(.5); }
 .mdry .drow .dtext { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mdry .drow .dnote { color: var(--faint); font-size: 11.5px; max-width: 46%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------------- 调用时间线（waterfall） ----------------
+   学 Chrome DevTools Network 面板 / Android Studio App Inspection：右端=现在，横条=耗时。
+   颜色只用 :root 语义令牌（--ok/--warn/--danger 及对应 -text），不写死 hex。 */
+.perfsum { display: flex; flex-wrap: wrap; gap: var(--sp-1); margin: var(--sp-2) 0; }
+.perfsum .pchip { font-size: 11.5px; padding: 2px var(--sp-2); background: var(--card2);
+  border: 1px solid var(--line); border-radius: var(--r-full); color: var(--muted); }
+.perfsum.err .pchip { border-color: var(--danger); color: var(--danger-text); }
+.perfrows { display: grid; gap: 3px; margin: 0 0 var(--sp-2);
+  max-height: 34vh; min-height: 60px; overflow-y: auto; overscroll-behavior: contain; }
+.prow { display: grid; gap: 6px; align-items: center; font-size: 12px; padding: 3px var(--sp-2);
+  grid-template-columns: 56px minmax(64px, 1.1fr) minmax(90px, 1.8fr) 60px minmax(0, 1.2fr);
+  background: var(--card2); border-radius: var(--r-sm); border-left: 3px solid var(--line); }
+.prow.ok { border-left-color: var(--ok); }
+.prow.warn { border-left-color: var(--warn); }
+.prow.err { border-left-color: var(--danger); }
+.prow.cache { border-left-color: var(--line-soft); opacity: .72; }
+.prow .pkind { font-size: 10.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prow.ok .pkind { color: var(--ok-text); }
+.prow.warn .pkind { color: var(--warn-text); }
+.prow.err .pkind { color: var(--danger-text); }
+.prow .plabel { min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prow .ptrack { position: relative; height: 10px; min-width: 0;
+  background: var(--line-soft); border-radius: 2px; overflow: hidden; }
+.prow .pfill { position: absolute; top: 0; bottom: 0; min-width: 2px; border-radius: 2px; background: var(--accent); }
+.prow.ok .pfill { background: var(--ok); }
+.prow.warn .pfill { background: var(--warn); }
+.prow.err .pfill { background: var(--danger); }
+.prow.cache .pfill { background: var(--line); }
+.prow .pms { font-size: 11px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.prow .pnote { min-width: 0; font-size: 11px; color: var(--danger-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#perfOnlyBtn[aria-pressed="true"] { border-color: var(--warn); color: var(--warn-text); }

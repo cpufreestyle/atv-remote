@@ -86,6 +86,26 @@ KEY_MAP_COMPANION = {
 }
 
 
+# ---------------- 调用时间线钩子 ----------------
+# pyatv 调用的耗时由 server 侧统一记录（这里不能 import server：循环 import），
+# server 启动时用 set_perf_recorder 把 recorder 注入进来；没注入就静默跳过。
+_RECORDER = None
+
+
+def set_perf_recorder(fn):
+    global _RECORDER
+    _RECORDER = fn
+
+
+def _perf(label, ms, err=""):
+    fn = _RECORDER
+    if fn:
+        try:
+            fn("pyatv", label, ms, False, err)
+        except Exception:
+            pass
+
+
 class AppleTvManager:
     """pyatv 的线程安全封装：后台 asyncio loop，HTTP 线程同步调用"""
 
@@ -106,19 +126,29 @@ class AppleTvManager:
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
 
-    def run(self, coro, timeout=12):
-        fut = asyncio.run_coroutine_threadsafe(coro, self.loop)
+    def run(self, coro, timeout=12, label=""):
+        # 计时外壳：label 可显式指定（scan/connect…），缺省取协程函数名。
+        # 异常一律记录后原样透传——不改调用方看到的错误，只让瀑布看得见。
+        name = label or getattr(getattr(coro, "cr_code", None), "co_name", "") or "pyatv"
+        t0 = time.monotonic()
         try:
-            return fut.result(timeout)
-        except futures.TimeoutError:
-            self._last_timeout = time.time()   # 供 _call 的快速失败窗口判断
-            raise AppleTvError("Apple TV 响应超时（电视休眠？）")
-        except _CONN_LOST_ERRORS as e:
-            raise AppleTvConnError("连接已断开：{}".format(e))
-        except PYATV_ERRORS as e:
-            raise AppleTvError(self._friendly("{}: {}".format(type(e).__name__, e)))
-        except OSError as e:
-            raise AppleTvConnError("网络错误: {}".format(e))
+            fut = asyncio.run_coroutine_threadsafe(coro, self.loop)
+            try:
+                out = fut.result(timeout)
+            except futures.TimeoutError:
+                self._last_timeout = time.time()   # 供 _call 的快速失败窗口判断
+                raise AppleTvError("Apple TV 响应超时（电视休眠？）")
+            except _CONN_LOST_ERRORS as e:
+                raise AppleTvConnError("连接已断开：{}".format(e))
+            except PYATV_ERRORS as e:
+                raise AppleTvError(self._friendly("{}: {}".format(type(e).__name__, e)))
+            except OSError as e:
+                raise AppleTvConnError("网络错误: {}".format(e))
+            _perf(name, (time.monotonic() - t0) * 1000)
+            return out
+        except Exception as e:
+            _perf(name, (time.monotonic() - t0) * 1000, str(e))
+            raise
 
     @staticmethod
     def _friendly(msg: str) -> str:
@@ -134,7 +164,7 @@ class AppleTvManager:
 
     def scan(self, hosts=None):
         """扫描局域网 Apple TV（保留支持 MRP 或 Companion 遥控协议的设备）"""
-        found = self.run(self._scan_coro(hosts))
+        found = self.run(self._scan_coro(hosts), label="scan")
         result = []
         for c in found:
             mrp = c.get_service(Protocol.MRP)
@@ -176,7 +206,7 @@ class AppleTvManager:
         """dev: state['appletvs'] 中的条目（含 id/ip/凭据）"""
         with self._lock:
             self._close_locked()
-            cfg = self.run(self._config_coro(dev))
+            cfg = self.run(self._config_coro(dev), label="config")
             if cfg is None:
                 raise AppleTvError("找不到 {}（{}）：请确认电视已唤醒且与本机同网段".format(dev.get("name"), dev.get("ip")))
             if not (dev.get("mrp_cred") or dev.get("companion_cred")):
@@ -184,7 +214,7 @@ class AppleTvManager:
             # 按设备广播的协议选择按键映射（新 tvOS 只有 Companion）
             self._key_map = (KEY_MAP_MRP if cfg.get_service(Protocol.MRP)
                              else KEY_MAP_COMPANION)
-            self._atv = self.run(self._connect_coro(cfg))
+            self._atv = self.run(self._connect_coro(cfg), label="connect")
             self._dev = dict(dev)
 
     def disconnect(self):
@@ -194,7 +224,7 @@ class AppleTvManager:
     def _close_locked(self):
         if self._atv is not None:
             try:
-                self.run(self._atv.close(), timeout=5)
+                self.run(self._atv.close(), timeout=5, label="close")
             except Exception:
                 pass
             self._atv = None

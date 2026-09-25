@@ -28,6 +28,7 @@ import threading
 import time
 import traceback
 import webbrowser
+from collections import deque
 from html import escape as html_escape
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -174,6 +175,88 @@ def clamp_coord(v) -> int:
     return min(100000, max(-100000, int(v)))
 
 
+# ---------------- 调用时间线（perf） ----------------
+# 学 Chrome DevTools 的 Network 面板与 Android Studio App Inspection：把每条昂贵的外部调用
+# （fork 一个 adb 进程、常驻 shell 上的一条命令、pyatv 一次协议调用、devices 缓存命中）
+# 当一等事件记下来——耗时多少、有没有命中缓存、失败原因是什么。在此之前「按下去有延迟」
+# 只能猜：不知道慢在哪一步、慢多少、是不是每次都在重新 fork adb。环形缓冲固定长度、
+# 只在被问到时才给快照，正常链路零额外开销。
+PERF_MAX = 60                 # 环形缓冲长度：再多前端也看不完
+PERF_WINDOW_MS = 30000        # 瀑布窗口上限：离得再久的旧事件也不参与画布
+PERF_ERR_LEN = 120
+PERF_KINDS = ("adb", "shell", "pyatv", "devices")
+_perf_lock = threading.Lock()
+_perf_seq = 0
+_perf_events = deque(maxlen=PERF_MAX)   # 尾部是最新
+
+
+def perf_record(kind, label, ms, cache=False, err=""):
+    """记一条调用。label 截到 80 字符（adb 命令行能很长），err 截到 PERF_ERR_LEN。"""
+    global _perf_seq
+    now = time.time()
+    with _perf_lock:
+        _perf_seq += 1
+        _perf_events.append({
+            "seq": _perf_seq,
+            "kind": kind if kind in PERF_KINDS else "adb",
+            "label": str(label)[:80],
+            "ms": max(0, int(ms)),
+            "cache": bool(cache),
+            "err": str(err)[:PERF_ERR_LEN],
+            "t": now,
+        })
+
+
+def _perf_pct(sorted_vals, p):
+    """百分位（线性插值）；样本只有一个时直接给它，别把 p50 报得比 max 还小。"""
+    if not sorted_vals:
+        return 0
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    k = (len(sorted_vals) - 1) * p
+    lo = int(k)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (k - lo)
+
+
+def perf_snapshot():
+    """快照：每条事件带 ago（距今多少毫秒前结束），前端据此画瀑布。
+
+    用「多久以前」而不是绝对时间戳，是为了让前端完全不依赖时钟对齐：画布右端永远
+    是「现在」，横条长度就是耗时。窗口上限 PERF_WINDOW_MS，超出去的旧事件不计入
+    （否则用户离开半小时再回来，最近的几条会被挤成一根针）。
+    """
+    now = time.time()
+    with _perf_lock:
+        evs = [dict(e) for e in _perf_events]
+    kept, hidden = [], 0
+    for e in evs:
+        ago = max(0, int((now - e["t"]) * 1000))
+        e.pop("t", None)
+        if ago > PERF_WINDOW_MS:
+            hidden += 1
+            continue
+        e["ago"] = ago
+        kept.append(e)
+    mss = sorted(e["ms"] for e in kept)
+    hits = sum(1 for e in kept if e["cache"])
+    oldest = max((e["ago"] for e in kept), default=0)
+    return {
+        "events": kept,
+        "window_ms": max(2000, oldest + 1000),
+        "stats": {
+            "n": len(kept),
+            "p50": round(_perf_pct(mss, 0.5), 1),
+            "p95": round(_perf_pct(mss, 0.95), 1),
+            "max": mss[-1] if mss else 0,
+            "errs": sum(1 for e in kept if e["err"]),
+            "cache": hits,
+            "cache_rate": round(hits / len(kept), 3) if kept else 0.0,
+            "hidden": hidden,
+        },
+    }
+
+
 class Adb:
     """adb 封装：常驻一条 `adb shell` 长连接，按键命令低延迟"""
 
@@ -190,11 +273,13 @@ class Adb:
     # ---------- 缓存 ----------
     def invalidate_devices(self):
         """连接/断开后调用，强制下次 devices() 重新查询"""
+        perf_record("adb", "invalidate_devices", 0.0)
         with self._dev_lock:
             self._devices_cache = (0.0, [])
 
     def reset_shell(self):
         """丢弃常驻 shell（设备掉线时），下次命令会重新建立"""
+        perf_record("adb", "reset_shell", 0.0)
         with self._lock:
             self._kill_shell_locked()
 
@@ -209,16 +294,22 @@ class Adb:
 
     # ---------- 基础 ----------
     def run(self, *args, timeout=10, binary=False):
+        t0 = time.monotonic()
+        label = " ".join(str(a) for a in args[:3])
         try:
             p = subprocess.run([self.path, *args], capture_output=True, timeout=timeout)
-        except FileNotFoundError:
+        except FileNotFoundError as e:
+            perf_record("adb", label, (time.monotonic() - t0) * 1000, err=str(e))
             raise AdbError("未找到 adb，请先安装：brew install android-platform-tools")
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
+            perf_record("adb", label, (time.monotonic() - t0) * 1000, err=str(e))
             raise AdbError("adb {} 超时".format(" ".join(args[:3])))
         if binary:
+            perf_record("adb", label, (time.monotonic() - t0) * 1000)
             return p.stdout
         out = p.stdout.decode("utf-8", "replace")
         err = p.stderr.decode("utf-8", "replace")
+        perf_record("adb", label, (time.monotonic() - t0) * 1000)
         return (out or err).strip()
 
     def exists(self) -> bool:
@@ -240,6 +331,7 @@ class Adb:
         with self._dev_lock:
             ts, cached = self._devices_cache
             if not fresh and cached and now - ts < DEVICES_CACHE_TTL:
+                perf_record("devices", "devices", 0.0, cache=True)
                 return [dict(d) for d in cached]
 
         out = self.run("devices")
@@ -283,6 +375,8 @@ class Adb:
 
     def shell(self, serial, cmd, timeout=6):
         """在常驻 shell 上执行命令，返回 stdout；退出码非 0 抛 AdbError"""
+        t0 = time.monotonic()
+        label = cmd[:60]
         with self._lock:
             self._ensure_shell(serial)
             self._seq += 1
@@ -290,7 +384,8 @@ class Adb:
             try:
                 self._shell.stdin.write("{}; echo {}=$?\n".format(cmd, token).encode())
                 self._shell.stdin.flush()
-            except (BrokenPipeError, OSError):
+            except (BrokenPipeError, OSError) as e:
+                perf_record("shell", label, (time.monotonic() - t0) * 1000, err=str(e))
                 self._kill_shell_locked()
                 raise AdbError("adb shell 已断开，请重试")
 
@@ -302,6 +397,7 @@ class Adb:
                     continue
                 chunk = os.read(self._shell.stdout.fileno(), 65536)
                 if not chunk:
+                    perf_record("shell", label, (time.monotonic() - t0) * 1000, err="设备连接中断")
                     self._kill_shell_locked()
                     self.invalidate_devices()
                     raise AdbError("设备连接中断，请重新连接")
@@ -312,16 +408,22 @@ class Adb:
                     body = text[:m.start()].replace("\r\n", "\n").strip()
                     if int(m.group(1)) != 0:
                         tail = "; ".join(l for l in body.splitlines()[-2:] if l.strip())
-                        raise AdbError(tail or "命令执行失败（退出码 {}）".format(m.group(1)))
+                        msg = tail or "命令执行失败（退出码 {}）".format(m.group(1))
+                        perf_record("shell", label, (time.monotonic() - t0) * 1000, err=msg)
+                        raise AdbError(msg)
+                    perf_record("shell", label, (time.monotonic() - t0) * 1000)
                     return body
             self._kill_shell_locked()
             self.invalidate_devices()
+            perf_record("shell", label, (time.monotonic() - t0) * 1000, err="命令超时")
             raise AdbError("命令超时：设备可能未授权（请在电视上点“允许”）或已离线")
 
 
 # ---------------- 全局状态 ----------------
 from atv_backend import AppleTvError, AppleTvManager
 from atv_backend import PYATV_AVAILABLE as ATV_AVAILABLE
+import atv_backend
+atv_backend.set_perf_recorder(perf_record)
 
 adb = None            # type: Adb
 atv_mgr = AppleTvManager()
@@ -1662,6 +1764,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, html, "text/html; charset=utf-8")
             if path == "/api/status":
                 return self._send(200, make_status())
+            if path == "/api/perf":
+                # 调用时间线快照（学 DevTools Network 面板）：最近 30s 的 adb/pyatv 调用
+                payload = perf_snapshot()
+                payload["adb"] = {
+                    "version": adb.version() if adb else "",
+                    "path": adb.path if adb else "",
+                    "shell": bool(adb and adb._shell is not None and adb._shell.poll() is None),
+                    "ttl": DEVICES_CACHE_TTL,
+                }
+                return self._send(200, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
             if path == "/api/nowplaying":
                 # 只覆盖 Android TV：Apple TV 的播放元数据依赖 pyatv 的 metadata.playing()，
                 # 多数 App 不填，字段稀疏，暂不做（前端对该类型直接隐藏卡片）。

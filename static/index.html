@@ -202,6 +202,20 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
       </div>
     </section>
 
+    <!-- 调用时间线：学 Chrome DevTools Network 面板 / Android Studio App Inspection 的瀑布流。
+         数据来自 /api/perf（服务端环形缓冲，只在被问到时给快照）；右端=现在，横条=耗时 -->
+    <section class="card" id="perfCard" data-needs-device>
+      <h2>⏱ 调用时间线</h2>
+      <p class="hint">学 DevTools Network 面板：右端是「现在」，横条长度 = 这条调用耗时多久；缓存命中是细线，超过阈值标黄，失败标红并给出原因。</p>
+      <div class="perfsum" id="perfSum"></div>
+      <div class="perfrows" id="perfRows" aria-live="polite"></div>
+      <div class="brow">
+        <button id="perfRefreshBtn" class="btn tiny">↻ 刷新</button>
+        <button id="perfOnlyBtn" class="btn tiny" aria-pressed="false">只看慢/失败</button>
+        <span class="hint" id="perfMeta"></span>
+      </div>
+    </section>
+
     <section class="card" id="macrosCard" data-needs-device>
       <h2>⚡ 一键宏</h2>
       <div class="brow apps" id="macroRow"></div>
