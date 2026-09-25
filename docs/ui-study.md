@@ -945,3 +945,74 @@ script 实体只回答「跑到哪了」，trace 再回答「每一步发生了�
     warn 行 glyph rgb(246,194,90)、err 行 rgb(244,113,118)；面板 436×186 CSS px，
     无横向溢出（scrollW == clientW == 1200）；
   - 落盘 /tmp/atv-dryrun.png、/tmp/atv-dryrun-ok.png（2400×3816@2x 全页）。
+
+## 第二十轮：学 Chrome DevTools Network 面板 / Android Studio App Inspection 的瀑布流 → 调用时间线（1.23.0 / versionCode 24）
+
+### 学习源
+- Chrome DevTools Network 瀑布流：每个请求一行，横条长度=耗时，右端=现在；颜色只编码「状态」，
+  从不编码「快慢」。慢不慢是读条长读出来的，不是靠告警喊出来的。
+- Android Studio App Inspection / Perfetto 的调用时间线：把一次用户操作背后的 adb 调用、shell
+  调用、协议调用平铺在同一条时间轴上——**用户点一下的背后是 5 次调用，其中 26ms 是 fork 一个 adb、
+  0ms 是复用常驻 shell**。这个先验只有画出来才有人信。
+- 共同点：把「成本」从日志搬到眼前。日志是给已经知道要查什么的人看的，瀑布流是给想知道
+  「刚才那下为什么慢」的人看的。
+
+### 为什么选它
+前 19 轮都在加功能，而这个站最贵的隐性成本一直没人看见：AGENTS.md 自己写着「adb 调用很贵」
+（devices 缓存 TTL 1.5s、`_shell` 常驻、掉线要 invalidate）。「贵」此前全靠规矩约束，
+没有一个界面回答过「我这下点下去花了多贵」。这一轮把后台调用统计画成瀑布流，
+让「点一下=30ms」和「卡了 3s」在界面上自己说出来。
+
+### 设计
+- `/api/perf` 只读快照：环形缓冲存最近 60 条调用，窗口 30s。每条带 kind（adb/shell/pyatv/devices）、
+  label、ms、err、是否命中缓存，以及**距现在多久（ago）**——不带绝对时间戳。
+- 前端画成瀑布：右端=现在，横条=耗时；阈值线来自 AGENTS.md 的经验值（adb 150ms /
+  shell 250ms / pyatv 250ms）映射到语义色。缓存命中的行压暗——它便宜，不该抢注意力。
+- 「只看问题」本地重画、不发请求；轮询 2s 且仅在卡片进入视口 + 页面可见时进行，
+  离开页面白烧请求在手机上就是白烧电。
+- 0ms 事件宽度为 0，靠 `.pfill { min-width: 2px }` 才看得见；窗口固定 30s，
+  更早的事件只计数不画（`hidden`），否则最近几条会被很久以前的针状条挤没。
+
+### 落地
+- server.py：perf 块放 `class Adb` 前（常量 + 环形缓冲 + `perf_record` / `perf_snapshot`），
+  在 `Adb.run` / `shell` / `devices` / `invalidate_devices` / `reset_shell` 全部路径埋点；
+  路由 `/api/perf` 紧跟 `/api/status`。
+- atv_backend.py：**不能 import server（循环）**，改用模块级钩子 `set_perf_recorder` +
+  `run()` 计时外壳；异常记录后**原样透传**，观测不许改变行为。
+- static/index.html：`#perfCard`（`data-needs-device`）放在工具卡与一键宏卡之间。
+- static/app.js：`/* ===== perf-waterfall:begin/end ===== */` 纯函数段 + DOM 胶水两段，
+  纯函数段禁 DOM/localStorage/fetch，可整段搬进 node harness。
+- static/style.css：「调用时间线（waterfall）」段，全语义色 var、无 hex。
+- tests/perf_waterfall_harness.js（新）：13 用例 → `ALL_PERF_CASES_PASSED`。
+- tests/test_perf.py（新）：35 个测试——环形缓冲隔离 / 埋点覆盖率 / pyatv 未装自动 skip /
+  路由 / 前端契约 / 样式 / harness。
+- VERSION：versionName=1.23.0 / versionCode=24。
+
+### 踩到的坑
+- **窗口不设上限**：按「最老事件」自适应窗口时，离开页面 10 分钟再回来，最近几条会被 9 分钟前的
+  针状条挤成看不见。改成 `PERF_WINDOW_MS=30000` 固定 + `hidden` 计数告诉用户「还有 N 条没画」。
+- **绝对时间戳不可用**：服务端时钟与浏览器时钟未必对齐，用户改过时区就全歪。改发 `ago`，
+  服务端因此不需要可信时钟。
+- atv_backend 不能为观测 import server（循环 import），钩子注入是唯一干净解。
+- 轮询必须随视口/可见性停：`perfCardInViewport()` + `pageVisible` 双门控，
+  CDP 里用 `Network.requestWillBeSent` 计数证明滚出视口后请求真的停涨。
+- 0ms 事件宽 0：CSS `min-width: 2px`。
+- **40 行把卡片撑到 1269px 高**（CDP 实测），手机上是个巨型卡片。给 `.perfrows` 加
+  `max-height: 34vh; overflow-y: auto; overscroll-behavior: contain`，修完卡片 443px、容器内滚。
+- 复测时 `maxH` 一度是 `none`：不是 CSS 写错，是浏览器（持久 profile）缓存了旧 style.css。
+  复测必须先 `Network.setCacheDisabled`——**否则会误判自己没修上**。
+
+### 验证
+- `node --check static/app.js`、`python3 -c import server, atv_backend` 通过。
+- `./sync-native.sh`：181 单测 OK（新增 35）+ 内嵌副本逐字节一致 → ALL CHECKS PASSED。
+- node harness 13/13；CDP 实测（fake adb，http://127.0.0.1:8411/，禁用缓存后）：
+  - `#perfCard` 排在 `#macrosCard` 前，`data-needs-device` true，`#perfRows` 带 `aria-live=polite`；
+  - 35 行真实事件，汇总 `42 次调用 | p50 0ms | p95 29ms | 最长 29ms | 缓存命中 13/42`；
+    事件样本里 `adb | devices | 27ms` 与 `shell | input keyevent 22 | 0ms` 同屏——本功能的核心洞察；
+  - 几何无负 left/width，0% 宽度的条靠 `min-width: 2px` 兜底；
+  - 「只看问题」本地重画：40 行 → 仅问题行，`aria-pressed` 翻转，**不产生新请求**；
+  - 错误行（注入带 err 的快照）：`.prow.err` + `.pnote` 出文案，汇总多出「失败 2」chip 且
+    `.perfsum.err` 变色，行无横向溢出（scrollW == clientW）；
+  - 高度修复前后：`#perfRows` 框高 1269px → `max-height: 210.8px` / scrollHeight 907（可内滚）/
+    卡片 443px；
+  - 落盘 /tmp/atv-perf.png、/tmp/atv-perf-height.png、/tmp/atv-perf-err.png。
