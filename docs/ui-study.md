@@ -548,3 +548,72 @@ homeassistant/components/script（Home Assistant 的 script 实体）。它把�
   - 服务端 /api/macros：run 每次 +1，末次 {run: 8, total: 3, index: 1, done: 1, failed: 0, cancelled: true}；
   - 5 个宏按钮 tooltip 均为可读步骤描述（🎬 启动 Netflix（2 个候选包） → ⏱ 等 2.5s → ⌨ 音量-、音量-、音量- ×3）。
 
+
+## 第十五轮：学 Home Assistant automation trace → 宏分步 trace + 一键重跑失败步骤（1.18.0 / versionCode 19）
+
+### 学习源
+Home Assistant 每条 automation 的 trace（homeassistant/components/automation/trace）。
+script 实体只回答「跑到哪了」，trace 再回答「每一步发生了什么」：每步显式列举、
+成功/失败/被跳过各归其位，失败还带原因。第十四轮把「第几步」搬了过来，这一轮把
+「每步一条」搬完整。
+
+### 为什么选它
+进度条只有一根条加两个数字：「第 2/3 步 · 1 步失败」之后，用户仍然不知道是哪一步、
+为什么。手机上更没有 stderr 可看。而失败步骤在服务端本来就是可知的
+（_macro_worker 的 except 分支一直拿着异常对象），缺的只是「把它当一等状态暴露，
+再每步一条画出来」。既然知道哪一步失败，「只重跑失败步骤」是顺水推舟：宏本来就是
+多条独立命令的串联，失败步重跑不需要理解整条宏的上下文。
+
+### 落地
+- server.py：
+  - 新增 MACRO_ERR_LEN = 120（失败原因截断：轮询包要小，电视上的失败信息一句话够）。
+  - _macro_prog 增加 trace 键；macro_state() 持锁深拷贝条目（dict(t)）。
+  - 新增 _macro_trace(i, ms, err=None, cancel=False)：条目为 {i, ms, ok, 可选 cancel,
+    可选 err}。三个出口都记——循环开头的立即取消、延时中被取消、单步 except、
+    成功走 else。
+  - handle_macro() run 分支 reset 时清空 trace，两次运行之间不残留。
+- static/app.js：
+  - macroTraceRows(j)：把服务端 trace 投影成 #macroTrace 的 li 行——状态徽标
+    （✅/⏹/❌）+ 步骤描述（本地 Macro.steps 按步号查）+ 失败原因 + 耗时。按有无
+    条目切 hidden；按有无「失败且非取消」条目切 #macroRerunBtn。
+  - fmtMs(ms)：≥1000 走 fmtSec，否则 Nms——「等了 2.5s」和「卡住 2.5s」终于能分开。
+  - #macroRerunBtn：取 lastTrace 里 !ok && !cancel 的条目 → 映射回 Macro.steps →
+    runMacro(name + 「（重跑失败步）」, steps)。步骤不在这个浏览器里时 toast 说明
+    （自定义宏存在 localStorage，服务端不存，state.json 不放可编辑内容）。
+- static/index.html / style.css：#macroTrace + #macroRerunBtn；.mtrace 每步一行、
+  三列 grid（徽标 auto / 正文 1fr / 耗时 auto），左边条按 ok/cancel/bad 切语义色，
+  耗时列 tabular-nums 等宽数字。
+- 测试 +4（trace 记录结果与原因 / 取消条目 / 运行间重置 / 纯延时步不等于失败），
+  90 → 94 全过。
+
+### 踩到的坑
+- 纯延时步以前会漏进 handle_cmd({})，报「Android TV 不支持该命令: None」——trace
+  上线后第一个 CDP 断言就撞见：每个带延时的预置宏（观影模式 / 看 YouTube）都被记
+  一步假失败。修法：_macro_exec_step() 里 payload 没有 type 就直接 return（等待在
+  _macro_step_delay 里已经做完了）。这是本轮唯一改行为的修复，trace 只是让它显形。
+- 测试快照的浅拷贝陷阱：MacroRunTest.tearDown 用 dict(server._macro_prog) 保存现场，
+  但 trace 条目是原地 append 进同一个 list 的——上一个用例的条目会漏进下一个用例
+  （断言拿到 15 条而不是 3 条）。setUp 里把 _macro_prog["trace"] 换成新 list 才对。
+- Service Worker 缓存（第十四轮记过，本轮又中一次）：unregister + caches.delete()
+  之后 reload 才拿到新 app.js；判据是页面里 typeof macroTraceRows === "function"。
+- 截图落盘这一轮跑通了：nodeRepl.emitImage 不收 base64、tab.screenshot({path}) 的
+  path 被忽略、Page.setDownloadBehavior 被 harness 拒（它提示改用
+  tab.playwright.waitForEvent("download")，但 data-URL 下载不触发 download 事件）。
+  可用配方：python3 起一个写文件的 HTTP 接收器（tty:true 后台），repl 侧
+  await fetch("http://127.0.0.1:8899/", {method:"POST", body: base64})，再 base64
+  解码落盘。第十四轮「repl 没有网络」的结论作废——fetch 本地回环是通的。
+
+### 验证
+- node --check static/app.js、python3 -c 'import server; import atv_backend' 通过。
+- ./sync-native.sh：94 单测 OK + 内嵌副本逐字节一致 → ALL CHECKS PASSED。
+- CDP 实测（fake adb，http://127.0.0.1:8411/，新开 tab + 清 SW 缓存）：
+  - 未执行：#macroTrace 与 #macroRerunBtn 均带 hidden（display: none）；
+  - 全部成功（点「看 YouTube」）：执行中 1 行（✅ 启动 YouTube 0ms），结束后 2 行
+    （第 2 行 ⏱ 等 2.5s = 2.5s）、mprog ok、状态行「✅ 完成 · 2 步」、重跑按钮保持隐藏；
+  - 失败（自定义宏 com.example.notinstalled）：第 1 行 bad ❌
+    「monkey 无法启动 com.example.notinstalled」22ms、第 2 行 ok ✅ 2.5s、
+    mprog warn、状态行「⚠ 2 步里有 1 步失败」、重跑按钮出现；
+  - 一键重跑：/api/macros 显示 name = 验收宏（重跑失败步）、total = 1，trace 只剩那 1 步；
+  - 取消（点「观影模式」700ms 后取消）：末行 cancel ⏹「⏱ 等 2.5s」670ms、mprog bad、
+    状态行「⏹ 已取消 · 1/3 步」、重跑按钮正确地保持隐藏（取消 ≠ 失败）；
+  - 截图 /tmp/atv-macro-trace.png（2560×1440）即失败态 trace 界面。
