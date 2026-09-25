@@ -353,3 +353,47 @@ Android TV / Google TV 官方遥控与 Apple TV Remote：按音量键立刻弹�
   不再回弹；音量 8/15 正常
 - `curl /api/volume` → `{"connected":true,"supported":true,"level":8,"max":15,"muted":null}`
 - `./check.sh` 全绿（72 单测）+ `./sync-native.sh` 副本一致
+
+# 第十轮：PWA 离线壳 + 主图标（2026-09-25 深夜）
+
+## 学习源
+- Workbox 7（npm 镜像取 workbox-strategies@7.4.1 源码）：stale-while-revalidate 语义
+  核对——缓存与网络并行、有缓存先返缓存、成功响应回写缓存；app-shell 预缓存。
+- MDN「Service Worker API」scope 规则：SW 脚本的默认最大 scope 是自己所在目录。
+
+## 设计
+- static/sw.js：CACHE="atv-shell-v1" 预缓存 app shell（导航页 + 全部静态资源）；
+  导航请求 network-first（失败回落缓存的壳，再 504 占位）；同源其他 GET 走
+  stale-while-revalidate（res.type !== "opaque" 才写缓存）；/api/* 与非 GET 一律
+  放行——实时状态进缓存就是 bug；activate 清旧缓存，防「新 HTML + 旧 JS」幽灵。
+- static/app.js：load 后注册，成功置 dataset.sw="on" 并播报一次，失败置 "fail"
+  （信号位，CDP 可断言）。首次控制器为空才播报，刷新不重复。
+- 图标：tools/make_icons.py（4x 超采样，PIL）产出 192 / 512 / maskable-512 /
+  apple-touch 四张 PNG；manifest 从「SVG any + maskable SVG」换成三张 PNG，
+  保留 SVG any 行；index.html 补 apple-touch-icon 链接。
+- 渐进增强边界：SW 只在安全上下文（https / localhost）注册，纯 HTTP 局域网注册
+  静默失败、功能不变；图标 / manifest 随处可用。服务端无 TLS（已查证），不强推。
+- server.py 新增 static_ctype()：显式 MIME 映射兜底——Android / Chaquopy 机没有
+  /etc/mime.types 时 .webmanifest 会被 mimetypes 降级成 octet-stream，manifest 直接废掉。
+
+## 踩到的坑
+- SW scope 锁目录（CDP 真机抓到的 SecurityError）：脚本在 /static/sw.js，默认
+  scope 锁死 /static/，注册 / 被浏览器拒。修复：/static/sw.js 响应带
+  Service-Worker-Allowed: / 头（_send 加可选 extra_headers，Content-Length 纪律
+  不变）。返工就出在这——iab 里 dataset.sw 是 "fail"，一度以为是平台不支持，
+  用 CDP Runtime.evaluate 才拿到真实报错：先看错误再下结论。
+- /api/ 与非 GET 必须在 fetch handler 最前面放行，否则 POST 遥控命令会被 SW 吞掉。
+- iab 的 playwright.evaluate 只读作用域里 navigator 不可用（serviceWorker 探测
+  会 TypeError），DOM 属性可读——验证 SW 信号走 dataset + CDP Runtime.evaluate。
+
+## 验证
+- tests/test_pwa.py 新增 13 个用例：manifest 字段 / 图标尺寸（IHDR 解，不依赖
+  Pillow）/ maskable purpose / SW 三个事件 handler / api 与 POST 放行 / 壳预缓存 /
+  缓存版本号 / static_ctype() 映射与大小写；tests/test_http_hardening.py 补 2 条：
+  Service-Worker-Allowed: / 与 manifest 的 application/manifest+json。
+- CDP 实测：dataset.sw 从 "fail" → "on"；Network.emulateNetworkConditions
+  {offline:true} 后刷新，标题 / 连接按钮 / 样式全在（壳来自缓存），实时数据
+  （Now Playing）按预期缺省——API 不进缓存。
+- curl -D - /static/sw.js 有 Service-Worker-Allowed: /；manifest 为
+  application/manifest+json。
+- ./check.sh 全绿（87 单测）+ ./sync-native.sh 副本一致。
