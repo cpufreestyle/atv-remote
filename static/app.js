@@ -547,6 +547,167 @@ $("#macroSaveCustomBtn")?.addEventListener("click", () => {
   }
 });
 
+/* ---------------- 自定义宏可视化编辑器 ----------------
+   textarea 仍是唯一事实源（兼容已存的本机宏、也方便直接粘贴 JSON），步骤列表只是它的
+   实时投影：每一步渲染成一行人话，可删可排序；快捷添加把参数收齐后写回 JSON，
+   用户不再需要手写 JSON。解析失败时列表保留最后一版好状态，只把错误显示出来。 */
+const MACRO_KEY_NAMES = { 3: "主页", 4: "返回", 19: "上", 20: "下", 21: "左", 22: "右", 23: "OK",
+  24: "音量+", 25: "音量-", 66: "回车", 67: "退格", 85: "播放/暂停", 86: "停止",
+  87: "下一曲", 88: "上一曲", 89: "快退", 90: "快进", 164: "静音" };
+const MACRO_KEY_OPTIONS = [[24, "音量+"], [25, "音量-"], [164, "静音"], [3, "主页"], [4, "返回"],
+  [23, "OK"], [19, "上"], [20, "下"], [21, "左"], [22, "右"], [85, "播放/暂停"], [86, "停止"],
+  [89, "快退"], [90, "快进"]];
+const MACRO_PKG_NAMES = {};   // pkg → 中文名（预设应用 + Apple TV 列表动态补充）
+APPS.forEach((a) => { MACRO_PKG_NAMES[a.pkg] = a.name; });
+const pkgName = (p) => MACRO_PKG_NAMES[p] || p;
+
+function macroParse() {
+  const raw = $("#macroText").value.trim();
+  if (!raw) return { name: "", steps: [] };
+  const m = JSON.parse(raw);
+  if (typeof m !== "object" || m === null || Array.isArray(m)) throw new Error("顶层必须是对象（含 name 和 steps）");
+  if (!Array.isArray(m.steps)) m.steps = [];
+  return m;
+}
+function macroWrite(m) {
+  $("#macroText").value = JSON.stringify(m, null, 2);
+  renderMacroSteps();
+}
+function macroStepLabel(st) {
+  // 纯延时步和「带延时的动作步」是两种渲染
+  if (st.type === undefined && st.delay !== undefined) return { icon: "⏱", text: `等 ${fmtSec(st.delay)}` };
+  if (st.type === "app") {
+    const pkgs = (st.pkgs || []).length ? st.pkgs : [st.pkg];
+    const more = pkgs.length > 1 ? `（${pkgs.length} 个候选包）` : "";
+    return { icon: "🎬", text: `启动 ${pkgName(pkgs[0])}${more}` };
+  }
+  if (st.type === "key") {
+    const codes = st.codes || [st.code];
+    const names = codes.map((c) => MACRO_KEY_NAMES[c] || `键码 ${c}`);
+    return { icon: "⌨", text: names.join("、") + (codes.length > 1 ? ` ×${codes.length}` : "") };
+  }
+  if (st.type === "text") return { icon: "🔤", text: `输入「${String(st.text).slice(0, 30)}」` };
+  return { icon: "•", text: "未知步骤" };
+}
+const fmtSec = (ms) => (Math.round(ms / 100) / 10).toString().replace(/\.0$/, "") + "s";
+
+function renderMacroSteps() {
+  let m;
+  try {
+    m = macroParse();
+    $("#macroErr").textContent = "";
+  } catch (e) {
+    // 解析失败只报错、不清空——用户改 JSON 的半途列表不闪没，改完自动回来
+    $("#macroErr").textContent = "⚠ JSON 解析失败：" + e.message + "（列表为最后一版好状态）";
+    return;
+  }
+  const box = $("#macroSteps");
+  box.textContent = "";
+  if (!m.steps.length) {
+    const d = document.createElement("div");
+    d.className = "empty";
+    d.textContent = "还没有步骤——用下面的按钮添加，或直接粘贴 JSON";
+    box.appendChild(d);
+    return;
+  }
+  m.steps.forEach((st, i) => {
+    const { icon, text } = macroStepLabel(st);
+    const row = document.createElement("div");
+    row.className = "mstep";
+    const idx = document.createElement("span");
+    idx.className = "idx";
+    idx.textContent = i + 1;
+    const ic = document.createElement("span");
+    ic.textContent = icon;
+    const tx = document.createElement("span");
+    tx.className = "stext";
+    tx.textContent = text;
+    tx.title = text;
+    row.append(idx, ic, tx);
+    if (st.type !== undefined && st.delay !== undefined) {
+      const b = document.createElement("span");
+      b.className = "delaybadge";
+      b.textContent = "等 " + fmtSec(st.delay);
+      row.appendChild(b);
+    }
+    const ops = document.createElement("span");
+    ops.className = "ops";
+    const mk = (label, cls, fn) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = label;
+      b.className = cls;
+      b.title = label === "✕" ? "删除这一步" : label === "↑" ? "上移" : "下移";
+      b.addEventListener("click", fn);
+      ops.appendChild(b);
+    };
+    mk("↑", "", () => { const mm = macroParse(); if (i > 0) { mm.steps.splice(i - 1, 0, mm.steps.splice(i, 1)[0]); macroWrite(mm); } });
+    mk("↓", "", () => { const mm = macroParse(); if (i < mm.steps.length - 1) { mm.steps.splice(i + 1, 0, mm.steps.splice(i, 1)[0]); macroWrite(mm); } });
+    mk("✕", "del", () => { const mm = macroParse(); mm.steps.splice(i, 1); macroWrite(mm); });
+    row.appendChild(ops);
+    box.appendChild(row);
+  });
+}
+
+/* 快捷添加：点类型 → 内联参数表单 → 确定后 append 回 JSON */
+const MACRO_ADDER = {
+  app: { label: "包名", html: '<input id="mfPkg" list="appPkgOptions" placeholder="如 com.google.android.youtube.tv" autocomplete="off"><button class="btn tiny primary" id="mfOk">添加</button>' },
+  key: { label: "按键", html: '<select id="mfKey">' + MACRO_KEY_OPTIONS.map(([c, n]) => `<option value="${c}">${n}</option>`).join("") + '</select><button class="btn tiny primary" id="mfOk">添加</button>' },
+  delay: { label: "等待秒数", html: '<input id="mfDelay" type="number" min="0.1" max="10" step="0.1" value="2"><button class="btn tiny primary" id="mfOk">添加</button>' },
+  text: { label: "文本", html: '<input id="mfText" placeholder="要输入到电视的文字" autocomplete="off"><button class="btn tiny primary" id="mfOk">添加</button>' },
+};
+function macroAddStep(kind) {
+  const form = $("#macroForm");
+  form.textContent = "";
+  form.innerHTML = MACRO_ADDER[kind].html;
+  form.classList.remove("hidden");
+  const first = form.querySelector("input, select");
+  first?.focus();
+  $("#mfOk").addEventListener("click", () => {
+    let st;
+    if (kind === "app") {
+      const pkg = $("#mfPkg").value.trim();
+      if (!pkg) return toast("⚠ 包名不能为空");
+      st = { type: "app", pkg };
+    } else if (kind === "key") {
+      st = { type: "key", code: Number($("#mfKey").value) };
+    } else if (kind === "delay") {
+      const sec = Number($("#mfDelay").value);
+      if (!(sec > 0)) return toast("⚠ 等待秒数不合法");
+      st = { delay: Math.round(Math.min(10, sec) * 1000) };
+    } else {
+      const t = $("#mfText").value;
+      if (!t.trim()) return toast("⚠ 文本不能为空");
+      st = { type: "text", text: t };
+    }
+    const m = macroParse();
+    if (!m.name) m.name = "我的宏";
+    m.steps.push(st);
+    macroWrite(m);
+    form.classList.add("hidden");
+    buzz(10);
+  });
+  form.querySelector("input")?.addEventListener("keydown", (e) => { if (e.key === "Enter") $("#mfOk").click(); });
+}
+$$("#macroCustom [data-add]").forEach((b) => b.addEventListener("click", () => macroAddStep(b.dataset.add)));
+
+// textarea 是事实源：边打字边投影（轻量防抖，别每个 keystroke 都全量重渲染）
+let macroRenderTimer = null;
+$("#macroText").addEventListener("input", () => {
+  clearTimeout(macroRenderTimer);
+  macroRenderTimer = setTimeout(renderMacroSteps, 250);
+});
+
+// 启动应用候选（datalist）：选名字即可，不用记包名
+const appPkgList = $("#appPkgOptions");
+APPS.forEach((a) => {
+  const o = document.createElement("option");
+  o.value = a.pkg;
+  o.label = a.name;
+  appPkgList.appendChild(o);
+});
+renderMacroSteps();
+
 /* ---------------- 状态与连接 ---------------- */
 let statusBusy = null;  // 上一次 /api/status 没回来就不叠加下一次（慢响应会排在按键锁后面）
 
@@ -957,6 +1118,7 @@ async function loadAtvApps() {
       const b = document.createElement("button");
       b.className = "btn";
       b.textContent = a.name || a.id;
+      MACRO_PKG_NAMES[a.id] = a.name || a.id;   // 让宏步骤列表能显示中文名
       b.onclick = () => launchApp(a.name || a.id, a.id);
       box.appendChild(b);
     });

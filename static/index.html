@@ -181,8 +181,17 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
       <p class="hint" id="macroState">宏会按顺序执行多步操作（应用包名会依次尝试 Android / tvOS）。</p>
       <button id="macroCancelBtn" class="btn danger hidden">⏹ 取消执行中的宏</button>
       <details id="macroCustom">
-        <summary>自定义宏（JSON，保存在本浏览器）</summary>
-        <textarea id="macroText" rows="4" spellcheck="false"
+        <summary>自定义宏（可视化编辑，保存在本浏览器）</summary>
+        <div id="macroSteps" class="msteps" aria-live="polite"></div>
+        <div class="brow madd">
+          <button class="btn tiny" data-add="app">🎬 启动应用</button>
+          <button class="btn tiny" data-add="key">⌨ 按键</button>
+          <button class="btn tiny" data-add="delay">⏱ 等待</button>
+          <button class="btn tiny" data-add="text">🔤 输入文本</button>
+        </div>
+        <div id="macroForm" class="mform hidden"></div>
+        <p class="hint merr" id="macroErr" role="status"></p>
+        <textarea id="macroText" rows="3" spellcheck="false"
           placeholder='{"name":"我的宏","steps":[{"type":"app","pkg":"com.google.android.youtube.tv"},{"delay":2500},{"type":"key","codes":[25,25]}]}'></textarea>
         <div class="brow">
           <button id="macroRunCustomBtn" class="btn primary">▶ 运行文本框里的宏</button>
@@ -231,6 +240,8 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
 
   <div id="log" role="status" aria-live="polite">就绪 · 等待连接电视</div>
 </div>
+
+<datalist id="appPkgOptions"></datalist>
 
 <div id="toast" class="hidden" role="status" aria-live="polite"></div>
 

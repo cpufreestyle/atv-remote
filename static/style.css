@@ -393,6 +393,35 @@ code {
 }
 .setrow:last-of-type { border-bottom: none; }
 
+/* ---------- 自定义宏可视化编辑器 ---------- */
+.msteps { display: flex; flex-direction: column; gap: 6px; margin-bottom: var(--sp-2); }
+.mstep {
+  display: flex; align-items: center; gap: var(--sp-2);
+  background: var(--card2); border: 1px solid var(--line-soft); border-radius: var(--r-md);
+  padding: 7px var(--sp-2); font-size: 13px;
+}
+.mstep .idx { color: var(--faint); font-size: 11px; min-width: 14px; text-align: center; }
+.mstep .stext { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mstep .delaybadge { color: var(--warn-text); font-size: 11.5px; flex: none; }
+.mstep .ops { display: flex; gap: 2px; flex: none; }
+.mstep .ops button { color: var(--faint); font-size: 12px; padding: 2px 5px; border-radius: var(--r-sm); min-height: 0; }
+.mstep .ops button:hover { color: var(--text); background: var(--card3); }
+.mstep .ops button.del:hover { color: var(--danger-text); }
+.msteps .empty { color: var(--faint); font-size: 12.5px; text-align: center; padding: var(--sp-3);
+  border: 1px dashed var(--line); border-radius: var(--r-md); }
+.madd { margin-bottom: var(--sp-2); }
+.merr:not(:empty) { color: var(--danger-text); }
+.mform {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  background: var(--card2); border: 1px solid var(--accent); border-radius: var(--r-md);
+  padding: var(--sp-2); margin-bottom: var(--sp-2);
+}
+.mform input, .mform select {
+  flex: 1; min-width: 0; font-size: 16px; padding: 7px 9px;
+  background: var(--card); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+}
+
 /* switch 控件（对标 Radix Switch 的最小形态）：轨道 + 滑块，aria-checked 驱动样式；
    无障碍语义由 role="switch" + aria-checked 提供，不靠 开/关 文字 */
 .switch {
