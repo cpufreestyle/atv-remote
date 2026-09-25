@@ -1320,13 +1320,14 @@ def build_bundle() -> bytes:
 MACRO_STEP_TYPES = ("key", "text", "app")   # 都与当前设备类型无关，仍走 handle_cmd 分发
 MACRO_MAX_STEPS = 20
 MACRO_MAX_DELAY = 10000      # 单步延时上限 ms
+MACRO_ERR_LEN = 120          # 分步失败原因进 trace 前的截断长度：轮询包要小
 _macro_running = threading.Event()
 _macro_stop = threading.Event()
 # 进度快照：宏在线程里跑，轮询方只读、不推断。持 _macro_lock 写，macro_state() 同样持锁读。
 _macro_lock = threading.Lock()
 _macro_seq = 0        # 递增运行代号：前端据此分辨「新的一次刚结束」和「从没跑过」
 _macro_prog = {"run": 0, "name": "", "total": 0, "index": 0, "done": 0,
-               "failed": 0, "cancelled": False}
+               "failed": 0, "cancelled": False, "trace": []}
 
 # 预置宏：开箱即用。pkg 一给多是因为「同一个 App 在 Android TV / tvOS 上包名不同」，
 # 按顺序试，成功即停；自定义宏保存在浏览器 localStorage，不写 state.json（敏感文件）。
@@ -1361,11 +1362,13 @@ def app_version():
 
 
 def macro_state():
-    """宏执行进度快照 + running 标志。
-    学 Home Assistant 的 script 实体（components/script）：把「第几步 / 完成几步 /
-    失败几步 / 是否被取消」当一等状态暴露，前端只做投影，不需要推断跑到哪一步。"""
+    """宏执行进度快照 + running 标志 + 分步 trace。
+    学 Home Assistant 的 script 实体（components/script）和它每条 automation 的 trace：
+    把「第几步 / 完成几步 / 失败几步 / 是否被取消 / 每步多久、为什么失败」当一等状态
+    暴露，前端只做投影——既不用推断跑到哪一步，也不用翻服务端日志找失败原因。"""
     with _macro_lock:
         s = dict(_macro_prog)
+        s["trace"] = [dict(t) for t in _macro_prog["trace"]]
     s["running"] = _macro_running.is_set()
     return s
 
@@ -1380,6 +1383,19 @@ def _macro_fail():
     """失败计数自增：dict[k] += 1 是读-改-写，必须在锁内一次做完。"""
     with _macro_lock:
         _macro_prog["failed"] += 1
+
+
+def _macro_trace(i, ms, err=None, cancel=False):
+    """记一条分步结果：第几步、耗时多久、失败原因（可选）。
+    失败原因以前只进 stderr，手机上没人知道哪一步为什么挂；耗时也是同理——
+    「等了 2.5s」和「卡了 2.5s」在进度条上长得一模一样。"""
+    entry = {"i": i, "ms": max(0, int(ms)), "ok": not err and not cancel}
+    if cancel:
+        entry["cancel"] = True
+    if err:
+        entry["err"] = str(err)[:MACRO_ERR_LEN]
+    with _macro_lock:
+        _macro_prog["trace"].append(entry)
 
 
 def _macro_step_delay(step):
@@ -1441,6 +1457,11 @@ def _macro_exec_step(step):
             raise last
         return
     payload = {k: v for k, v in step.items() if k not in ("delay", "pkgs")}
+    if "type" not in payload:
+        # 纯延时步：等待在 _macro_step_delay 里已经做完了，没有可执行的命令。
+        # 以前会漏进 handle_cmd({}) 报「Android TV 不支持该命令: None」——
+        # trace 上每个延时步都变成一条假失败（预置宏全带延时步，等于全红）。
+        return
     handle_cmd(payload)
 
 
@@ -1449,11 +1470,14 @@ def _macro_worker(name, steps):
         for i, step in enumerate(steps):
             if _macro_stop.is_set():
                 _macro_mark(cancelled=True)
+                _macro_trace(i + 1, 0, cancel=True)
                 print("宏「{}」已取消（第 {} 步）".format(name, i), file=sys.stderr)
                 return
             wait = _macro_step_delay(step) / 1000.0
+            t0 = time.monotonic()
             if wait and _macro_stop.wait(wait):
                 _macro_mark(cancelled=True)
+                _macro_trace(i + 1, (time.monotonic() - t0) * 1000, cancel=True)
                 print("宏「{}」在延时中被取消".format(name), file=sys.stderr)
                 return
             _macro_mark(index=i + 1, name=name)
@@ -1461,9 +1485,12 @@ def _macro_worker(name, steps):
                 _macro_exec_step(step)
             except (AdbError, AppleTvError) as e:
                 # 单步失败不终止整条宏：比如「观影模式」里 Netflix 没装，
-                # 后面的音量调整仍然该跑。失败原因进服务端日志。
+                # 后面的音量调整仍然该跑。失败原因既进服务端日志也进 trace。
                 _macro_fail()
+                _macro_trace(i + 1, (time.monotonic() - t0) * 1000, e)
                 print("宏「{}」第 {} 步失败：{}".format(name, i + 1, e), file=sys.stderr)
+            else:
+                _macro_trace(i + 1, (time.monotonic() - t0) * 1000)
             _macro_mark(done=i + 1)
     except Exception:
         traceback.print_exc()
@@ -1487,7 +1514,8 @@ def handle_macro(body):
     with _macro_lock:
         _macro_seq += 1
         _macro_prog.update({"run": _macro_seq, "name": name, "total": len(steps),
-                            "index": 0, "done": 0, "failed": 0, "cancelled": False})
+                            "index": 0, "done": 0, "failed": 0, "cancelled": False,
+                            "trace": []})
     _macro_running.set()
     threading.Thread(target=_macro_worker, args=(name, steps),
                      daemon=True, name="macro").start()

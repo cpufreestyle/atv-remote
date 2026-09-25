@@ -210,6 +210,10 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
           <span class="mprogfail" id="macroProgFail"></span>
         </div>
       </div>
+      <!-- 分步 trace：步号 / 耗时 / 失败原因由服务端 macro_state() 的 trace 给出，前端只投影；
+           没有条目时整块隐藏——执行前和跑干净之后都不占地方 -->
+      <ul class="mtrace hidden" id="macroTrace" aria-live="polite"></ul>
+      <div class="brow madd"><button id="macroRerunBtn" class="btn tiny hidden">↻ 重跑失败步骤</button></div>
       <details id="macroCustom">
         <summary>自定义宏（可视化编辑，保存在本浏览器）</summary>
         <div id="macroSteps" class="msteps" aria-live="polite"></div>

@@ -486,6 +486,21 @@ code {
   margin-top: 5px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .mprogfail:not(:empty) { color: var(--danger-text); }
 @media (prefers-reduced-motion: reduce) { .mprogfill { transition: none; } }
+/* ---------- 宏分步 trace ----------
+   学 Home Assistant 的 automation trace：每步一行——做了什么、花了多久、为什么失败。
+   行在执行中一条条长出来、结束后留在原位，失败行给出原因，才知道该重跑哪一步；
+   左边条按结果切语义色，跟进度条共用同一套色板。 */
+.mtrace { list-style: none; margin: var(--sp-2) 0 0; padding: 0; display: grid; gap: 3px; }
+.mtrace li { display: grid; grid-template-columns: auto 1fr auto; align-items: baseline;
+  gap: 7px; padding: 4px 8px; font-size: 12.5px; border-radius: var(--r-sm);
+  background: var(--card2); border-left: 2px solid var(--line); }
+.mtrace li.ok { border-left-color: var(--ok); }
+.mtrace li.cancel { border-left-color: var(--warn); }
+.mtrace li.bad { border-left-color: var(--danger); }
+.mtbody { min-width: 0; }
+.mtwhat { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mterr { display: block; color: var(--danger-text); font-size: 11.5px; }
+.mtms { color: var(--faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .mform {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   background: var(--card2); border: 1px solid var(--accent); border-radius: var(--r-md);

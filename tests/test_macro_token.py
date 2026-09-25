@@ -83,6 +83,10 @@ class MacroRunTest(unittest.TestCase):
         server._screen_cache = {"ts": time.time(), "awake": True}
         server._macro_stop.clear()
         server._macro_running.clear()
+        # trace 条目是原地 append 进 _macro_prog["trace"] 的，而下面的快照只是浅拷贝
+        # （dict 复制引用，指向同一个 list）：不在这里换成新 list，上一个用例的
+        # 条目就会漏进下一个用例的断言里。
+        server._macro_prog["trace"] = []
 
     def tearDown(self):
         (server.adb, server.state,
@@ -213,6 +217,54 @@ class MacroRunTest(unittest.TestCase):
         self.assertGreater(a["run"], first)
         self.assertGreater(b["run"], a["run"])
         self.assertEqual(b["name"], "乙")
+
+    def test_trace_records_step_result_and_error(self):
+        server.adb = _FakeAdb(fail_pkgs=["not.installed.pkg"])
+        server._macro_worker("测试", [
+            {"type": "app", "pkg": "not.installed.pkg"},
+            {"type": "key", "code": 25},
+            {"type": "key", "code": 24}])
+        # 纯延时步混在里面：等完就算成功，不该报「不支持该命令」
+        tr = server.macro_state()["trace"]
+        self.assertEqual([t["i"] for t in tr], [1, 2, 3])
+        self.assertFalse(tr[0]["ok"])                     # 失败步：ok 为假
+        self.assertIn("monkey 无法启动", tr[0]["err"])     # 失败原因随 trace 上报
+        self.assertTrue(tr[1]["ok"] and tr[2]["ok"])
+        self.assertNotIn("err", tr[1])                    # 成功步不带原因字段
+        for t in tr:
+            self.assertGreaterEqual(t["ms"], 0)
+
+    def test_delay_only_step_waits_without_failing(self):
+        server._macro_worker("测试", [{"delay": 50}])
+        tr = server.macro_state()["trace"]
+        self.assertEqual(len(tr), 1)
+        self.assertTrue(tr[0]["ok"])               # 纯延时步：等完即成功
+        self.assertGreaterEqual(tr[0]["ms"], 50)   # 等了多久，trace 记多久
+        self.assertEqual(server.adb.calls, [])     # 不该往电视发任何命令
+
+    def test_trace_marks_cancel_entry(self):
+        real_wait = server._macro_stop.wait
+        server._macro_stop.wait = lambda t: True    # 模拟「取消发生在延时里」
+        try:
+            server._macro_worker("测试", [
+                {"type": "key", "code": 25},
+                {"type": "key", "code": 24, "delay": 3000}])
+        finally:
+            server._macro_stop.wait = real_wait
+        tr = server.macro_state()["trace"]
+        self.assertTrue(tr[0]["ok"])
+        self.assertEqual(tr[-1]["i"], 2)                    # 取消记在被打断的那一步上
+        self.assertTrue(tr[-1]["cancel"])
+        self.assertFalse(tr[-1]["ok"])
+
+    def test_trace_reset_between_runs(self):
+        server.handle_macro({"name": "甲", "steps": [{"type": "key", "code": 25}]})
+        self._wait_idle()
+        self.assertEqual(len(server.macro_state()["trace"]), 1)
+        server.handle_macro({"name": "乙", "steps": [
+            {"type": "key", "code": 24}, {"type": "key", "code": 25}]})
+        s = self._wait_idle()
+        self.assertEqual([t["i"] for t in s["trace"]], [1, 2])   # 上一次的 trace 不残留
 
 
 class TokenPolicyTest(unittest.TestCase):

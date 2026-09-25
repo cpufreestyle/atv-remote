@@ -616,13 +616,15 @@ async function loadMacros() {
   }
 }
 
-/* ---------------- 宏执行进度 ----------------
-   学 Home Assistant 的 script 实体（homeassistant/components/script）：后台任务把
-   「第几步 / 完成几步 / 失败几步 / 是否被取消」当一等状态暴露（服务端 macro_state()），
-   前端只做投影、不推断跑到哪。run 是递增运行代号：区分「新的一次刚结束」与「从没跑过」，
-   也保证汇总只记一条日志。自定义宏的步骤只存在浏览器 localStorage，所以本地留一份
-   Macro.steps 供步骤描述用；刷新页面后丢了就只报步号——总步数服务端仍然给得出。 */
-const Macro = { run: 0, steps: [], primed: false };
+/* ---------------- 宏执行进度与分步 trace ----------------
+   学 Home Assistant 的 script 实体（homeassistant/components/script）与它的 automation
+   trace：后台任务把「第几步 / 完成几步 / 失败几步 / 是否被取消」当一等状态暴露（服务端
+   macro_state()），前端只做投影、不推断跑到哪；每步的耗时与失败原因同样来自服务端。
+   正因为「哪一步失败了」是可知的，才有「重跑失败步骤」：步号取自 trace，步骤本体取自
+   本地 Macro.steps。run 是递增运行代号：区分「新的一次刚结束」与「从没跑过」，也保证汇总
+   只记一条日志。自定义宏的步骤只存在浏览器 localStorage，所以本地留一份 Macro.steps
+   供步骤描述与重跑用；刷新页面后丢了就只报步号——总步数服务端仍然给得出。 */
+const Macro = { run: 0, name: "", steps: [], primed: false, lastTrace: [] };
 
 function macroStepText(step) {
   if (!step) return "";
@@ -653,13 +655,60 @@ function macroShowResult(j) {
     state.textContent = j.cancelled
       ? `⏹ 宏「${name}」已取消 · 执行了 ${j.done || 0}/${total} 步`
       : failed ? `⚠ 宏「${name}」完成，${total} 步里有 ${failed} 步失败`
-               : `✅ 宏「${name}」完成 · ${total} 步`;
+      : `✅ 宏「${name}」完成 · ${total} 步`;
   }
+}
+
+/* 分步 trace：一行一步——做了什么、花了多久、为什么失败。
+   步号由服务端给，步骤描述在本地 Macro.steps 里查（自定义宏的步骤不该进 state.json）。
+   耗时同样是信息：纯延时步的 2.5s 和「卡住 2.5s」在进度条上长得一模一样。 */
+function fmtMs(ms) {
+  if (!isFinite(ms)) return "";
+  return ms >= 1000 ? fmtSec(ms) : Math.round(ms) + "ms";
+}
+
+function macroTraceRows(j) {
+  const ul = $("#macroTrace");
+  const rerun = $("#macroRerunBtn");
+  if (!ul) return;
+  const list = (j && Array.isArray(j.trace)) ? j.trace : [];
+  Macro.lastTrace = list;
+  ul.textContent = "";
+  list.forEach((t) => {
+    if (!t || typeof t.i !== "number") return;   // 字段缺失就跳过，别阻断轮询
+    const li = document.createElement("li");
+    li.className = t.ok ? "ok" : t.cancel ? "cancel" : "bad";
+    const badge = document.createElement("span");
+    badge.className = "mtbadge";
+    badge.textContent = t.ok ? "✅" : t.cancel ? "⏹" : "❌";
+    const body = document.createElement("span");
+    body.className = "mtbody";
+    const what = document.createElement("span");
+    what.className = "mtwhat";
+    what.textContent = t.i + ". " + (macroStepText(Macro.steps[t.i - 1]) || ("第 " + t.i + " 步"));
+    body.append(what);
+    if (t.err) {
+      const err = document.createElement("span");
+      err.className = "mterr";
+      err.textContent = t.err;
+      body.append(err);
+    }
+    const ms = document.createElement("span");
+    ms.className = "mtms";
+    ms.textContent = fmtMs(t.ms);
+    li.append(badge, body, ms);
+    ul.append(li);
+  });
+  ul.classList.toggle("hidden", !list.length);
+  const bad = list.filter((t) => t && !t.ok && !t.cancel);
+  if (rerun) rerun.classList.toggle("hidden", !bad.length);
 }
 
 function renderMacroState(j) {
   clearInterval(macroTick);
   macroTick = null;
+  macroTraceRows(j);                       // 分步 trace：执行中一行行长出来，结束后留下
+  Macro.name = (j && j.name) || Macro.name;   // 重跑失败步骤时拼名字用
   const cancelBtn = $("#macroCancelBtn");
   const stateEl = $("#macroState");
   const prog = $("#macroProg");
@@ -716,6 +765,18 @@ $("#macroCancelBtn")?.addEventListener("click", async () => {
   } catch (e) {
     toast("⚠ " + e.message);
   }
+});
+
+/* 重跑失败步骤：步号来自 trace（服务端），步骤本体来自本地 Macro.steps。
+   服务端不存自定义宏（state.json 不放可编辑内容），所以步骤不在这个浏览器里就只能提示。 */
+$("#macroRerunBtn")?.addEventListener("click", () => {
+  const bad = Macro.lastTrace.filter((t) => t && !t.ok && !t.cancel);
+  const steps = bad.map((t) => Macro.steps[t.i - 1]).filter(Boolean);
+  if (!steps.length) {
+    toast("⚠ 这条宏的步骤不在这个浏览器里（自定义宏存在本地），重跑不了");
+    return;
+  }
+  runMacro({ name: (Macro.name || "宏") + "（重跑失败步）", steps });
 });
 
 $("#macroRunCustomBtn")?.addEventListener("click", async () => {
