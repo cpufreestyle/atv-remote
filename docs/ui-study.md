@@ -617,3 +617,80 @@ script 实体只回答「跑到哪了」，trace 再回答「每一步发生了�
   - 取消（点「观影模式」700ms 后取消）：末行 cancel ⏹「⏱ 等 2.5s」670ms、mprog bad、
     状态行「⏹ 已取消 · 1/3 步」、重跑按钮正确地保持隐藏（取消 ≠ 失败）；
   - 截图 /tmp/atv-macro-trace.png（2560×1440）即失败态 trace 界面。
+
+## 第十六轮：学 VS Code Command Palette / Home Assistant Quick Bar → 命令面板 Ctrl/⌘+K（1.19.0 / versionCode 20）
+
+### 学习源
+- VS Code 的 Command Palette（platform/quickinput）：一个入口收拢全部命令，模糊匹配 +
+  最近使用置顶 + ↑↓/Enter 键盘直达，鼠标只是可选项。
+- Home Assistant 的 Quick Bar / header search：设备、实体、命令混在一个搜索框里，按域分组。
+- Raycast 的 fuzzy 排序约定：标签词首 > 标签内子串 > 别名词首 > 散乱子序列。
+
+### 为什么选它
+页面能力已经堆到第五轮：连接/切换、应用启动、17 个按键、宏、睡眠定时、主题、隐私模式、
+设置、引导重看……手机一屏摆不下，熟手也只能滚。命令面板不新增任何后端能力，只把已有
+交互收拢成一个键盘优先的入口——UI 美观与功能实用性同时受益，且零协议风险（纯前端）。
+
+### 设计
+- 唤起：Ctrl/⌘+K 全局热键（document capture 阶段注册）+ header 的 ⌘ 按钮（title 含快捷键，
+  tooltip 即文档）。
+- 分组：设备 / 应用 / 按键 / 宏 / 工具 五组；空查询先「最近使用」再「全部命令」，有查询按
+  分数排序取前 80 条。
+- 匹配：palScore() 复刻四档计分，子序列兜底让 "yt" 命中 YouTube。
+- 执行：全部复用现有函数/按钮 click()（sendKey / launchApp / runMacro / openModal…），
+  零新增后端路由；palExec 先收面板再执行，避免和设置/截屏弹窗叠在一起。
+- 无障碍：dialog + aria-modal、输入框 combobox（aria-expanded / aria-controls /
+  aria-activedescendant 跟随选中行）、列表 listbox + option + aria-selected。
+- 安全：设备名 / IP 来自局域网广播可伪造，渲染一律 textContent（AGENTS.md 禁令），
+  列表用 DOM API 建节点，无 innerHTML。
+
+### 落地
+- static/index.html：header 加 #palBtn；#toast 后插 #cmdpal（modal + pal；#palInput combobox /
+  #palList listbox / #palTip）。
+- static/style.css：.modal.pal 段（居中卡、输入框、列表滚动、.palrow.on 选中条、.palhead
+  分组头、.palempty 空态），只吃 CSS 令牌，不写 hex。
+- static/app.js：命令面板段约 190 行。palRecent/palRemember（localStorage，8 条上限；
+  自定义宏仍只进 localStorage，不进 state.json）；palScore / palCommands（48 条，设备来源
+  是 palStatus 快照，宏来源 Macro.presets + customMacros()）；palRender/palSelect/
+  palSyncActive/palMove/palExec。↑↓ 在 palMove 里跨分组头跳，Enter 在 palInput 上
+  stopPropagation，K 绝不下发到电视。
+- static/sw.js：CACHE v1 → v2（前端壳变更，强制刷新）。
+- tests/test_command_palette.py：8 个测试——ARIA 契约（dialog/combobox/listbox）、
+  palBtn tooltip、node --check、wiring（#palBtn→palOpen、input→palRender）、palRender 段禁
+  innerHTML、CSS 无 hex、$("#id") 引用一致性（含 5 个动态 ID 白名单）。94 → 102 全过。
+
+### 踩到的坑
+- 快捷键穿透：palInput 的 keydown 必须自己 stopPropagation，否则 ↑↓/Enter 会同时被
+  「键盘遥控电视」的全局 handler 消费——面板开着按 ↓，电视也跟着动。
+- Cmd+K 与通用 modal 的 capture 兜底共存：兜底会 preventDefault + stopPropagation，但同节点
+  同阶段的后续监听仍会执行。这正是热键注册在 document capture 阶段的原因：任何弹窗开着
+  都能唤起/收起，引导（coach mark）开着也不例外（两者是 openModals 栈里的不同条目）。
+- CDP 两次「假故障」都是测量顺序问题：Ctrl+K 是开/关切换，上个脚本把面板留在打开态，
+  下个脚本的热键就变成关闭；测 visibility 前先读 classList 再决定动作，别假设初态。
+- Service Worker 缓存老问题（第十四轮中过一次）：unregister + reload(ignoreCache) 才拿到新
+  app.js，判据 typeof palOpen === "function"。
+- 截图配方这一轮升级：不再依赖 cua_repl/nodeRepl。Chrome 已开着 9222，
+  http://localhost:9222/json/list 拿 target、ws://…/devtools/page/<id> 连页面，Node 22 自带
+  全局 WebSocket，约 80 行纯脚本即可 navigate / reload(ignoreCache) / Runtime.evaluate /
+  派发 KeyboardEvent / Page.captureScreenshot 落盘。exec 的 JS 运行时不保证 stdout 回传，
+  输出一律先重定向到 /tmp 再 cat。
+
+### 验证
+- node --check static/app.js、python3 -c 'import server; import atv_backend' 通过。
+- ./sync-native.sh：102 单测 OK + 内嵌副本逐字节一致 → ALL CHECKS PASSED。
+- CDP 实测（fake adb，http://127.0.0.1:8411/，清 SW 后 reload ignoreCache）24 项断言全过：
+  - ARIA：#cmdpal aria-modal=true、#palInput role=combobox、#palList role=listbox、
+    #palBtn title「命令面板（Ctrl / ⌘ + K）」；
+  - Ctrl+K 唤起：class 由 "modal pal hidden" → "modal pal"，焦点自动落在 #palInput，
+    空查询首条即「最近使用」→「全部命令」，#palTip「48 条命令」；
+  - 模糊匹配：输入 you 命中 3 条，首位「打开 YouTube」，其余「打开 YouTube（最近使用）」
+    「运行宏『看 YouTube』」；
+  - Enter 执行：面板先收起再执行，fetch 记录 /api/cmd POST，localStorage atv.palRecent
+    记下 app:com.google.android.youtube.tv；
+  - 重开：「最近使用」分组置顶且选中态落在第一条；输入 zzzz 时显示
+    「没有匹配『zzzz』的命令」；
+  - 键盘：↓ 跨分组头自动跳（选中「按键 音量-」，aria-activedescendant = palrow-1 同步跟随）；
+    Esc 关闭并把焦点还给触发按钮；
+  - 几何：视口 1147×548 下面板 560×385 水平居中（x=294）、输入框 512×41、列表高 285 且
+    scrollHeight 1792（可滚动）、行高 36。
+  - 截图 /tmp/atv-cmdpal.png（空查询全量列表）与 /tmp/atv-cmdpal-recent.png（最近使用置顶）。
