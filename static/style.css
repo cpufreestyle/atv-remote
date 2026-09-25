@@ -546,6 +546,40 @@ code {
   padding: var(--sp-3); max-width: 92vw; max-height: 92vh; overflow: auto; box-shadow: var(--shadow-pop); }
 .modal img { max-width: 100%; max-height: 70vh; border-radius: var(--r-md); display: block; margin-bottom: var(--sp-2); }
 
+/* ---------- 命令面板（Ctrl/⌘+K；学 VS Code Command Palette / HA Quick Bar） ----------
+   顶部锚定而不是垂直居中：输入框处于视觉焦点、列表向下展开（Raycast / VS Code 的
+   布局约定）。行高 ≥36px 保触控目标；颜色只引用令牌，不写死 hex。 */
+.modal.pal { align-items: flex-start; }
+.modal.pal .palbox { width: min(560px, 94vw); margin-top: 10vh; background: var(--card);
+  border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow-pop);
+  overflow: hidden; display: flex; flex-direction: column; }
+.modal.pal .palin { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-3);
+  border-bottom: 1px solid var(--line-soft); }
+.modal.pal .palin .palicon { color: var(--faint); font-size: 16px; flex: none; }
+/* 16px：iOS Safari 聚焦小于 16px 的输入框会自动放大页面 */
+.modal.pal #palInput { flex: 1; min-width: 0; background: transparent; border: 0; outline: none;
+  color: var(--text); font-size: 16px; }
+.modal.pal #palInput::placeholder { color: var(--faint); }
+.pallist { list-style: none; margin: 0; padding: var(--sp-1); max-height: min(52vh, 420px);
+  overflow-y: auto; overscroll-behavior: contain; }
+.palhead { padding: var(--sp-2) var(--sp-3) var(--sp-1); color: var(--faint); font-size: 11px;
+  font-weight: 600; letter-spacing: .04em; }
+.palrow { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm); cursor: pointer; min-height: 36px; }
+.palrow.on { background: var(--accent-soft); }
+.palrow .palico { width: 20px; text-align: center; font-size: 14px; flex: none; }
+.palrow .pallabel { flex: 1; min-width: 0; color: var(--text); font-size: 13.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palrow.on .pallabel { color: var(--accent-text); }
+.palrow .palhint { color: var(--faint); font-size: 11.5px; flex: none; max-width: 42%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palrow.palempty { color: var(--faint); font-size: 13px; cursor: default; justify-content: center; }
+.palfoot { display: flex; gap: var(--sp-3); align-items: center; padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--line-soft); color: var(--faint); font-size: 11.5px; }
+.palfoot kbd { font-family: ui-monospace, Menlo, monospace; background: var(--card2);
+  border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font-size: 11px; }
+.palfoot .paltip { margin-left: auto; }
+
 .hidden { display: none !important; }
 
 /* ---------- 手机安装引导 ---------- */

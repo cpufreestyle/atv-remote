@@ -32,6 +32,7 @@ const status = { curType: null, connected: false, screen: { w: 1920, h: 1080 } }
 const lastSent = {}; // 同键节流（自动重复）
 let pairingDev = null; // 正在配对的 Apple TV
 let lastChipSig = ""; // 设备列表签名：无变化则跳过重建
+let palStatus = null; // 最近一次 /api/status 快照：命令面板的设备/宏来源
 let lastImeTarget = null; // 上次查过输入法的设备，避免 8s 轮询反复查
 // ADBKeyboard 中文键盘状态（仅 Android TV 需要，按需查询，不进 8s 轮询）
 const imeState = { installed: false, enabled: false, current: false, default_ime: "", checked: false };
@@ -606,6 +607,7 @@ async function loadMacros() {
   row.textContent = "";
   try {
     const j = await api("/api/macros");
+    Macro.presets = j.presets || [];   // 命令面板读这份缓存，不重复请求
     ([...(j.presets || []), ...customMacros()]).forEach((m, i) => {
       row.append(macroButton(m, i >= (j.presets || []).length));
     });
@@ -1179,6 +1181,7 @@ async function refreshStatus() {
 }
 
 function renderStatus(s) {
+  palStatus = s;
   status.curType = s.cur_type;
   const dot = $("#dot"), info = $("#tvInfo");
   const isApple = s.cur_type === "appletv";
@@ -2095,6 +2098,229 @@ $("#settingsCloseBtn").addEventListener("click", () => closeModal("#settingsModa
 $("#settingsModal").addEventListener("click", (e) => {
   if (e.target === $("#settingsModal")) closeModal("#settingsModal");
 });
+
+/* ---------------- 命令面板 ----------------
+   学习源：VS Code Command Palette（Ctrl/⌘+K 唤起、模糊匹配、最近使用置顶）与
+   Home Assistant 的 Quick Bar / header search。落到本项目：页面能力越来越多
+   （连接、应用、按键、宏、工具），手机一屏摆不下、熟手只能滚动找按钮——面板把
+   它们汇成一个键盘优先的入口，敲几个字母就能到达。
+   边界与取舍：
+   - 命令是「已有交互的快捷方式」，执行体全部复用现有函数/按钮点击，零后端新增；
+   - 设备名 / IP 来自局域网广播、可伪造，渲染一律 textContent（AGENTS.md 禁令）；
+   - 全局热键用 capture 注册：别的弹窗的按键兜底会 stopPropagation，但同节点同阶段
+     的后续监听仍会执行，所以 Cmd+K 在任何界面都能唤起/收起，且 K 绝不下发到电视。 */
+const PAL_KEY = "atv.palRecent";
+let palRows = [], palSel = 0;   // palRows 含分组头；选中、执行都以行下标为准
+
+const palRecent = () => {
+  try { return JSON.parse(localStorage.getItem(PAL_KEY)) || []; } catch (e) { return []; }
+};
+const palRemember = (id) => {
+  const left = palRecent().filter((x) => x !== id);
+  left.unshift(id);
+  localStorage.setItem(PAL_KEY, JSON.stringify(left.slice(0, 8)));
+};
+
+/* 匹配计分（VS Code 的行为约定）：标签词首 > 标签内子串 > 别名词首 > 散乱子序列；
+   命中越靠前、标签越短分越高。返回 0 = 不匹配。 */
+function palScore(q, c) {
+  const label = c.label.toLowerCase();
+  const terms = (c.terms || "").toLowerCase();
+  const at = label.indexOf(q);
+  if (at === 0) return 1000 - label.length;
+  if (at > 0) return 800 - at * 10 - label.length;
+  const ta = terms.indexOf(q);
+  if (ta >= 0) return 600 - ta - Math.min(400, label.length);
+  let i = 0;                                   // 子序列兜底："yt" → YouTube
+  for (const ch of label) { if (ch === q[i]) i++; if (i >= q.length) break; }
+  return i >= q.length ? 200 : 0;
+}
+
+function palCommands() {
+  const cmds = [];
+  const push = (id, group, icon, label, terms, run, hint) =>
+    cmds.push({ id, group, icon, label, terms, run, hint });
+  // —— 设备 ——（来源是 palStatus 快照；还没状态时 gracefully 少几项）
+  (palStatus?.recent || []).forEach((t) =>
+    push("conn:" + t, "设备", "📺", `连接 ${t}`, "连接 连接电视 connect ip " + t, () => connect(t), t));
+  (palStatus?.devices || []).forEach((d) =>
+    push("sw:" + d.serial, "设备", "🔌", `切换设备 ${d.serial}`, "切换 switch device " + d.serial,
+      async () => { await api("/api/switch", { target: d.serial }); refreshStatus(); }, d.serial));
+  (palStatus?.appletv?.devices || []).forEach((d) =>
+    push("atv:" + (d.id || d.name), "设备", "🍎", `连接 ${d.name || d.id}`,
+      "连接 苹果 apple tv " + (d.name || d.id), () => atvConnect(d), "Apple TV"));
+  push("scan:adb", "设备", "🔍", "扫描无线调试设备", "扫描 scan adb wireless", adbScan);
+  push("scan:atv", "设备", "🔍", "扫描局域网 Apple TV", "扫描 scan apple tv", atvScan);
+  push("tab:android", "设备", "🤖", "切到 Android TV 页签", "页签 tab android",
+    () => $('.devtab[data-dev="android"]').click());
+  push("tab:appletv", "设备", "🍎", "切到 Apple TV 页签", "页签 tab apple",
+    () => $('.devtab[data-dev="appletv"]').click());
+  if (palStatus?.current)
+    push("disc", "设备", "⏏", "断开当前设备", "断开 disconnect", () => $("#disconnectBtn").click());
+  // —— 应用 ——（预设 APPS + 最近使用；重开时最近置顶不去重，图标有区分）
+  APPS.forEach((a) => push("app:" + a.pkg, "应用", "▶", `打开 ${a.name}`,
+    "打开 启动 app open launch " + a.name + " " + a.pkg, () => launchApp(a.name, a.pkg), a.pkg));
+  recentApps().forEach((a) => push("rapp:" + a.pkg, "应用", "🕘", `打开 ${a.name}（最近使用）`,
+    "最近 recent " + a.name + " " + a.pkg, () => launchApp(a.name, a.pkg), "最近"));
+  // —— 按键 ——（与页面上的物理键同一出口 sendKey，长按连发/音量 OSD 都带着）
+  const PAL_KEYS = [[19, "上"], [20, "下"], [21, "左"], [22, "右"], [23, "确定"], [4, "返回"],
+    [3, "主页"], [82, "菜单"], [26, "电源"], [224, "唤醒"], [24, "音量+"], [25, "音量-"], [164, "静音"],
+    [85, "播放 / 暂停"], [87, "下一集"], [88, "上一集"], [86, "停止"]];
+  PAL_KEYS.forEach(([code, name]) =>
+    push("key:" + code, "按键", "⌨", `按键 ${name}`, "按键 key " + name + " " + code,
+      () => sendKey(code), "keyevent " + code));
+  // —— 宏 ——（预置缓存读 Macro.presets，自定义宏每次打开读 localStorage）
+  [...(Macro.presets || []), ...customMacros()].forEach((m) =>
+    push("macro:" + (m.id || m.name), "宏", "⚡", `运行宏「${m.name}」`,
+      "宏 运行 一键 macro run " + m.name, () => runMacro(m), (m.steps || []).length + " 步"));
+  // —— 工具 ——
+  push("shot", "工具", "📸", "电视截屏", "截屏 截图 screenshot", () => $("#shotBtn").click());
+  push("sleep:30", "工具", "🌙", "30 分钟后休眠电视", "睡眠 定时 休眠 sleep", () => $('[data-sleep="30"]').click());
+  push("sleep:60", "工具", "🌙", "60 分钟后休眠电视", "睡眠 定时 休眠 sleep", () => $('[data-sleep="60"]').click());
+  push("sleep:90", "工具", "🌙", "90 分钟后休眠电视", "睡眠 定时 休眠 sleep", () => $('[data-sleep="90"]').click());
+  push("sleep:0", "工具", "⏹", "取消睡眠定时", "取消 睡眠 定时 cancel", () => $("#sleepCancelBtn").click());
+  push("theme:dark", "工具", "🌙", "切换到深色主题", "主题 深色 暗色 dark theme", () => $('#themeSeg button[data-theme-val="dark"]').click());
+  push("theme:light", "工具", "☀", "切换到浅色主题", "主题 浅色 亮色 light theme", () => $('#themeSeg button[data-theme-val="light"]').click());
+  push("theme:auto", "工具", "🌓", "主题跟随系统", "主题 跟随 系统 auto", () => $('#themeSeg button[data-theme-val=""]').click());
+  push("privacy", "工具", "👁", "切换隐私模式", "隐私 密码 privacy", () => $("#privacyBtn").click());
+  push("settings", "工具", "⚙", "打开设置", "设置 settings 偏好", () => $("#appSettingsBtn").click());
+  push("coach", "工具", "🎓", "重看使用指引", "引导 教程 coach help", () => $("#coachBtn").click());
+  return cmds;
+}
+
+function palRender(q) {
+  const list = $("#palList");
+  list.textContent = "";
+  const query = (q || "").trim().toLowerCase();
+  let rows = [];
+  if (query) {
+    rows = palCommands()
+      .map((c) => [c, palScore(query, c)])
+      .filter(([, s]) => s > 0)
+      .sort((a, b) => b[1] - a[1] || a[0].label.length - b[0].label.length)
+      .slice(0, 80)
+      .map(([c]) => ({ kind: "cmd", c }));
+  } else {
+    const all = palCommands();
+    const rec = [], seen = new Set();
+    for (const id of palRecent()) {
+      const c = all.find((x) => x.id === id);
+      if (c && !seen.has(c.id)) { seen.add(c.id); rec.push(c); }
+    }
+    if (rec.length) rows.push({ kind: "head", label: "最近使用" }, ...rec.map((c) => ({ kind: "cmd", c })));
+    rows.push({ kind: "head", label: "全部命令" });
+    for (const c of all) if (!seen.has(c.id)) rows.push({ kind: "cmd", c });
+  }
+  if (!rows.some((r) => r.kind === "cmd")) {
+    const li = document.createElement("li");
+    li.className = "palrow palempty";
+    li.textContent = query ? `没有匹配「${query}」的命令` : "暂无可用的命令";
+    list.appendChild(li);
+    palRows = [];
+    palSel = -1;
+    $("#palTip").textContent = "0 条命令";
+    $("#palInput").setAttribute("aria-activedescendant", "");
+    return;
+  }
+  palRows = rows;
+  palSel = rows.findIndex((r) => r.kind === "cmd");
+  rows.forEach((r, i) => {
+    const li = document.createElement("li");
+    li.id = "palrow-" + i;
+    if (r.kind === "head") {
+      li.className = "palhead";
+      li.setAttribute("role", "presentation");
+      li.textContent = r.label;
+    } else {
+      const c = r.c;
+      li.className = "palrow" + (i === palSel ? " on" : "");
+      li.setAttribute("role", "option");
+      li.setAttribute("aria-selected", i === palSel ? "true" : "false");
+      const ic = document.createElement("span");
+      ic.className = "palico";
+      ic.textContent = c.icon || "•";
+      const lb = document.createElement("span");
+      lb.className = "pallabel";
+      lb.textContent = c.label;
+      li.append(ic, lb);
+      if (c.hint || c.group) {
+        const hn = document.createElement("span");
+        hn.className = "palhint";
+        hn.textContent = c.hint || c.group;
+        li.appendChild(hn);
+      }
+      li.addEventListener("mousemove", () => palSelect(i));
+      li.addEventListener("click", () => palExec(i));
+    }
+    list.appendChild(li);
+  });
+  $("#palTip").textContent = rows.filter((r) => r.kind === "cmd").length + " 条命令";
+  palSyncActive();
+}
+
+function palSelect(i) {
+  if (i < 0 || i >= palRows.length || palRows[i].kind !== "cmd") return;
+  palSel = i;
+  palSyncActive();
+}
+
+function palSyncActive() {
+  const rows = $("#palList").children;
+  for (let i = 0; i < rows.length; i++) {
+    const on = i === palSel;
+    rows[i].classList.toggle("on", on);
+    if (rows[i].classList.contains("palrow"))
+      rows[i].setAttribute("aria-selected", on ? "true" : "false");
+  }
+  const cur = rows[palSel];
+  $("#palInput").setAttribute("aria-activedescendant", cur ? cur.id : "");
+  if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: "nearest" });
+}
+
+function palMove(d) {   // 遇到分组头自动跳过
+  if (!palRows.length) return;
+  let i = palSel;
+  for (let n = 0; n < palRows.length; n++) {
+    i = (i + d + palRows.length) % palRows.length;
+    if (palRows[i].kind === "cmd") { palSelect(i); return; }
+  }
+}
+
+async function palExec(i) {
+  const r = palRows[i];
+  if (!r || r.kind !== "cmd") return;
+  palRemember(r.c.id);
+  palClose();      // 先收起再执行：命令可能又打开别的弹窗（设置/截屏），不能叠
+  buzz();
+  try { await r.c.run(); }
+  catch (e) { log("⚠ " + e.message); }
+}
+
+function palOpen() {
+  const inp = $("#palInput");
+  inp.value = "";
+  openModal("#cmdpal");
+  refreshStatus();        // 打开时顺手刷新，设备/宏列表最多 8s 陈旧
+  palRender("");
+}
+function palClose() { closeModal("#cmdpal"); }
+
+$("#palBtn").addEventListener("click", palOpen);
+$("#cmdpal").addEventListener("click", (e) => { if (e.target === $("#cmdpal")) palClose(); });
+$("#palInput").addEventListener("input", () => palRender($("#palInput").value));
+$("#palInput").addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown") { e.preventDefault(); e.stopPropagation(); palMove(1); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); e.stopPropagation(); palMove(-1); }
+  else if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); palExec(palSel); }
+});
+// 全局热键（capture：别的弹窗按键兜底 stopPropagation 后，同节点监听仍会执行）
+document.addEventListener("keydown", (e) => {
+  if (!(e.metaKey || e.ctrlKey) || (e.key !== "k" && e.key !== "K")) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if ($("#cmdpal").classList.contains("hidden")) palOpen();
+  else palClose();
+}, true);
 
 /* ---------------- PWA：离线壳（Service Worker） ----------------
    策略细节见 static/sw.js 头部注释。边界：SW 只在安全上下文（https / localhost）

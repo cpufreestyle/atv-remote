@@ -31,6 +31,7 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
         <h1>ATV Remote</h1>
         <div class="sub"><span id="dot" class="dot off"></span><span id="tvInfo">未连接</span></div>
       </div>
+      <button id="palBtn" class="btn tiny gear" title="命令面板（Ctrl / ⌘ + K）" aria-label="命令面板">⌘</button>
       <button id="appSettingsBtn" class="btn tiny gear" title="设置（震动反馈 / 清空本地数据）" aria-label="设置">⚙</button>
     </div>
 
@@ -278,6 +279,26 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
 <datalist id="appPkgOptions"></datalist>
 
 <div id="toast" class="hidden" role="status" aria-live="polite"></div>
+
+<!-- 命令面板：学 VS Code Command Palette 与 Home Assistant Quick Bar。全局 Ctrl/⌘+K 唤起，
+     输入即过滤（子串 > 词首 > 子序列），↑↓ 选择、↵ 执行、esc 关闭。命令全部复用页面
+     已有交互，不新增后端接口；设备名 / IP 一律 textContent 渲染（局域网广播可伪造）。 -->
+<div id="cmdpal" class="modal hidden pal" role="dialog" aria-modal="true" aria-label="命令面板">
+  <div class="palbox">
+    <div class="palin">
+      <span class="palicon" aria-hidden="true">⌘</span>
+      <input id="palInput" type="text" placeholder="搜索命令、应用、按键、宏…" autocomplete="off" spellcheck="false"
+             role="combobox" aria-expanded="true" aria-controls="palList" aria-autocomplete="list" data-autofocus>
+    </div>
+    <ul id="palList" class="pallist" role="listbox" aria-label="命令"></ul>
+    <div class="palfoot">
+      <span><kbd>↑</kbd><kbd>↓</kbd> 选择</span>
+      <span><kbd>↵</kbd> 执行</span>
+      <span><kbd>esc</kbd> 关闭</span>
+      <span class="paltip" id="palTip"></span>
+    </div>
+  </div>
+</div>
 
 <div id="settingsModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="设置">
   <div class="mbox">
