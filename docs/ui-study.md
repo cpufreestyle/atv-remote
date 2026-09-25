@@ -1016,3 +1016,83 @@ script 实体只回答「跑到哪了」，trace 再回答「每一步发生了�
   - 高度修复前后：`#perfRows` 框高 1269px → `max-height: 210.8px` / scrollHeight 907（可内滚）/
     卡片 443px；
   - 落盘 /tmp/atv-perf.png、/tmp/atv-perf-height.png、/tmp/atv-perf-err.png。
+## 第二十一轮：学 macOS 通知中心 / VS Code 通知 → 通知队列 + 通知中心（1.24.0 / versionCode 25）
+
+### 学习源
+- macOS 通知中心：瞬时横幅（banner）只回答「刚刚发生了什么」；想回看去通知中心
+  （Notification Center）翻持久历史。两层职责分离，而不是把横幅做成能滚动的列表。
+- VS Code 通知：右下角 toast 同屏有上限，超出的折成「还有 N 条通知」一行；级别用颜色和
+  停留时长区分（error 停更久）；关闭按钮只关本条，不动历史。
+- 共同点：**瞬时层不负责记忆，持久层不负责抢注意力**。旧 toast 两层都想要，结果两层都不合格：
+  上一条被下一条静默顶掉（没有历史），堆多了又盖住遥控区。
+
+### 为什么选它
+前 20 轮加的功能全在发通知：连接成功/失败、截屏已保存、宏执行结果、配对结果……统统走同一个
+toast(msg)，而它是「一条盖一条」：上一条永远被下一条顶掉，报错滚过去就找不回。更糟的是出错时
+用户最需要的就是回看「刚才那条到底说的什么」，而这个信息在被顶掉那一刻就永久丢失了
+（state.json 不存、前端不记）。这一轮把 toast 拆成上下两层：同屏 3 条的瞬时队列 + 可回看的通知中心。
+
+### 设计
+- **同屏上限 3 条**（NOTIF_MAX_VISIBLE）：最新的永远可见；被挤下去的不消失——进历史，
+  🔔 出未读数角标。不是无限堆叠（会盖 D-pad），也不是一条盖一条（会丢消息）。
+- **级别从文案推导**（notifLevel）：✓/✅/「成功」开头 → ok；「失败」/「错误」/⚠ → err；
+  其余按 isInfo 或「已」开头判。**不给 40+ 调用点加第三个参数**——为配色改签名不划算。
+- **停留时长随级别拉长**（NOTIF_DUR：ok 2600 / info 3400 / err 7000ms）：成功短、错误久。
+  读得慢的人由通知中心兜底，不靠全局加长倒时计。
+- **历史层 1.2s 内同消息合并**（NOTIF_COALESCE_MS）：连点两次「截屏」不会把历史刷成复读机；
+  合并是刷新时间戳，不是插两条。
+- **未读数** = 历史里 ts > notifLastSeen 的条数。面板开着时来了新通知直接标已读——
+  用户正在看，角标再跳是噪音。
+- **历史只进 localStorage**（atv.notif.history / atv.notif.seen），50 条上限，不进 state.json
+  （敏感文件，不放可编辑内容）；读入时 notifSanitizeHistory 按不可信输入兜底——
+  坏 JSON / 坏字段不能让整个通知中心打不开。
+- 快捷键 Ctrl/⌘+N 与命令面板共用 notifToggle()，和通知中心两态弹窗
+  （aria-pressed / aria-expanded）联动。
+
+### 落地
+- static/index.html：#notifBtn（铃铛 + 未读数角标）、#notifStack（瞬时浮层 + 「还有 N 条」行）、
+  #notifPanel（通知中心弹窗：列表 / 计数 / 清空）。
+- static/app.js：/* ===== notif-queue:begin/end ===== */ 纯函数段（禁 DOM/localStorage/fetch，
+  node harness 直接抽这段执行）+ DOM 胶水（notifShow / notifDismiss / notifRender / notifPush /
+  notifBadge / notifSyncBtn / notifToggle / notifInit）。**toast(msg, isInfo) 旧入口保留**，
+  内部转调 notifPush，40+ 调用点零改动。
+- static/style.css：「通知队列 / 通知中心」段，全语义色 var、无 hex。
+- tests/notif_queue_harness.js（新）：16 用例 → ALL_NOTIF_CASES_PASSED。
+- tests/test_notif_queue.py（新）：31 个测试——纯函数隔离 / 级别推导 / 合并不变量 /
+  前端契约（#notifBtn 等元素与 aria 状态）/ localStorage 键集冻结（不许进 state.json）/ 样式。
+- VERSION：versionName=1.24.0 / versionCode=25。
+
+### 踩到的坑
+- **单条 toast 会被下一条顶掉**：报错滚过去就找不回，这是做这轮的根因。
+- **级别由文案推导而非新参数**：改签名 = 动 40+ 调用点，收益（配色）不值这个风险。
+- **浮层必须 pointer-events:none**，只给 × 和「还有 N 条」放行（auto）：否则通知浮层会吞掉
+  背后遥控键的点击——触屏设备上点遥控器没反应，原因在浮层。
+- **同屏上限 + 未读数角标**而不是无限堆叠：堆叠会盖住 D-pad。
+- **1.2s 内同消息合并**：防历史变复读机；合并刷新 ts 而不是插新条。
+- **面板开着时新通知直接标已读**：否则用户正看着列表，角标还在跳。
+- **CDP 复测必须 Network.setCacheDisabled**：持久 profile 会缓存旧 style.css，
+  会误判自己没修上（第十九、二十轮都踩过）。
+- **通知中心是两态弹窗**：按钮要 aria-pressed / aria-expanded，且 modalclosed 事件里同步状态——
+  读屏用户只能从按钮状态位知道面板开没开。
+- **快捷键 / 命令面板共用一个 notifToggle()**：不重复实现开关，否则两处状态机会漂移
+  （一处开着一处显示关）。
+- **notifInit() 必须待在启动序列里**：曾误插进隐私按钮回调——不点按钮永不初始化，
+  每点一次还重复挂监听。
+- **CDP 断言口径**：点完全部 × 后，队列里未过期的 toast 会被 notifRender 补上屏，
+  before 不必为 0；同屏 cap 会压掉新增行，所以「重复消息仍在屏上」要断言
+  stack == min(cap, base + 2)，写死 base + 2 会被 3 条上限教做人。
+
+### 验证
+- node --check static/app.js、python3 -c import server, atv_backend 通过。
+- ./sync-native.sh：212 单测 OK（notif 31）+ 内嵌副本逐字节一致 → ALL CHECKS PASSED。
+- node harness 16/16；CDP 实测（http://127.0.0.1:8411/，禁用缓存）39 项检查全过：
+  - 6 条 toast 同屏 3 条、新的在上旧在下、级别配色（err/ok class）、
+    「还有 3 条在通知中心 ›」、浮层 pointer-events:none 而 × / 更多行 auto、未读数 6；
+  - 关 × 后下一条补位、计数降到「还有 2 条」、历史不动；
+  - 面板开 = aria-pressed / aria-expanded true，6 行按时间倒序、时间戳 HH:MM:SS、
+    打开即全已读（角标隐藏）、三列网格、列表可内滚、焦点移入面板；
+  - Esc 关面板、清按钮状态、焦点回铃铛；Ctrl+N 开 / 再按关；
+  - 历史行点击重放（before 2 → after 3，重放条置顶）；清空后 localStorage 为 []；
+  - 重复消息 1.2s 内合并且仍在屏上（stack 3 = min(cap, base+2)）。
+- 落盘 /tmp/atv-notif-1-stack.png、/tmp/atv-notif-2-panel.png。
+
