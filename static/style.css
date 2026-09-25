@@ -218,6 +218,30 @@ input:focus { border-color: var(--accent); }
 }
 .card h2 { font-size: 13.5px; color: var(--muted); margin: 0 0 var(--sp-2); font-weight: 600; }
 
+/* ---------- 正在播放信息条 ---------- */
+.nprow { display: flex; align-items: center; gap: var(--sp-3); }
+.npicon {
+  width: 40px; height: 40px; flex: none; display: grid; place-items: center;
+  background: var(--accent-soft); border-radius: var(--r-md); font-size: 20px;
+}
+.npmeta { flex: 1; min-width: 0; }
+.nptitle {
+  font-size: 14px; font-weight: 600; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.npsub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.npbar {
+  height: 4px; border-radius: var(--r-full); background: var(--card3);
+  margin-top: 6px; overflow: hidden;
+}
+.npfill {
+  height: 100%; width: 0; border-radius: var(--r-full);
+  background: var(--accent-solid);
+  transition: width 900ms linear;   /* 与本地插值节奏对齐，两次轮询间平滑推进 */
+}
+.nptime { font-size: 11px; color: var(--faint); margin-top: 3px; font-variant-numeric: tabular-nums; }
+.npcard #npToggle { flex: none; min-width: 44px; }
+
 /* ---------- tabs ---------- */
 .tabs { display: flex; gap: var(--sp-1); margin-bottom: var(--sp-3); }
 .tab {

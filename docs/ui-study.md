@@ -267,3 +267,48 @@ Radix Themes 的 theme switcher + next-themes 的无闪烁首帧方案。动机�
 - 四项添加（应用/按键/等待/文本）步骤文案与 JSON 落库正确；重排、删除、保存本机宏
   （macroRow 5 预置 + 1 ⭐）正常；非法 JSON 报错且保留 2 行旧步骤、改回后恢复
 - 无页面报错；`./check.sh` 全绿 + 副本一致
+
+---
+
+# 第八轮：正在播放信息条（2026-09-25）
+
+## 学习源
+
+Google TV 官方遥控 / Kodi Remote：顶部常驻 now-playing 条——片名、艺人、进度，
+不用切回电视画面就知道在放什么、放到哪。本项目此前只有「电视截屏」能间接看到，
+路径太重。
+
+## 设计
+
+- **数据源** `dumpsys media_session`：唯一不依赖 App 主动配合的系统级接口。
+  Python 侧 `parse_media_session()` 宽松解析（见下）。代价控制：3.5s 结果缓存、
+  休眠不查（`screen_awake` 复用其 1s 缓存）；轮询蹭 8s 状态轮询的车，页面隐藏时
+  随之暂停（`pageVisible` 已有机制），不新增定时器。
+- **前端进度本地插值**：8s 一跳会显得像卡带，所以两次轮询之间按 `Date.now()`
+  每秒外推 `position`，`npPaint()` 重算填充宽度与 `m:ss / m:ss` 文案；
+  `transition: width 900ms linear` 与外推节奏对齐。
+- **降级策略**：认不出字段就缺省（不是报错），没有 title 且不在播放 → 卡片收起；
+  查询失败 → 收起，不留假进度条。Apple TV 无此接口（pyatv `metadata.playing()`
+  字段太稀疏），路由直接返回 `{"connected": false}`，卡片永远隐藏。
+- **安全**：片名/艺人来自电视侧元数据，可被伪造/乱码 → 一律 `textContent`。
+- **播放/暂停**按钮复用现成 `/api/cmd` key 85，不新增权限判断。
+
+## 踩到的坑
+
+- **dump 格式没有契约**：`state=PLAYING, pos=61250` 与 `PlaybackState {state=2,…}`
+  两种风格并存，`pos=` / `position=` 混用。正则第一版忘加 `re.MULTILINE`，
+  `^\s*packageName=` 一条都匹配不上（单测立刻抓到）——解析崩了遥控整页挂，
+  比不显示信息条严重得多，所以用例按多种 ROM 风格各钉一份。
+- **字形豆腐块**：暂停按钮原用 `⏸`，canvas measureText 实测该字形在本机字体栈
+  渲染成 tofu（`⏸`/`⏹` 宽度一致且异常）。改用文字「暂停/播放」——零字体依赖，
+  语义也更明确。信息条图标只用渲染充分的 `🎬`。
+
+## 验证
+
+- 单测 58 项全绿（新增 `tests/test_media_session.py`：AOSP / 大括号 / 空栈 /
+  乱码 / 多会话取栈顶 5 组解析 + 未连接路由行为）
+- CDP 实测：播放态（片名截断/副标题/进度 1:02-3:33 29% 起步）、2.2s 后插值到
+  1:04/29.9%、暂停态（⏸→文字、`已暂停 · Netflix`、`7:12 / 52:00`）、未连接收起、
+  Apple TV 类型保持隐藏、播放暂停按钮 POST `{"type":"key","code":85}` 且无设备时
+  toast 报错不崩；深浅两主题截图过
+- `./check.sh` 全绿 + `./sync-native.sh` 副本一致

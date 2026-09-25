@@ -708,6 +708,81 @@ APPS.forEach((a) => {
 });
 renderMacroSteps();
 
+/* ---------------- 正在播放（Now Playing） ----------------
+   学 Google TV 官方遥控 / Kodi Remote 的常驻信息条。数据源 /api/nowplaying
+   （服务端 dumpsys media_session，3.5s 缓存 + 休眠不查）；轮询蹭 8s 状态轮询的
+   车，页面隐藏时随之暂停（pageVisible）。进度条在两次轮询之间本地插值——
+   否则 8s 一跳像卡带。 */
+const NP = { playing: false, title: "", artist: "", app: "", duration: 0, position: 0, at: 0, shown: false };
+// 常见 App 包名 → 中文名；未知包名退化为末段（com.foo.bar → bar）
+const NP_APPS = {
+  "com.google.android.youtube.tv": "YouTube", "com.netflix.ninja": "Netflix",
+  "com.amazon.amazonvideo.livingroom": "Prime Video", "com.disney.disneyplus": "Disney+",
+  "com.spotify.tv.android": "Spotify", "com.plexapp.android": "Plex",
+  "org.xbmc.kodi": "Kodi", "tv.twitch.android.app": "Twitch",
+  "com.bilibili.bilithings": "哔哩哔哩",
+};
+
+function npAppName(pkg) {
+  if (!pkg) return "";
+  return NP_APPS[pkg] || pkg.split(".").slice(-1)[0];
+}
+
+function npFmt(ms) {
+  if (!ms || ms < 0) return "0:00";
+  const s = Math.round(ms / 1000);
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+
+function npPosition() {
+  if (!NP.playing) return NP.position;
+  return Math.min(NP.duration || Infinity, NP.position + (Date.now() - NP.at));
+}
+
+function npPaint() {
+  const pos = npPosition(), dur = NP.duration;
+  $("#npFill").style.width = (dur ? Math.min(100, pos / dur * 100) : 0) + "%";
+  $("#npTime").textContent = dur ? `${npFmt(pos)} / ${npFmt(dur)}` : "";
+}
+
+setInterval(() => { if (NP.shown) npPaint(); }, 1000);
+
+function renderNowPlaying(np) {
+  const card = $("#npCard");
+  // 没连上 / 查询失败 / 没有任何会话 → 收起卡片，别留一个假的进度条
+  const show = !!(np && np.connected && !np.error && (np.title || np.playing));
+  if (!show) {
+    NP.shown = false;
+    card.classList.add("hidden");
+    return;
+  }
+  NP.shown = true;
+  Object.assign(NP, np, { at: Date.now() });
+  card.classList.remove("hidden");
+  // 片名 / 艺人来自电视侧元数据，可被伪造或乱码 → textContent，禁 innerHTML
+  $("#npIcon").textContent = "🎬";   // 字形只用在渲染充分的 emoji 上；⏸/⏹ 在部分字体缺字形会变豆腐块
+  $("#npTitle").textContent = np.title || npAppName(np.app) + " 正在播放";
+  const sub = [np.artist, np.playing ? "播放中" : "已暂停", npAppName(np.app)].filter(Boolean);
+  $("#npSub").textContent = sub.join(" · ");
+  $("#npToggle").textContent = np.playing ? "暂停" : "播放";
+  npPaint();
+}
+
+async function refreshNowPlaying() {
+  try {
+    renderNowPlaying(await api("/api/nowplaying"));
+  } catch (e) {
+    renderNowPlaying(null);
+  }
+}
+
+$("#npToggle").addEventListener("click", async () => {
+  try {
+    await api("/api/cmd", { type: "key", code: 85 });   // 85 = 播放/暂停
+    setTimeout(refreshNowPlaying, 500);   // 媒体状态切换有延迟，别读到旧缓存
+  } catch (e) { toast(e.message); }
+});
+
 /* ---------------- 状态与连接 ---------------- */
 let statusBusy = null;  // 上一次 /api/status 没回来就不叠加下一次（慢响应会排在按键锁后面）
 
@@ -716,11 +791,15 @@ async function refreshStatus() {
   statusBusy = (async () => {
     try {
       renderStatus(await api("/api/status"));
+      // 正在播放蹭状态轮询的车（Android 且已连接才查；页面隐藏时整个轮询本来就停着）
+      if (status.curType === "android" && status.connected) refreshNowPlaying();
+      else renderNowPlaying(null);
     } catch (e) {
       // 原来是静默 ignore：服务端挂了状态栏却还留着上一次的「已连接」，
       // 用户对着一个已经死掉的遥控器按半天。
       $("#dot").className = "dot off";
       $("#tvInfo").textContent = "连不上服务端：" + e.message;
+      renderNowPlaying(null);
     } finally {
       statusBusy = null;
     }
@@ -839,6 +918,7 @@ async function connect(target) {
     log(`已连接 ${r.target}`);
     if (r.warning) toast(r.warning, true);
     await refreshStatus();
+    refreshNowPlaying();   // 信息条不用等下一个 8s 轮询
   } catch (e) {
     log("⚠ " + e.message);
     toast(e.message);

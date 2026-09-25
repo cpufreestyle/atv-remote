@@ -67,6 +67,21 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
 
   <main>
 
+    <!-- 正在播放：学 Google TV 官方遥控的 now-playing 常驻条。卡片默认隐藏，
+         /api/nowplaying 拿到片名/进度才显示；Apple TV 无此接口，永远隐藏 -->
+    <section class="card npcard hidden" id="npCard" aria-live="polite">
+      <div class="nprow">
+        <span class="npicon" id="npIcon" aria-hidden="true">🎬</span>
+        <div class="npmeta">
+          <div class="nptitle" id="npTitle">—</div>
+          <div class="npsub" id="npSub"></div>
+          <div class="npbar"><div class="npfill" id="npFill"></div></div>
+          <div class="nptime" id="npTime"></div>
+        </div>
+        <button class="btn tiny" id="npToggle" aria-label="播放 / 暂停">暂停</button>
+      </div>
+    </section>
+
     <section class="card" data-needs-device>
       <div class="tabs">
         <button class="tab on" data-tab="dpad">方向键</button>

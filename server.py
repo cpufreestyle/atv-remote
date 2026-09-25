@@ -369,6 +369,77 @@ def fetch_device_info(serial):
     return info
 
 
+# ---------------- 正在播放（Now Playing） ----------------
+# 学习源：Google TV 官方遥控 / Kodi Remote —— 遥控器顶部常驻「正在播放」信息条，
+# 用户不用切回电视画面就知道片名和进度。数据源是 dumpsys media_session：唯一
+# 不依赖 App 主动配合的系统级接口。
+# 各家 ROM 的 dump 格式有差异（state=PLAYING / state=3 / PlaybackState {state=2…}、
+# pos= 与 position= 混用、duration 单位为 ms），所以解析器刻意宽松：认不出的字段
+# 就缺省，前端据此隐藏卡片，绝不因为格式变化把整个遥控器搞挂。
+MEDIA_STATE_NAMES = {
+    0: "none", 1: "stopped", 2: "paused", 3: "playing",
+    4: "fast_forwarding", 5: "rewinding", 6: "buffering",
+    7: "error", 8: "connecting", 9: "skipping_prev", 10: "skipping_next",
+}
+
+NOWPLAYING_TTL = 3.5     # dumpsys media_session 不便宜，3.5s 内复用同一结果
+_nowplaying_cache = {"ts": 0.0, "serial": None, "val": None}
+
+
+def parse_media_session(text):
+    """从 dumpsys media_session 输出抠「正在播放」。字段取不到就缺省（≠ 出错）：
+    app / title / artist / duration(ms) / position(ms) / playing / empty"""
+    t = text or ""
+    r = {"playing": False, "title": "", "artist": "", "app": "",
+         "duration": 0, "position": 0, "empty": True}
+
+    def first(pat):
+        m = re.search(pat, t, re.IGNORECASE | re.MULTILINE)
+        return m.group(1).strip() if m else ""
+
+    # 会话栈是按活跃度排序的，取首个记录 = 当前前台会话；每个字段也只取首个命中
+    r["app"] = (first(r"^\s*packageName\s*=\s*(\S+)")
+                or first(r"^\s*pkg\s*=\s*(\S+)"))
+    r["title"] = (first(r"^\s*title\s*=\s*(.+)$")
+                  or first(r"^\s*displayTitle\s*=\s*(.+)$"))
+    r["artist"] = first(r"^\s*artist\s*=\s*(.+)$")
+    dur = first(r"(?<![A-Za-z])duration\s*=\s*(\d+)")
+    pos = first(r"\b(?:pos|position)\s*=\s*(\d+)")
+    state = (first(r"\bstate\s*=\s*([A-Za-z0-9_]+)")
+             or first(r"\bmState\s*=\s*(\d+)"))
+    if dur.isdigit():
+        r["duration"] = int(dur)
+    if pos.isdigit():
+        r["position"] = int(pos)
+    if state:
+        if state.isdigit():
+            r["playing"] = MEDIA_STATE_NAMES.get(int(state)) == "playing"
+        else:
+            r["playing"] = state.upper() == "PLAYING"
+    if r["title"] or r["app"] or r["playing"]:
+        r["empty"] = False
+    return r
+
+
+def now_playing(serial):
+    """当前设备正在播放的内容。结果带 3.5s 缓存（同一设备）；休眠时不查——
+    屏幕关着一般也没在放，dumpsys 虽然照常响应，但纯属浪费。"""
+    now = time.time()
+    c = _nowplaying_cache
+    if c["serial"] == serial and now - c["ts"] < NOWPLAYING_TTL:
+        return c["val"]
+    val = {"connected": True, "playing": False, "empty": True,
+           "title": "", "artist": "", "app": "", "duration": 0, "position": 0}
+    if screen_awake(serial):
+        try:
+            val.update(parse_media_session(
+                adb.shell(serial, "dumpsys media_session", timeout=6)))
+        except AdbError as e:
+            val["error"] = str(e)
+    _nowplaying_cache.update(ts=now, serial=serial, val=val)
+    return val
+
+
 # ---------------- ADBKeyboard 中文键盘 ----------------
 def current_android_target() -> str:
     with state_lock:
@@ -1437,6 +1508,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, html, "text/html; charset=utf-8")
             if path == "/api/status":
                 return self._send(200, make_status())
+            if path == "/api/nowplaying":
+                # 只覆盖 Android TV：Apple TV 的播放元数据依赖 pyatv 的 metadata.playing()，
+                # 多数 App 不填，字段稀疏，暂不做（前端对该类型直接隐藏卡片）。
+                with state_lock:
+                    cur = dict(state.get("current") or {})
+                if cur.get("type") != "android" or not cur.get("target"):
+                    return self._send(200, {"connected": False})
+                return self._send(200, now_playing(cur["target"]))
             if path == "/api/screenshot":
                 with state_lock:
                     cur = dict(state.get("current") or {})
