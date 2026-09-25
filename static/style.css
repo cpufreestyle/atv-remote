@@ -389,19 +389,72 @@ code {
 #log .err  { color: var(--danger-text); }
 #log .go   { color: var(--accent-text); }
 
-#toast {
-  position: fixed; left: 50%; bottom: calc(96px + env(safe-area-inset-bottom));
-  transform: translateX(-50%);
-  background: var(--card); color: var(--danger-text); border: 1px solid var(--danger);
-  padding: var(--sp-2) var(--sp-4); border-radius: var(--r-md); font-size: 13px; z-index: 50;
-  max-width: 90vw; text-align: center; box-shadow: var(--shadow-pop);
-  animation: toast-in var(--dur) var(--ease);
-  /* 提示条浮在遥控区上方，不能吞走下面按键的点击（实测挡住过应用按钮，点击全部超时） */
-  pointer-events: none;
+/* ---------- 通知队列 + 通知中心（学 macOS 通知中心 / VS Code 通知） ----------
+   两条口径备忘：① 浮层 pointer-events:none，只有 × 与「还有 N 条」可点——提示条不许吞掉
+   下面遥控键的点击（旧单条提示条时代实测挡住过应用按钮，点击全部超时）；② 颜色只用 :root 语义
+   令牌（--ok / --accent / --danger 及对应 -text），不写 hex。 */
+#notifStack {
+  position: fixed; right: max(var(--sp-3), env(safe-area-inset-right));
+  bottom: calc(96px + env(safe-area-inset-bottom)); z-index: 50;
+  display: flex; flex-direction: column; align-items: flex-end; gap: var(--sp-2);
+  width: min(340px, 88vw); pointer-events: none;
 }
-#toast.info { color: var(--accent-text); border-color: var(--accent-solid); }
-@keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
-
+.ntoast {
+  width: 100%; display: flex; align-items: flex-start; gap: var(--sp-2);
+  background: var(--card); color: var(--danger-text); border: 1px solid var(--danger);
+  border-left-width: 3px; border-radius: var(--r-md); padding: var(--sp-2) var(--sp-3);
+  font-size: 12.5px; line-height: 1.5; box-shadow: var(--shadow-pop); pointer-events: none;
+  animation: ntoast-in var(--dur) var(--ease);
+}
+.ntoast.ok { color: var(--ok-text); border-color: var(--ok); }
+.ntoast.info { color: var(--accent-text); border-color: var(--accent-solid); }
+.ntoast.out { animation: ntoast-out 240ms var(--ease) forwards; }
+.ntoast .ntext { min-width: 0; flex: 1; word-break: break-word; }
+.ntoast .ntof {
+  pointer-events: auto; flex: none; width: 22px; height: 22px; padding: 0; line-height: 1;
+  border: none; background: none; color: currentColor; opacity: .6; cursor: pointer;
+  font-size: 15px; border-radius: var(--r-sm);
+}
+.ntoast .ntof:hover { opacity: 1; }
+.nmore {
+  pointer-events: auto; font-size: 11.5px; padding: 3px var(--sp-3); cursor: pointer;
+  background: var(--card); color: var(--muted); border: 1px solid var(--line);
+  border-radius: var(--r-full); box-shadow: var(--shadow-pop);
+}
+.nmore:hover { color: var(--text); border-color: var(--accent); }
+@keyframes ntoast-in { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: none; } }
+@keyframes ntoast-out { to { opacity: 0; transform: translateX(14px); } }
+.notifbtn { position: relative; }
+.notifbadge {
+  position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px; padding: 0 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--card); color: var(--danger-text); border: 1px solid var(--danger);
+  border-radius: var(--r-full); font-size: 10px; line-height: 1; font-weight: 600;
+}
+.npanel .npanelbox {
+  width: min(520px, 92vw); max-height: 72vh; display: flex; flex-direction: column; gap: var(--sp-2);
+}
+.npanelhead { display: flex; align-items: center; gap: var(--sp-2); font-size: 13.5px; }
+.npanelcount { color: var(--faint); font-size: 11.5px; margin-right: auto; }
+.npanellist {
+  margin: 0; padding: 0; list-style: none; overflow-y: auto; overscroll-behavior: contain;
+  display: grid; gap: 2px; min-height: 60px;
+}
+.nrow {
+  display: grid; grid-template-columns: 8px 60px minmax(0, 1fr); gap: var(--sp-2);
+  align-items: baseline; padding: var(--sp-2); border-radius: var(--r-sm); cursor: pointer;
+  font-size: 12.5px; line-height: 1.5;
+}
+.nrow:hover { background: var(--card2); }
+.nrow .ndot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }
+.nrow.ok .ndot { background: var(--ok); }
+.nrow.info .ndot { background: var(--accent-solid); }
+.nrow .ntime { color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.nrow .nmsg { color: var(--muted); word-break: break-word; }
+.nrow.ok .nmsg { color: var(--ok-text); }
+.nrow.info .nmsg { color: var(--accent-text); }
+.nempty { color: var(--faint); font-size: 12.5px; text-align: center; padding: var(--sp-6); }
+.npanelfoot { color: var(--faint); font-size: 11.5px; }
 
 /* ---------- 音量 OSD（本地反馈，学 Google TV 官方遥控） ----------
    位置取屏幕上部三分之一：不挡顶部设备信息、也不压底部按键区；纯浮层不吞点击。 */

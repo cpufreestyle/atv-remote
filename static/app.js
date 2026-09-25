@@ -92,17 +92,312 @@ function skeletonRows(box, n = 3) {
   }
 }
 
-let toastTimer = null;
-function toast(msg, isInfo = false) {
-  const el = $("#toast");
-  el.textContent = msg;
-  el.classList.toggle("info", isInfo);
-  el.classList.remove("hidden");
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.add("hidden"), 3000);
+/* ===== notif-queue:begin =====
+   通知队列纯函数段：禁 DOM / localStorage / fetch（后面有测试盯着，node harness 直接抽这段执行）。
+   学 macOS 通知中心 / VS Code 通知：瞬时浮层只回答「刚刚发生了什么」，持久历史回答「刚才那条说啥」；
+   同屏条数有上限，超出的折成未读数，而不是一条盖一条地把上一条悄悄吃掉（旧 toast 就是这么丢消息的）。
+   三条口径：
+   1) 同屏最多 3 条，最新的永远可见；被挤下去的并未消失——进了历史，🔔 上有未读数。
+   2) 停留时长随级别拉长（成功短、错误久），读得慢的人由通知中心兜底，不靠加长倒时计。
+   3) 连续同一消息 1.2s 内合并不重复入账，别把历史刷成复读机。 */
+const NOTIF_MAX_VISIBLE = 3;
+const NOTIF_DUR = { ok: 2600, info: 3400, err: 7000 };
+const NOTIF_LEVELS = ["ok", "info", "err"];
+const NOTIF_HISTORY_KEY = "atv.notif.history";
+const NOTIF_SEEN_KEY = "atv.notif.seen";
+const NOTIF_HISTORY_MAX = 50;
+const NOTIF_COALESCE_MS = 1200;
+const NOTIF_MSG_MAX = 200;
+
+function notifNormLevel(level) {
+  return NOTIF_LEVELS.indexOf(level) >= 0 ? level : "err";
 }
 
-/* ---------------- 弹窗统一行为 ----------------
+// 级别从文案推：调用点几十处，不该为了配色去逐个传第三个参数。
+// isInfo 沿用旧 toast 的「这是条好消息」语义；其余按内容判成功/失败。
+function notifLevel(msg, isInfo) {
+  if (isInfo === true) return "info";
+  const s = String(msg === null || msg === undefined ? "" : msg);
+  if (s.indexOf("✓") === 0 || s.indexOf("✅") === 0 || s.indexOf("成功") >= 0) return "ok";
+  if (s.indexOf("失败") >= 0 || s.indexOf("错误") >= 0 || s.indexOf("⚠") >= 0 || s.indexOf("✕") >= 0) return "err";
+  return s.indexOf("已") === 0 ? "ok" : "err";
+}
+
+function notifDur(level) {
+  const d = NOTIF_DUR[notifNormLevel(level)];
+  return typeof d === "number" ? d : NOTIF_DUR.err;
+}
+
+// items 为到达顺序（旧 → 新）。visible 取最后 max 条并翻成「新 → 旧」方便渲染，
+// hidden 是被挤出屏幕、只剩历史可查的条数。
+function notifPlan(items, maxVisible) {
+  const arr = Array.isArray(items) ? items.slice() : [];
+  const max = typeof maxVisible === "number" && maxVisible > 0 ? Math.floor(maxVisible) : NOTIF_MAX_VISIBLE;
+  const start = Math.max(0, arr.length - max);
+  return { visible: arr.slice(start).reverse(), hidden: Math.max(0, arr.length - max) };
+}
+
+function notifCoalesce(a, b) {
+  if (!a || !b) return false;
+  if (a.msg !== b.msg || notifNormLevel(a.level) !== notifNormLevel(b.level)) return false;
+  return Math.abs((b.ts || 0) - (a.ts || 0)) <= NOTIF_COALESCE_MS;
+}
+
+// 纯函数：返回新数组（旧引用不变），最新在前、超量截断。合并时刷新时间戳而不是插一条。
+function notifPushHistory(list, item, max) {
+  const cap = typeof max === "number" && max > 0 ? Math.floor(max) : NOTIF_HISTORY_MAX;
+  const arr = (Array.isArray(list) ? list : []).slice();
+  if (arr.length && notifCoalesce(arr[0], item)) { arr[0] = item; return arr.slice(0, cap); }
+  arr.unshift(item);
+  return arr.slice(0, cap);
+}
+
+function notifUnread(list, lastSeenTs) {
+  const seen = typeof lastSeenTs === "number" && lastSeenTs > 0 ? lastSeenTs : 0;
+  return (Array.isArray(list) ? list : []).filter((it) => it && (it.ts || 0) > seen).length;
+}
+
+function notifFmtTime(ts) {
+  const d = new Date(typeof ts === "number" && ts > 0 ? ts : Date.now());
+  const p = (n) => (n < 10 ? "0" : "") + n;
+  return p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+}
+
+// localStorage 里的历史是不可信输入：字段缺失/类型错/超长都要能兜住，否则一条坏数据
+// 会让整个通知中心打不开（JSON.parse 抛在加载路径上）。
+function notifSanitizeHistory(list, max) {
+  const cap = typeof max === "number" && max > 0 ? Math.floor(max) : NOTIF_HISTORY_MAX;
+  return (Array.isArray(list) ? list : [])
+    .filter((it) => it && typeof it.msg === "string" && it.msg.trim())
+    .map((it) => ({
+      msg: it.msg.slice(0, NOTIF_MSG_MAX),
+      level: notifNormLevel(it.level),
+      ts: typeof it.ts === "number" && it.ts > 0 ? it.ts : 0,
+    }))
+    .slice(0, cap);
+}
+/* ===== notif-queue:end ===== */
+
+/* ---- 通知队列 DOM 胶水：规则在上面纯函数段，这里只管渲染 / 计时 / 持久化 ---- */
+const notifQueue = [];
+let notifHistory = [];
+let notifLastSeen = 0;
+let notifSeq = 0;
+
+function notifStore(key, val) {
+  try { localStorage.setItem(key, val); }
+  catch (e) { /* 隐私模式 / 配额满：通知不是关键路径，静默降级为「仅本次会话可见」 */ }
+}
+function notifLoad(key) {
+  try { return localStorage.getItem(key); } catch (e) { return null; }
+}
+function notifLoadHistory() {
+  try { return notifSanitizeHistory(JSON.parse(notifLoad(NOTIF_HISTORY_KEY) || "[]"), NOTIF_HISTORY_MAX); }
+  catch (e) { return []; }
+}
+function notifSaveHistory() { notifStore(NOTIF_HISTORY_KEY, JSON.stringify(notifHistory)); }
+function notifLoadSeen() { const v = Number(notifLoad(NOTIF_SEEN_KEY) || "0"); return v > 0 ? v : 0; }
+function notifSaveSeen() { notifStore(NOTIF_SEEN_KEY, String(notifLastSeen)); }
+
+function notifMount(n) {
+  const box = $("#notifStack");
+  if (!box) return;
+  const item = document.createElement("div");
+  item.className = "ntoast " + n.level;
+  const txt = document.createElement("span");
+  txt.className = "ntext";
+  txt.textContent = n.msg;          // 通知文本可能带设备名 / IP，一律 textContent
+  const x = document.createElement("button");
+  x.className = "ntof";
+  x.type = "button";
+  x.textContent = "×";
+  x.title = "关闭这条通知";
+  x.setAttribute("aria-label", "关闭通知：" + n.msg);
+  x.addEventListener("click", (e) => { e.stopPropagation(); notifDismiss(n, true); });
+  item.append(txt, x);
+  n.el = item;
+  box.prepend(item);               // 最新的在最上面
+}
+
+function notifUnmount(n) {
+  if (n && n.el && n.el.parentNode) n.el.parentNode.removeChild(n.el);
+  if (n) n.el = null;
+}
+
+function notifRender() {
+  const plan = notifPlan(notifQueue, NOTIF_MAX_VISIBLE);
+  const keep = plan.visible.map((n) => n.seq);
+  notifQueue.forEach((n) => { if (keep.indexOf(n.seq) < 0) notifUnmount(n); });
+  // 反过来 prepend 后，先插的（旧的）被推到下面 → 视觉顺序 = 新在上
+  plan.visible.slice().reverse().forEach((n) => { if (!n.el) notifMount(n); });
+  const more = $("#notifMore");
+  if (more) {
+    if (plan.hidden > 0) {
+      more.textContent = "还有 " + plan.hidden + " 条在通知中心 ›";
+      more.classList.remove("hidden");
+    } else {
+      more.classList.add("hidden");
+    }
+  }
+}
+
+// 只上屏、不入账：通知中心里点历史条目重新弹出时用
+function notifShow(msg, level) {
+  const box = $("#notifStack");
+  if (!box) return null;
+  const lv = notifNormLevel(level);
+  const n = { seq: ++notifSeq, msg: String(msg === null || msg === undefined ? "" : msg), level: lv, el: null, timer: 0 };
+  notifQueue.push(n);
+  notifRender();
+  n.timer = setTimeout(() => notifDismiss(n), notifDur(lv));
+  return n;
+}
+
+function notifDismiss(n, manual) {
+  if (!n) return;
+  if (n.timer) clearTimeout(n.timer);
+  const i = notifQueue.indexOf(n);
+  if (i >= 0) notifQueue.splice(i, 1);
+  if (manual && n.el) {
+    n.el.classList.add("out");
+    setTimeout(() => notifUnmount(n), 240);
+  } else {
+    notifUnmount(n);
+  }
+  notifRender();
+}
+
+function notifBadge() {
+  const b = $("#notifBadge");
+  if (!b) return;
+  const unread = notifUnread(notifHistory, notifLastSeen);
+  if (unread > 0) {
+    b.textContent = unread > 99 ? "99+" : String(unread);
+    b.classList.remove("hidden");
+  } else {
+    b.textContent = "";
+    b.classList.add("hidden");
+  }
+}
+
+function notifPanelOpen() {
+  const p = $("#notifPanel");
+  return !!p && !p.classList.contains("hidden");
+}
+
+// 弹窗是「开 / 关」两态：读屏用户只能从按钮上的状态位知道现在是不是展开着
+function notifSyncBtn() {
+  const btn = $("#notifBtn");
+  if (!btn) return;
+  const on = notifPanelOpen();
+  btn.setAttribute("aria-pressed", on ? "true" : "false");
+  btn.setAttribute("aria-expanded", on ? "true" : "false");
+}
+
+// 统一入口：入账（历史 + 未读数）+ 上屏。旧调用点 toast(msg, isInfo) 一个都不用改。
+function notifPush(msg, isInfo) {
+  const level = notifLevel(msg, isInfo);
+  const item = {
+    msg: String(msg === null || msg === undefined ? "" : msg).slice(0, NOTIF_MSG_MAX),
+    level: level,
+    ts: Date.now(),
+  };
+  notifHistory = notifPushHistory(notifHistory, item, NOTIF_HISTORY_MAX);
+  notifSaveHistory();
+  if (notifPanelOpen()) {          // 面板开着 = 用户正在看，来了新的直接标已读
+    notifLastSeen = item.ts;
+    notifSaveSeen();
+    notifRenderPanel();
+  }
+  notifBadge();
+  notifShow(item.msg, level);
+  return level;
+}
+
+function toast(msg, isInfo = false) { notifPush(msg, isInfo); }
+
+function notifRenderPanel() {
+  const list = $("#notifList");
+  if (!list) return;
+  const cnt = $("#notifCount");
+  if (cnt) cnt.textContent = notifHistory.length ? notifHistory.length + " 条" : "";
+  list.textContent = "";
+  if (!notifHistory.length) {
+    const li = document.createElement("li");
+    li.className = "nempty";
+    li.textContent = "还没有通知。出错、成功、配对结果都会记在这儿。";
+    list.append(li);
+    return;
+  }
+  notifHistory.forEach((it) => {
+    const li = document.createElement("li");
+    li.className = "nrow " + it.level;
+    li.title = "点一下重新弹出这条通知";
+    li.tabIndex = 0;
+    li.setAttribute("role", "button");
+    const dot = document.createElement("span");
+    dot.className = "ndot";
+    dot.setAttribute("aria-hidden", "true");
+    const time = document.createElement("span");
+    time.className = "ntime";
+    time.textContent = notifFmtTime(it.ts);
+    const msg = document.createElement("span");
+    msg.className = "nmsg";
+    msg.textContent = it.msg;
+    li.append(dot, time, msg);
+    const re = () => {
+      notifShow(it.msg, it.level);
+      notifLastSeen = Date.now();
+      notifSaveSeen();
+      notifBadge();
+    };
+    li.addEventListener("click", re);
+    li.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); re(); }
+    });
+    list.append(li);
+  });
+}
+
+function notifOpen(btn) {
+  if (notifPanelOpen()) return;   // openModal 自身防风重入，这里顺带避免重复标已读
+  notifLastSeen = Date.now();
+  notifSaveSeen();
+  notifBadge();
+  notifRenderPanel();
+  openModal("#notifPanel", btn || $("#notifBtn"));   // 复用弹窗统一行为：Esc / 焦点归还
+  notifSyncBtn();
+}
+
+// 快捷键与命令面板共用：开着就关、关着就开（状态位一起翻）
+function notifToggle(btn) {
+  if (notifPanelOpen()) closeModal("#notifPanel");
+  else notifOpen(btn);
+}
+
+function notifClearAll() {
+  notifHistory = [];
+  notifSaveHistory();
+  notifLastSeen = Date.now();
+  notifSaveSeen();
+  notifBadge();
+  notifRenderPanel();
+}
+
+function notifInit() {
+  notifHistory = notifLoadHistory();
+  notifLastSeen = notifLoadSeen();
+  const btn = $("#notifBtn");
+  if (btn) btn.addEventListener("click", () => notifOpen(btn));
+  const panel = $("#notifPanel");
+  if (panel) panel.addEventListener("modalclosed", notifSyncBtn);
+  const clr = $("#notifClearBtn");
+  if (clr) clr.addEventListener("click", notifClearAll);
+  const more = $("#notifMore");
+  if (more) more.addEventListener("click", () => notifOpen());
+  notifSyncBtn();
+  notifBadge();
+}/* ---------------- 弹窗统一行为 ----------------
    对标 Radix Dialog 的最小子集：语义由 HTML 上 role=dialog/aria-modal 提供，这里管行为
    ——Esc 关闭、打开时焦点移入弹窗、关闭后还给触发按钮、Tab 在弹窗内循环、背景锁滚动。
    两个 modal（设置/截图）共用，新增弹窗只要调 openModal/closeModal。
@@ -2892,7 +3187,8 @@ function palCommands() {
     () => kmOpen(null), "长按物理键 " + KM_EDIT_MS + "ms");
   push("km:reset", "工具", "♻", "恢复所有默认按键", "恢复 默认 改键 重置 keymap reset",
     kmResetAll, Object.keys(kmMap).length + " 个已改");
-  push("settings", "工具", "⚙", "打开设置", "设置 settings 偏好", () => $("#appSettingsBtn").click());
+ push("settings", "工具", "⚙", "打开设置", "设置 settings 偏好", () => $("#appSettingsBtn").click());
+ push("notif", "工具", "🔔", "打开通知中心", "翻最近的出错 / 成功提示，可整段重看", () => notifToggle($("#notifBtn")));
   push("coach", "工具", "🎓", "重看使用指引", "引导 教程 coach help", () => $("#coachBtn").click());
   return cmds;
 }
@@ -3031,6 +3327,14 @@ document.addEventListener("keydown", (e) => {
   else palClose();
 }, true);
 
+// Ctrl/⌘+N 开关通知中心（与 Ctrl+K 命令面板同一套 capture 兜底写法）
+document.addEventListener("keydown", (e) => {
+  if (!(e.metaKey || e.ctrlKey) || (e.key !== "n" && e.key !== "N")) return;
+  e.preventDefault();
+  e.stopPropagation();
+  notifToggle();
+}, true);
+
 /* ---------------- PWA：离线壳（Service Worker） ----------------
    策略细节见 static/sw.js 头部注释。边界：SW 只在安全上下文（https / localhost）
    注册——原生 App 的 WebView 与 https 访问可用；纯 http 局域网访问注册失败，
@@ -3051,6 +3355,7 @@ document.addEventListener("keydown", (e) => {
 applyPrivacy();
 renderPhrases();
 renderHist();
+notifInit();   // 通知队列：读历史 / 挂未读数角标（曾误放进隐私按钮回调：不点就不初始化，点了还重复挂监听）
 refreshStatus();
 // 首次使用：等首屏渲染稳定后自动开始引导（跳过/看完都会记住，不再自动弹）
 // 按当前连接状态选段落：没连上教「怎么连」，已经连着直接教「怎么用」

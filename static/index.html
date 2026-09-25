@@ -31,8 +31,9 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
         <h1>ATV Remote</h1>
         <div class="sub"><span id="dot" class="dot off"></span><span id="tvInfo">未连接</span></div>
       </div>
-      <button id="palBtn" class="btn tiny gear" title="命令面板（Ctrl / ⌘ + K）" aria-label="命令面板">⌘</button>
-      <button id="appSettingsBtn" class="btn tiny gear" title="设置（震动反馈 / 清空本地数据）" aria-label="设置">⚙</button>
+     <button id="palBtn" class="btn tiny gear" title="命令面板（Ctrl / ⌘ + K）" aria-label="命令面板">⌘</button>
+      <button id="notifBtn" class="btn tiny gear notifbtn" title="通知中心（Ctrl / ⌘ + N）" aria-label="通知中心">🔔<span id="notifBadge" class="notifbadge hidden" aria-hidden="true"></span></button>
+     <button id="appSettingsBtn" class="btn tiny gear" title="设置（震动反馈 / 清空本地数据）" aria-label="设置">⚙</button>
     </div>
 
     <div class="devtabs">
@@ -301,7 +302,23 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
 
 <datalist id="appPkgOptions"></datalist>
 
-<div id="toast" class="hidden" role="status" aria-live="polite"></div>
+<!-- 通知队列 + 通知中心：学 macOS 通知中心 / VS Code 通知。右下浮层只回答「刚刚发生了什么」，
+     全部历史收进 🔔 面板（localStorage，最多 50 条）——原来单条 toast 会被下一条顶掉，
+     报错滚过去就再找不回来。浮层不吞点击，设备名 / 通知文本一律 textContent 渲染。 -->
+<div id="notifStack" class="nstack" role="status" aria-live="polite" aria-label="通知">
+  <button id="notifMore" class="nmore hidden" type="button"></button>
+</div>
+<div id="notifPanel" class="modal hidden npanel" role="dialog" aria-modal="true" aria-label="通知中心">
+  <div class="npanelbox">
+    <div class="npanelhead">
+      <b>通知中心</b>
+      <span id="notifCount" class="npanelcount"></span>
+      <button id="notifClearBtn" class="btn tiny" type="button">清空</button>
+    </div>
+    <ul id="notifList" class="npanellist" role="list"></ul>
+    <div class="npanelfoot">点任意一条可重新弹出；只存本机浏览器，最多 50 条。</div>
+  </div>
+</div>
 
 <!-- 命令面板：学 VS Code Command Palette 与 Home Assistant Quick Bar。全局 Ctrl/⌘+K 唤起，
      输入即过滤（子串 > 词首 > 子序列），↑↓ 选择、↵ 执行、esc 关闭。命令全部复用页面
