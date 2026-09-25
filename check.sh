@@ -18,6 +18,7 @@ run() {
 
 run python3 -c 'import server, atv_backend'
 run node --check static/app.js
+run node --check static/sw.js
 
 # HTTP 层加固的行为回归（配对凭据 / Host 头 / keep-alive 帧），只用标准库
 run python3 -m unittest discover -s tests

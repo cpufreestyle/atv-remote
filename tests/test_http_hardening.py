@@ -176,6 +176,20 @@ class HttpHardeningTest(unittest.TestCase):
         _, _, headers = request(self.url("/next"), headers={"X-ATV-Token": TOKEN})
         self.assertIn("HttpOnly", headers.get("Set-Cookie", ""))
 
+    # ---------- PWA 离线壳 ----------
+    def test_sw_response_allows_root_scope(self):
+        """SW 脚本在 /static/sw.js，默认 scope 锁死在 /static/；缺这个头浏览器
+        直接 SecurityError，注册静默失败、离线壳装不上"""
+        code, _, headers = request(self.url("/static/sw.js"))
+        self.assertEqual(code, 200)
+        self.assertEqual(headers.get("Service-Worker-Allowed"), "/")
+
+    def test_manifest_served_with_pwa_ctype(self):
+        """.webmanifest 在部分平台被 mimetypes 猜成八位组流，manifest 就废了"""
+        code, _, headers = request(self.url("/static/manifest.webmanifest"))
+        self.assertEqual(code, 200)
+        self.assertEqual(headers.get("Content-Type"), "application/manifest+json")
+
     # ---------- 睡眠定时 ----------
     def _timer(self, payload):
         code, body, _ = request(self.url("/api/cmd"), method="POST",

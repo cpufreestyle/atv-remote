@@ -38,6 +38,25 @@ ROOT = Path(__file__).resolve().parent
 STATIC = Path(os.environ.get("ATV_STATIC", str(ROOT / "static")))
 STATE_FILE = Path(os.environ.get("ATV_STATE", str(ROOT / "state.json")))
 
+# .webmanifest 等新式后缀在部分平台（Android / Chaquopy 机没有 /etc/mime.types）
+# 会被 mimetypes 降级成 application/octet-stream，PWA 直接装不上；显式映射兜底
+_STATIC_CTYPE = {
+    ".js": "text/javascript",
+    ".mjs": "text/javascript",
+    ".webmanifest": "application/manifest+json",
+    ".json": "application/json",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+}
+
+
+def static_ctype(path: Path) -> str:
+    """静态文件 Content-Type：显式映射优先，回落系统表，再回落八位组流"""
+    return (_STATIC_CTYPE.get(path.suffix.lower())
+            or mimetypes.guess_type(str(path))[0]
+            or "application/octet-stream")
+
 # `adb devices` / `adb version` 的缓存秒数：按键路径每次 fork 进程是延迟大头，
 # 遥控器场景可接受 1.5s 的陈旧度（连接/断开等关键操作会主动失效缓存）
 DEVICES_CACHE_TTL = 1.5
@@ -1535,12 +1554,14 @@ class Handler(BaseHTTPRequestHandler):
             self._issue_cookie = True
         return True
 
-    def _send(self, code, data, ctype="application/json; charset=utf-8"):
+    def _send(self, code, data, ctype="application/json; charset=utf-8", extra_headers=None):
         body = data if isinstance(data, bytes) else json.dumps(data, ensure_ascii=False).encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for k, v in (extra_headers or {}).items():
+            self.send_header(k, v)
         # 令牌校验通过后种 cookie，后续请求（fetch / 静态资源 / APK）就不用再拼 ?token=
         if AUTH_TOKEN and not self._from_loopback() and getattr(self, "_issue_cookie", False):
             self.send_header("Set-Cookie", "{}={}; Path=/; SameSite=Lax; HttpOnly".format(
@@ -1664,8 +1685,14 @@ class Handler(BaseHTTPRequestHandler):
                 # 目录前缀比较必须补分隔符，否则 /a/static 会放行 /a/static-secret/x
                 if not (str(f) + os.sep).startswith(str(root) + os.sep) or not f.is_file():
                     return self._send(404, {"error": "not found"})
-                ctype = mimetypes.guess_type(str(f))[0] or "application/octet-stream"
-                return self._send(200, f.read_bytes(), ctype)
+                ctype = static_ctype(f)
+                extra = None
+                if f.name == "sw.js":
+                    # SW 脚本默认只能控制自己所在目录（/static/）；带这个头才允许
+                    # scope 放到 /，把整个 app shell 纳入离线壳，否则注册直接
+                    # SecurityError、离线能力静默缺失
+                    extra = {"Service-Worker-Allowed": "/"}
+                return self._send(200, f.read_bytes(), ctype, extra_headers=extra)
             return self._send(404, {"error": "not found"})
         except (AdbError, AppleTvError) as e:
             return self._send(400, {"error": str(e)})

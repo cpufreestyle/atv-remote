@@ -1809,6 +1809,23 @@ $("#settingsModal").addEventListener("click", (e) => {
   if (e.target === $("#settingsModal")) closeModal("#settingsModal");
 });
 
+/* ---------------- PWA：离线壳（Service Worker） ----------------
+   策略细节见 static/sw.js 头部注释。边界：SW 只在安全上下文（https / localhost）
+   注册——原生 App 的 WebView 与 https 访问可用；纯 http 局域网访问注册失败，
+   静默跳过，遥控功能不受影响（渐进增强）。 */
+(function registerSW() {
+  if (!("serviceWorker" in navigator)) return;
+  addEventListener("load", () => {
+    navigator.serviceWorker.register("/static/sw.js", { scope: "/" })
+      .then(() => {
+        document.documentElement.dataset.sw = "on";
+        // controller 为空 = 首次装上；后续刷新不重复播报
+        if (!navigator.serviceWorker.controller) log("✅ 离线可用：遥控器界面已缓存，弱网/断网也能打开");
+      })
+      .catch(() => { document.documentElement.dataset.sw = "fail"; });
+  });
+})();
+
 applyPrivacy();
 renderPhrases();
 refreshStatus();
