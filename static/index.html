@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#121315">
+<meta name="theme-color" content="#121315" media="(prefers-color-scheme: dark)">
+    <meta name="theme-color" content="#f7f8fa" media="(prefers-color-scheme: light)">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="ATV Remote">
@@ -148,6 +149,8 @@
     <section class="card" id="appsCard">
       <h2>📦 应用</h2>
       <div id="appsAndroid">
+        <p class="hint hidden" id="recentLabel">🕘 最近使用</p>
+        <div class="brow apps hidden" id="recentApps"></div>
         <div class="brow apps" id="apps"></div>
         <div class="inputrow">
           <input id="pkgInput" placeholder="自定义包名，如 com.google.android.youtube.tv" autocomplete="off" spellcheck="false">
@@ -227,26 +230,26 @@
 
 <div id="toast" class="hidden" role="status" aria-live="polite"></div>
 
-<div id="settingsModal" class="modal hidden">
+<div id="settingsModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="设置">
   <div class="mbox">
     <h2 class="settitle">⚙ 设置</h2>
     <div class="setrow"><span>按键震动反馈</span>
-      <button id="hapticBtn" class="btn tiny" aria-pressed="true">开</button></div>
+      <button id="hapticBtn" class="switch" role="switch" aria-checked="true" aria-label="按键震动反馈"><span class="knob"></span></button></div>
     <div class="setrow"><span>常用短语（<span id="phraseCount">0</span> 条）</span>
       <button id="clearPhrasesBtn" class="btn tiny danger">清空</button></div>
     <div class="setrow"><span>自定义宏</span>
       <button id="clearMacrosBtn" class="btn tiny danger">清空</button></div>
     <p class="hint" id="verHint"></p>
-    <div class="brow center"><button id="settingsCloseBtn" class="btn primary">完成</button></div>
+    <div class="brow center"><button id="settingsCloseBtn" class="btn primary" data-autofocus>完成</button></div>
   </div>
 </div>
 
-<div id="shotModal" class="modal hidden">
+<div id="shotModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="电视画面">
   <div class="mbox">
     <img id="shotImg" alt="电视画面">
     <div class="brow center">
       <a id="shotSave" class="btn" download="tv.png">保存图片</a>
-      <button id="shotClose" class="btn">关闭</button>
+      <button id="shotClose" class="btn" data-autofocus>关闭</button>
     </div>
   </div>
 </div>

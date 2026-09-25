@@ -1,7 +1,8 @@
-/* ATV Remote — 深色遥控器主题
+/* ATV Remote — 双主题遥控器（跟随系统浅色/深色）
    设计令牌与交互规范参考开源项目：色阶/语义色借鉴 Radix Colors（12 级 slate/blue/
-   green/amber/red 暗色档，9 级为实心交互色、11 级为低对比文字、12 级为高对比文字），
-   CSS 变量主题化做法借鉴 Bulma。约定：
+   green/amber/red，暗色档 9 级为实心交互色、11 级为低对比文字、12 级为高对比文字；
+   浅色档同编号反转明暗：1 最浅、12 最深，语义步进不变），
+   主题全部挂 CSS 自定义属性（含 prefers-color-scheme 换肤）借鉴 Bulma。约定：
    - 颜色只允许引用 :root 令牌，新组件不要在规则里写死 hex；
    - 触控目标 ≥36px（遥控主键 ≥56px），按压反馈统一 :active/.pressed + shadow-press；
    - iPhone 刘海/小黑条：viewport-fit=cover + env(safe-area-inset-*)；
@@ -39,8 +40,50 @@
   --shadow-card: 0 1px 2px hsl(220 30% 4% / .4);
   --shadow-pop:  0 8px 24px hsl(220 30% 4% / .5);
   --shadow-press: inset 0 1px 3px hsl(220 30% 4% / .55);
+  /* 按键底部立体棱（深色下用更黑的边；浅色主题见下方覆盖） */
+  --key-edge:    0 2px 0 hsl(220 10% 4% / .6);
+  /* 弹窗遮罩 / 日志底板（跟着主题走，不再写死） */
+  --scrim:       rgba(0, 0, 0, .72);
+  --log-bg:      hsl(220 14% 6% / .94);
   /* 动效 */
   --dur-fast: 60ms; --dur: 160ms; --ease: cubic-bezier(.2, .7, .3, 1);
+}
+
+/* ---------- 浅色主题（跟随系统） ----------
+   Radix 浅色档方法论：同一色相编号步进不变、明暗整体反转——实心交互仍是「该色最深档」，
+   低对比文字用中间档，背景用最浅两档。深色下的「发亮」语义色在浅色下要压暗才能保证
+   对比度，所以 ok/warn/danger 的文字值单独覆写，不是简单反色。 */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg:        hsl(220, 24%, 97%);
+    --card:      hsl(220, 20%, 100%);
+    --card2:     hsl(220, 18%, 95%);
+    --card3:     hsl(220, 16%, 90%);
+    --line:      hsl(220, 14%, 86%);
+    --line-soft: hsl(220, 14%, 91%);
+    --text:      hsl(220, 20%, 14%);
+    --muted:     hsl(220, 10%, 40%);
+    --faint:     hsl(220, 8%, 56%);
+
+    --accent:      hsl(212, 90%, 44%);
+    --accent-solid:hsl(212, 95%, 48%);
+    --accent-soft: hsl(212, 80%, 92%);
+    --accent-text: hsl(212, 85%, 36%);
+    --ok:          hsl(151, 55%, 34%);
+    --ok-text:     hsl(151, 60%, 27%);
+    --warn:        hsl(40, 85%, 38%);
+    --warn-text:   hsl(40, 90%, 30%);
+    --danger:      hsl(358, 65%, 45%);
+    --danger-text: hsl(358, 70%, 37%);
+
+    /* 浅色下阴影换成灰调（黑阴影叠白底会脏），立体棱改用浅灰下探边 */
+    --shadow-card: 0 1px 2px hsl(220 20% 55% / .14);
+    --shadow-pop:  0 8px 24px hsl(220 25% 40% / .16);
+    --shadow-press: inset 0 1px 3px hsl(220 20% 50% / .22);
+    --key-edge:    0 2px 0 hsl(220 14% 78% / .9);
+    --scrim:       rgba(15, 23, 42, .45);
+    --log-bg:      hsl(220 20% 98% / .94);
+  }
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -161,7 +204,7 @@ input:focus { border-color: var(--accent); }
   background: var(--card2); border: 1px solid var(--line); color: var(--text);
   border-radius: var(--r-lg); font-size: 22px; user-select: none; min-height: 56px;
   display: flex; align-items: center; justify-content: center;
-  box-shadow: 0 2px 0 hsl(220 10% 10% / .6);
+  box-shadow: var(--key-edge);
   transition: transform var(--dur-fast) var(--ease), background var(--dur-fast), border-color var(--dur-fast);
 }
 .dk:hover { border-color: var(--accent); }
@@ -195,7 +238,7 @@ input:focus { border-color: var(--accent); }
   border-radius: var(--r-md); padding: 11px var(--sp-3); font-size: 14px;
   text-decoration: none; min-height: 40px;
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  box-shadow: 0 2px 0 hsl(220 10% 10% / .6);
+  box-shadow: var(--key-edge);
   transition: transform var(--dur-fast) var(--ease), background var(--dur-fast),
               border-color var(--dur-fast), color var(--dur-fast);
 }
@@ -255,7 +298,7 @@ code {
 /* ---------- log & toast ---------- */
 #log {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
-  background: hsl(220 14% 8% / .94); backdrop-filter: blur(8px);
+  background: var(--log-bg); backdrop-filter: blur(8px);
   border-top: 1px solid var(--line); color: var(--muted);
   font-size: 12px; padding: var(--sp-2) var(--sp-4);
   padding-bottom: calc(var(--sp-2) + env(safe-area-inset-bottom));
@@ -277,6 +320,8 @@ code {
   padding: var(--sp-2) var(--sp-4); border-radius: var(--r-md); font-size: 13px; z-index: 50;
   max-width: 90vw; text-align: center; box-shadow: var(--shadow-pop);
   animation: toast-in var(--dur) var(--ease);
+  /* 提示条浮在遥控区上方，不能吞走下面按键的点击（实测挡住过应用按钮，点击全部超时） */
+  pointer-events: none;
 }
 #toast.info { color: var(--accent-text); border-color: var(--accent-solid); }
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
@@ -290,9 +335,25 @@ code {
 }
 .setrow:last-of-type { border-bottom: none; }
 
+/* switch 控件（对标 Radix Switch 的最小形态）：轨道 + 滑块，aria-checked 驱动样式；
+   无障碍语义由 role="switch" + aria-checked 提供，不靠 开/关 文字 */
+.switch {
+  position: relative; width: 46px; height: 28px; flex: none;
+  background: var(--card3); border: 1px solid var(--line); border-radius: var(--r-full);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast);
+}
+.switch .knob {
+  position: absolute; top: 2px; left: 2px; width: 22px; height: 22px; border-radius: 50%;
+  background: var(--faint);
+  transition: transform var(--dur) var(--ease), background var(--dur-fast), width var(--dur-fast);
+}
+.switch[aria-checked="true"] { background: var(--accent-solid); border-color: var(--accent-solid); }
+.switch[aria-checked="true"] .knob { transform: translateX(18px); background: #fff; }
+.switch:active .knob { width: 24px; }   /* 按住时滑块微撑宽（物理开关的手感细节） */
+
 /* ---------- modal ---------- */
 .modal {
-  position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 40;
+  position: fixed; inset: 0; background: var(--scrim); z-index: 40;
   display: flex; align-items: center; justify-content: center; padding: var(--sp-4);
   padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom));
 }

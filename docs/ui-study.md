@@ -66,3 +66,41 @@ GitHub / jsdelivr 在本机不可达，经腾讯 npm 镜像获取两份工程上
 - 动效一律 ≤160ms 且可被 reduced-motion 关闭，没有引入复杂转场
 - 触觉反馈（`navigator.vibrate`）上上轮已加，本轮未动
 - light 主题未做：令牌体系（12 级色阶）已为此留好位置，需要时按 Radix 亮色档填值即可
+
+---
+
+# 第二轮：浅色主题 / 弹窗规范 / Switch（2026-09-25 晚）
+
+## 学习源与四项对照
+
+延续上一轮的「令牌化」结论，本轮对照三份开源实践里最影响日常体验的模式：
+
+1. **Radix Colors 的浅色档方法论**（同一仓库的 light 档）：12 级步进编号不变、
+   明暗整体反转；实心交互取最深档、低对比文字取中间档。本项目此前只有深色一档，
+   白天/办公室场景一片漆黑。已按此法补 `prefers-color-scheme: light` 全覆盖。
+2. **Radix Dialog 的行为契约**：role/aria-modal 语义、Esc 关闭、打开焦点移入、
+   关闭焦点还原、Tab 焦点循环、背景锁滚动。本项目两个 modal（设置/截图）此前
+   只有 classList 切换，键盘/读屏用户完全不可用。
+3. **Radix Switch 的控件形态**：轨道 + 滑块，样式由 aria-checked 驱动，不用文字
+   表状态；按压时滑块微撑宽的物理手感细节。
+4. **Toast 遮挡问题**（实测发现，非开源对照）：`#toast` 浮层没有
+   `pointer-events: none`，会吞掉下方遥控按钮的点击（Playwright 实测应用按钮
+   点击全部超时，命中测试失败），已补。
+
+## 落到 static/ 的改动
+
+| 项 | 之前 | 之后 |
+|---|---|---|
+| 主题 | 仅深色一档令牌 | `:root` 深色 + `@media (prefers-color-scheme: light)` 全套覆盖：中性/语义/阴影/立体棱/遮罩/日志底板 15 个令牌；`theme-color` meta 拆深浅两条 |
+| 弹窗 | classList 增删 hidden | `openModal/closeModal` 统一行为：Esc、焦点进出还原、Tab 循环、背景锁滚动；HTML 补 role=dialog/aria-modal/aria-label + data-autofocus |
+| 键盘冲突 | Esc=返回电视 | 弹窗打开时 capture 阶段拦截导航键并 stopPropagation；Enter/Space 只断穿透不 preventDefault（保住按钮的键盘激活） |
+| 震动开关 | 按钮文字 开/关 | `role="switch"` + `aria-checked` + 滑块 CSS 驱动 |
+| 应用启动 | 直接 api 调用 | `launchApp()` 统一入口 + 最近使用（localStorage 最多 5 条置顶，🕘 行） |
+| Toast | 吞点击 | `pointer-events: none` |
+
+## 验证
+
+- `./check.sh` 全绿 + `./sync-native.sh` 副本一致
+- Playwright 实测：Esc 关弹窗后焦点还原齿轮、Enter 只关弹窗不给电视发 OK、
+  方向键弹窗打开时不穿透、switch aria-checked 双向切换、最近应用记录与置顶渲染、
+  浅色 computed 样式抽查（bg rgb(246,247,249)/卡片白/立体棱浅灰）、深浅双主题截图

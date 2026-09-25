@@ -101,6 +101,68 @@ function toast(msg, isInfo = false) {
   toastTimer = setTimeout(() => el.classList.add("hidden"), 3000);
 }
 
+/* ---------------- 弹窗统一行为 ----------------
+   对标 Radix Dialog 的最小子集：语义由 HTML 上 role=dialog/aria-modal 提供，这里管行为
+   ——Esc 关闭、打开时焦点移入弹窗、关闭后还给触发按钮、Tab 在弹窗内循环、背景锁滚动。
+   两个 modal（设置/截图）共用，新增弹窗只要调 openModal/closeModal。
+   关键冲突：全局键盘遥控里 Esc=「返回」电视，弹窗开着时必须优先关弹窗，所以在
+   capture 阶段拦下导航键并 stopPropagation，dpad 处理器收不到；Enter/Space 放行
+   ——那是激活弹窗内按钮的键盘通道，不能误伤。 */
+const openModals = [];
+let lastModalTrigger = null;
+
+function openModal(sel, trigger) {
+  const el = $(sel);
+  if (!el || openModals.includes(el)) return;
+  if (!openModals.length) document.body.style.overflow = "hidden";
+  lastModalTrigger = trigger || document.activeElement;
+  el.classList.remove("hidden");
+  openModals.push(el);
+  const auto = el.querySelector("[data-autofocus]") ||
+    el.querySelector("button:not([disabled]), [href], input, select, textarea");
+  if (auto) auto.focus();
+}
+
+function closeModal(sel) {
+  const el = typeof sel === "string" ? $(sel) : sel;
+  const i = openModals.indexOf(el);
+  if (i < 0) return;
+  openModals.splice(i, 1);
+  el.classList.add("hidden");
+  if (!openModals.length) document.body.style.overflow = "";
+  // 焦点还给打开弹窗的那个按钮（读屏用户不会「弹窗一关就丢了位置」）
+  if (lastModalTrigger && lastModalTrigger.focus) lastModalTrigger.focus();
+}
+
+// capture 阶段拦截：弹窗开着时电视导航键不许穿透
+document.addEventListener("keydown", (e) => {
+  if (!openModals.length) return;
+  const top = openModals[openModals.length - 1];
+  if (e.key === "Escape") {
+    e.preventDefault(); e.stopPropagation();
+    closeModal(top);
+    return;
+  }
+  if (e.key === "Tab") {   // 焦点循环在弹窗内，不逃到背景
+    const f = [...top.querySelectorAll("button:not([disabled]), [href], input, select, textarea")]
+      .filter((el) => el.offsetParent !== null);
+    if (f.length < 2) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    return;
+  }
+  // 其余键：Enter/Space 是激活弹窗内按钮的键盘通道——按键的「默认动作」会触发
+  // click，所以只 stopPropagation 切断向电视的穿透，不能 preventDefault（那会把
+  // 按钮的键盘激活一起禁掉，键盘用户就关不掉弹窗了）；其他键连同默认动作一起拦。
+  // 输入框内打字除外（当前弹窗没有输入框，留给以后的弹窗）。
+  const tag = (e.target.tagName || "").toLowerCase();
+  const typing = tag === "input" || tag === "textarea" || tag === "select";
+  if (typing) return;
+  if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+  else { e.preventDefault(); e.stopPropagation(); }
+}, true);
+
 function flashKey(code) {
   const btn = document.querySelector(`[data-key="${code}"]`);
   if (!btn) return;
@@ -828,10 +890,7 @@ async function loadAtvApps() {
       const b = document.createElement("button");
       b.className = "btn";
       b.textContent = a.name || a.id;
-      b.onclick = async () => {
-        try { await api("/api/cmd", { type: "app", pkg: a.id }); log(`→ 启动 ${b.textContent}`); }
-        catch (e) { toast(e.message); }
-      };
+      b.onclick = () => launchApp(a.name || a.id, a.id);
       box.appendChild(b);
     });
     if (!box.children.length) box.innerHTML = '<span class="hint">未获取到应用列表</span>';
@@ -976,23 +1035,51 @@ $("#searchBtn").addEventListener("click", async () => {
   catch (e) { toast(e.message); }
 });
 
-/* Android 应用预设 */
+/* Android 应用预设 + 最近使用的应用（localStorage，最多 5 条，打开过的置顶）。
+   日常开关电视其实就固定那几个 App，置顶省得在一排预设里找。 */
+const RECENT_KEY = "atv.recentApps";
+const RECENT_MAX = 5;
+const recentApps = () => {
+  try { return JSON.parse(localStorage.getItem(RECENT_KEY)) || []; } catch (e) { return []; }
+};
+function recordRecentApp(name, pkg) {
+  const left = recentApps().filter((a) => a.pkg !== pkg);
+  left.unshift({ name, pkg });
+  localStorage.setItem(RECENT_KEY, JSON.stringify(left.slice(0, RECENT_MAX)));
+  renderRecentApps();
+}
+function renderRecentApps() {
+  const wrap = $("#recentApps");
+  wrap.textContent = "";
+  const list = recentApps();
+  $("#recentLabel").classList.toggle("hidden", !list.length);
+  wrap.classList.toggle("hidden", !list.length);
+  list.forEach((a) => {
+    const b = document.createElement("button");
+    b.className = "btn";
+    b.textContent = "🕘 " + a.name;
+    b.onclick = () => launchApp(a.name, a.pkg);
+    wrap.appendChild(b);
+  });
+}
+async function launchApp(name, pkg) {
+  recordRecentApp(name, pkg);   // 先记录后发送：用户意图已发生，电视那头失败也不该丢
+  try { await api("/api/cmd", { type: "app", pkg }); log(`→ 启动 ${name}`); }
+  catch (e) { log("⚠ " + e.message); toast(e.message); }
+}
 const appsEl = $("#apps");
 APPS.forEach((a) => {
   const b = document.createElement("button");
   b.className = "btn";
   b.textContent = a.name;
-  b.onclick = async () => {
-    try { await api("/api/cmd", { type: "app", pkg: a.pkg }); log(`→ 启动 ${a.name}`); }
-    catch (e) { log("⚠ " + e.message); toast(e.message); }
-  };
+  b.onclick = () => launchApp(a.name, a.pkg);
   appsEl.appendChild(b);
 });
+renderRecentApps();
 $("#pkgBtn").addEventListener("click", async () => {
   const pkg = $("#pkgInput").value.trim();
   if (!pkg) return;
-  try { await api("/api/cmd", { type: "app", pkg }); log(`→ 启动 ${pkg}`); }
-  catch (e) { toast(e.message); }
+  launchApp(pkg, pkg);
 });
 $("#pkgInput").addEventListener("keydown", (e) => {
   if (e.key === "Enter") $("#pkgBtn").click();
@@ -1072,16 +1159,16 @@ $("#shotBtn").addEventListener("click", async () => {
       throw new Error(j.error || "获取画面失败");
     }
     setShot(URL.createObjectURL(await r.blob()));
-    $("#shotModal").classList.remove("hidden");
+    openModal("#shotModal");
     log("完成");
   } catch (e) {
     log("⚠ " + e.message);
     toast(e.message);
   }
 });
-$("#shotClose").addEventListener("click", () => $("#shotModal").classList.add("hidden"));
+$("#shotClose").addEventListener("click", () => closeModal("#shotModal"));
 $("#shotModal").addEventListener("click", (e) => {
-  if (e.target === $("#shotModal")) $("#shotModal").classList.add("hidden");
+  if (e.target === $("#shotModal")) closeModal("#shotModal");
 });
 
 loadMacros();
@@ -1156,11 +1243,8 @@ document.addEventListener("visibilitychange", () => {
 // 偏好全部存 localStorage：这些是「这一侧浏览器」的设置，与电视无关，不进 state.json。
 // 第一版只放震动开关与清空本地数据；以后要加偏好都往这个弹窗里挂。 */
 function renderHapticBtn() {
-  const b = $("#hapticBtn");
-  const on = hapticEnabled();
-  b.textContent = on ? "开" : "关";
-  b.setAttribute("aria-pressed", on ? "true" : "false");
-  b.classList.toggle("on", on);
+  // switch 的视觉完全由 aria-checked 驱动（CSS [aria-checked="true"]），不写文字状态
+  $("#hapticBtn").setAttribute("aria-checked", hapticEnabled() ? "true" : "false");
 }
 $("#hapticBtn").addEventListener("click", () => {
   localStorage.setItem(HAPTIC_KEY, hapticEnabled() ? "0" : "1");
@@ -1182,11 +1266,11 @@ $("#clearMacrosBtn").addEventListener("click", () => {
 $("#appSettingsBtn").addEventListener("click", () => {
   $("#phraseCount").textContent = phrases.length;
   renderHapticBtn();
-  $("#settingsModal").classList.remove("hidden");
+  openModal("#settingsModal");
 });
-$("#settingsCloseBtn").addEventListener("click", () => $("#settingsModal").classList.add("hidden"));
+$("#settingsCloseBtn").addEventListener("click", () => closeModal("#settingsModal"));
 $("#settingsModal").addEventListener("click", (e) => {
-  if (e.target === $("#settingsModal")) $("#settingsModal").classList.add("hidden");
+  if (e.target === $("#settingsModal")) closeModal("#settingsModal");
 });
 
 applyPrivacy();
