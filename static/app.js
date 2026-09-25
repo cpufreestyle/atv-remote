@@ -166,29 +166,67 @@ document.addEventListener("keydown", (e) => {
 
 /* ---------------- 首次使用引导（coach mark） ----------------
    对标 Material 的 feature discovery：暗场里只留目标元素一块光圈 + 吸附说明卡。
-   双指手势、长按滚动这类隐形能力不引导根本发现不了，所以首次进页面自动走一遍，
-   看完/跳过/Esc 关掉都记一刀（localStorage），之后随时能从设置里重看。 */
-const COACH_KEY = "atv.coached";
-const COACH_STEPS = [
-  { tab: "dpad", sel: "#targetInput", title: "连接电视",
-    desc: "输入电视 IP 点「连接」；连过的地址会留在下方芯片里，点一下就能重连。" },
-  { tab: "dpad", sel: ".dpad", title: "方向键可以长按连发",
-    desc: "方向、音量、seek 键按住 450ms 后会连续发送——滚列表、调音量不用点到手酸。" },
-  { tab: "pad", sel: "#touchpad", title: "触摸板的四种手势",
-    desc: "轻点 = 点击、拖动 = 滑动；✌️ 双指上下滑 = 音量、左右滑 = 快进，双轻点 = 播放/暂停；单指长按 = 连续滚动。" },
-  { tab: "pad", sel: "#textInput", title: "直接用键盘遥控",
-    desc: "点一下页面空白处：方向键移动、回车 = OK、Esc = 返回、退格 = 删除、媒体键控制播放；在输入框里打字则作为文本发送。" },
-];
+   双指手势、长按滚动这类隐形能力不引导根本发现不了，所以按连接状态分两段自动走一遍：
+   连接前只教「怎么连」，连接后才教「怎么用」，看完/跳过/Esc 关掉各自记一刀
+   （localStorage），之后随时能从设置里整段重看。 */
+
+// 拆两段学的是 shepherd.js 的 stage queue + beforeShowPromise：步骤能不能出场由前置条件
+// 决定，而不是「进页面 600ms 一定把 4 步全糊上来」。没连上电视时长按连发、触摸板手势、键盘
+// 遥控全都无从体验，光圈还会打到被 .disc 压暗的按键上；已经连着的人则不需要再被教一遍怎么
+// 连接。目标当前不可见时直接跳步，抄的是 driver.js 找不到目标元素就退到 0×0 dummy element
+// 的做法——宁可少一步，也不把光圈空打在页面上。
+const COACH_KEY_PRE = "atv.coached.pre";
+const COACH_KEY_POST = "atv.coached.post";
+const COACH_HELP = {
+  pre: [
+    { tab: "dpad", sel: "#targetInput", title: "连接电视",
+      desc: "输入电视 IP 点「连接」；连过的地址会留在下方芯片里，点一下就能重连。" },
+  ],
+  post: [
+    { tab: "dpad", sel: ".dpad", title: "方向键可以长按连发",
+      desc: "方向、音量、seek 键按住 450ms 后会连续发送——滚列表、调音量不用点到手酸。" },
+    { tab: "pad", sel: "#touchpad", title: "触摸板的四种手势",
+      desc: "轻点 = 点击、拖动 = 滑动；✌️ 双指上下滑 = 音量、左右滑 = 快进，双轻点 = 播放/暂停；单指长按 = 连续滚动。" },
+    { tab: "pad", sel: "#textInput", title: "直接用键盘遥控",
+      desc: "点一下页面空白处：方向键移动、回车 = OK、Esc = 返回、退格 = 删除、媒体键控制播放；在输入框里打字则作为文本发送。" },
+    // 没东西在播时 npCard 整张收起，这一步会被自动跳过去（见 showCoachStep 的可见性判断）
+    { tab: "pad", sel: "#npSeek", title: "⏪15 / ⏩15 快进快退",
+      desc: "播放中才亮，直播或拿不到时长时自动禁用；点一下跳 15 秒。" },
+  ],
+};
+let coachStage = "pre";   // "pre" 连接前 / "post" 连接后 / "all" 设置里手动整段重看
+let coachSteps = COACH_HELP.pre;
 let coachStep = 0;
+const coachKeyOf = (stage) => (stage === "post" ? COACH_KEY_POST : COACH_KEY_PRE);
+function coachSeen(stage) { return localStorage.getItem(coachKeyOf(stage)) === "1"; }
+function coachMarkSeen(stage) { return localStorage.setItem(coachKeyOf(stage), "1"); }
+function coachOpen() { return !$("#coachMark").classList.contains("hidden"); }
+let postCoachPending = false;
+// 连接后才引导：connect() 成功后那次 renderStatus、以及开着页面就连着时的 boot 首帧都会
+// 走到这。shepherd.js 的 beforeShowPromise 是同一招——前置条件不成立就不出场。
+function maybePostCoach() {
+  if (postCoachPending || coachOpen() || coachSeen("post") || !status.connected) return;
+  postCoachPending = true;
+  // 等本轮 renderStatus 把剩余 DOM 收尾（输入法查询、设备 chips）再量尺寸，不然光圈会对到
+  // 还没稳定的布局上；首屏那一下顺带等一次绘制
+  setTimeout(() => {
+    postCoachPending = false;
+    if (!coachOpen() && status.connected) startCoach("post");
+  }, 400);
+}
 
 function showCoachStep(i) {
   coachStep = i;
-  const st = COACH_STEPS[i];
+  const st = coachSteps[i];
   // 目标可能在另一个 tab 的面板里，先切过去再量尺寸（class 切换后同步读 rect 会触发重排，拿到的是新值）
   document.querySelector(`.tab[data-tab="${st.tab}"]`)?.click();
   const el = $(st.sel);
-  if (!el) return finishCoach();
-  const r = el.getBoundingClientRect();
+  // 目标此刻不可见（没开始播、Apple TV 没有这张卡）：学 driver.js 找不到目标就退到 0×0
+  // dummy element——跳过这一步，别让光圈空打在页面上；后面没步了就顺势收尾
+  const r = el && el.offsetParent !== null ? el.getBoundingClientRect() : null;
+  if (!r || r.width < 1 || r.height < 1) {
+    return i + 1 < coachSteps.length ? showCoachStep(i + 1) : finishCoach();
+  }
   const pad = 8;
   const spot = $("#coachSpot");
   spot.style.left = (r.left - pad) + "px";
@@ -198,9 +236,9 @@ function showCoachStep(i) {
   $("#coachTitle").textContent = st.title;
   $("#coachDesc").textContent = st.desc;
   $("#coachIdx").textContent = i + 1;
-  $("#coachTotal").textContent = COACH_STEPS.length;
   $("#coachPrevBtn").classList.toggle("hidden", i === 0);
-  $("#coachNextBtn").textContent = i === COACH_STEPS.length - 1 ? "完成" : "下一步";
+  $("#coachTotal").textContent = coachSteps.length;
+  $("#coachNextBtn").textContent = i === coachSteps.length - 1 ? "完成" : "下一步";
   // 说明卡优先吸附目标下方，下方放不下（矮屏/目标在底部）就翻到上方
   const card = $("#coachCard");
   const ch = card.offsetHeight || 180;
@@ -208,23 +246,34 @@ function showCoachStep(i) {
     ? r.bottom + pad + 12
     : Math.max(12, r.top - pad - 12 - ch)) + "px";
 }
-function startCoach() {
+// stage: "pre" 连接前 / "post" 连接后 / "all" 设置里手动整段重看
+function startCoach(stage) {
+  coachStage = stage || (status.connected ? "post" : "pre");
+  coachSteps = coachStage === "all" ? COACH_HELP.pre.concat(COACH_HELP.post) : COACH_HELP[coachStage];
+  coachStep = 0;
   openModal("#coachMark");
   showCoachStep(0);
 }
+function markCoachStage() {
+  if (coachStage === "all") { coachMarkSeen("pre"); coachMarkSeen("post"); }
+  else coachMarkSeen(coachStage);
+}
 function finishCoach() {
-  localStorage.setItem(COACH_KEY, "1");   // 看完/跳过/Esc 都算数，别反复骚扰
+  markCoachStage();   // 看完/跳过/Esc 都算数，别反复骚扰
+  const chained = coachStage === "pre" && status.connected && !coachSeen("post");
   closeModal("#coachMark");
+  // 刚教完「怎么连」就已经连上了：顺势接上「怎么用」，不用等刷新或下一次 8s 轮询
+  if (chained) setTimeout(maybePostCoach, 400);
 }
 $("#coachNextBtn").addEventListener("click", () => {
   buzz();
-  if (coachStep >= COACH_STEPS.length - 1) return finishCoach();
+  if (coachStep >= coachSteps.length - 1) return finishCoach();
   showCoachStep(coachStep + 1);
 });
 $("#coachPrevBtn").addEventListener("click", () => { buzz(); showCoachStep(coachStep - 1); });
 $("#coachSkipBtn").addEventListener("click", finishCoach);
 // Esc/通用路径关掉也算看过——监听 closeModal 广播的 modalclosed
-$("#coachMark").addEventListener("modalclosed", () => localStorage.setItem(COACH_KEY, "1"));
+$("#coachMark").addEventListener("modalclosed", markCoachStage);
 // 引导开着时窗口尺寸变化/内部滚动要重新对光
 const repositionCoach = () => {
   if (!$("#coachMark").classList.contains("hidden")) showCoachStep(coachStep);
@@ -1105,6 +1154,9 @@ function renderStatus(s) {
 
   // 已配对的 Apple TV（未连接当前页也展示）
   if (isApple || !s.current) renderAtvKnown(s);
+
+  // 连接上了就补「连接后」那一段引导（connect() 回来的这次渲染走这儿最合适）
+  maybePostCoach();
 }
 
 async function connect(target) {
@@ -1887,7 +1939,7 @@ $("#clearMacrosBtn").addEventListener("click", () => {
   loadMacros();
   toast("自定义宏已清空", true);
 });
-$("#coachBtn").addEventListener("click", () => startCoach());   // 随时能重看引导
+$("#coachBtn").addEventListener("click", () => startCoach("all"));   // 随时能整段重看
 
 /* ---------------- 主题 ----------------
    默认跟随系统（prefers-color-scheme），但看电视常在暗房间、手机却是浅色模式——
@@ -1943,5 +1995,9 @@ renderPhrases();
 renderHist();
 refreshStatus();
 // 首次使用：等首屏渲染稳定后自动开始引导（跳过/看完都会记住，不再自动弹）
-if (localStorage.getItem(COACH_KEY) !== "1") setTimeout(startCoach, 600);
+// 按当前连接状态选段落：没连上教「怎么连」，已经连着直接教「怎么用」
+setTimeout(() => {
+  if (status.connected) maybePostCoach();
+  else if (!coachSeen("pre")) startCoach("pre");
+}, 600);
 setInterval(() => { if (pageVisible) refreshStatus(); }, 8000);
