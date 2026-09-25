@@ -41,6 +41,16 @@ const imeState = { installed: false, enabled: false, current: false, default_ime
 // 只有 curl / <img> / 下载链接这类发不出自定义头的场景才需要拼进 URL。
 const TOKEN_HDR = ATV_TOKEN ? { "X-ATV-Token": ATV_TOKEN } : {};
 
+/* 触觉反馈（A5）：按键有 50–200ms 网络延迟，「按没按上」不确定，按下瞬间先震一下。
+   只在按下时给（不等服务器回包，否则失去意义）；平台不支持 navigator.vibrate 时静默 no-op。
+   默认开，设置弹窗里可关（偏好存 localStorage）。 */
+const HAPTIC_KEY = "atv.haptics";
+function hapticEnabled() { return localStorage.getItem(HAPTIC_KEY) !== "0"; }
+function buzz(ms = 8) {
+  if (!hapticEnabled()) return;
+  try { navigator.vibrate && navigator.vibrate(ms); } catch (e) { /* 桌面/无硬件忽略 */ }
+}
+
 async function api(path, body) {
   const init = { headers: { ...TOKEN_HDR } };
   if (body) {
@@ -475,6 +485,7 @@ function renderStatus(s) {
   // 清空 / 搜索键走 ADBKeyboard 广播，Apple TV 没有这回事
   $("#kbTools").classList.toggle("hidden", isApple);
 
+  if (s.version) $("#verHint").textContent = "ATV Remote v" + s.version + " · 数据只存在本机浏览器";
   // 睡眠定时状态（倒计时本地走秒，这里只负责发现 set/cancel 的变化）
   renderSleepTimer(s.sleep_timer);
   renderMacroState(s.macro || { running: false });
@@ -873,6 +884,7 @@ $$("[data-key]").forEach((btn) => {
   btn.addEventListener("pointerdown", (e) => {
     if (e.pointerType === "mouse" && e.button !== 0) return;
     stopActiveHold();                 // 换键重按：先停掉上一个
+    buzz();                           // 先震后发：延迟由网络决定，反馈不能等
     sendKey(code);
     btn.classList.add("pressed");     // 按压态全程保持，stop() 里摘掉
     if (!HOLD_KEYS.has(code)) return;
@@ -884,7 +896,9 @@ $$("[data-key]").forEach((btn) => {
   // click 只服务键盘可达性（Enter/Space，detail===0）；指针点击已在 pointerdown 发过。
   // 用 detail 而不是时间戳判重：慢按（按住 200ms 再松）会越过任何时间窗，双重发送。
   btn.addEventListener("click", (e) => {
-    if (e.detail === 0) sendKey(code);
+    if (e.detail !== 0) return;
+    buzz();
+    sendKey(code);
   });
 });
 
@@ -1137,6 +1151,44 @@ document.addEventListener("visibilitychange", () => {
   pageVisible = !document.hidden;
   if (pageVisible) refreshStatus();
 });
+
+/* ---------------- App 设置 ----------------
+// 偏好全部存 localStorage：这些是「这一侧浏览器」的设置，与电视无关，不进 state.json。
+// 第一版只放震动开关与清空本地数据；以后要加偏好都往这个弹窗里挂。 */
+function renderHapticBtn() {
+  const b = $("#hapticBtn");
+  const on = hapticEnabled();
+  b.textContent = on ? "开" : "关";
+  b.setAttribute("aria-pressed", on ? "true" : "false");
+  b.classList.toggle("on", on);
+}
+$("#hapticBtn").addEventListener("click", () => {
+  localStorage.setItem(HAPTIC_KEY, hapticEnabled() ? "0" : "1");
+  renderHapticBtn();
+  if (hapticEnabled()) buzz(20);   // 打开时立刻震一下，让用户知道效果
+});
+$("#clearPhrasesBtn").addEventListener("click", () => {
+  localStorage.removeItem(PHRASE_KEY);
+  phrases = DEFAULT_PHRASES.slice();
+  renderPhrases();
+  $("#phraseCount").textContent = phrases.length;
+  toast("常用短语已重置为默认", true);
+});
+$("#clearMacrosBtn").addEventListener("click", () => {
+  localStorage.removeItem(MACRO_LS);
+  loadMacros();
+  toast("自定义宏已清空", true);
+});
+$("#appSettingsBtn").addEventListener("click", () => {
+  $("#phraseCount").textContent = phrases.length;
+  renderHapticBtn();
+  $("#settingsModal").classList.remove("hidden");
+});
+$("#settingsCloseBtn").addEventListener("click", () => $("#settingsModal").classList.add("hidden"));
+$("#settingsModal").addEventListener("click", (e) => {
+  if (e.target === $("#settingsModal")) $("#settingsModal").classList.add("hidden");
+});
+
 applyPrivacy();
 renderPhrases();
 refreshStatus();

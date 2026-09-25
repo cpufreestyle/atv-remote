@@ -485,6 +485,7 @@ def make_status():
         },
         "sleep_timer": timer_state(),
         "macro": macro_state(),
+        "version": app_version(),
         "auto_reconnect": {
             "active": _auto_reconn["active"],
             "stopped": _auto_reconn["stopped"],
@@ -1178,6 +1179,18 @@ PRESET_MACROS = [
     {"id": "volume-down3", "icon": "🔉", "name": "音量降 3 格",
      "steps": [{"type": "key", "codes": [25, 25, 25]}]},
 ]
+
+
+def app_version():
+    """根目录 VERSION 的 versionName；读不到就返回空串（前端隐藏版本行）。
+    设置弹窗显示它，用户报障时能直接读出在跑哪个版本。"""
+    try:
+        for line in (ROOT / "VERSION").read_text("utf-8").splitlines():
+            if line.startswith("versionName="):
+                return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
 
 
 def macro_state():

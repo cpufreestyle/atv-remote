@@ -25,6 +25,7 @@
         <h1>ATV Remote</h1>
         <div class="sub"><span id="dot" class="dot off"></span><span id="tvInfo">未连接</span></div>
       </div>
+      <button id="appSettingsBtn" class="btn tiny gear" title="设置（震动反馈 / 清空本地数据）" aria-label="设置">⚙</button>
     </div>
 
     <div class="devtabs">
@@ -225,6 +226,20 @@
 </div>
 
 <div id="toast" class="hidden" role="status" aria-live="polite"></div>
+
+<div id="settingsModal" class="modal hidden">
+  <div class="mbox">
+    <h2 class="settitle">⚙ 设置</h2>
+    <div class="setrow"><span>按键震动反馈</span>
+      <button id="hapticBtn" class="btn tiny" aria-pressed="true">开</button></div>
+    <div class="setrow"><span>常用短语（<span id="phraseCount">0</span> 条）</span>
+      <button id="clearPhrasesBtn" class="btn tiny danger">清空</button></div>
+    <div class="setrow"><span>自定义宏</span>
+      <button id="clearMacrosBtn" class="btn tiny danger">清空</button></div>
+    <p class="hint" id="verHint"></p>
+    <div class="brow center"><button id="settingsCloseBtn" class="btn primary">完成</button></div>
+  </div>
+</div>
 
 <div id="shotModal" class="modal hidden">
   <div class="mbox">
