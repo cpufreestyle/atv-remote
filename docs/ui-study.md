@@ -431,3 +431,27 @@ onAdd 前置追加、getAll 截 limit、有查询时大小写不敏感子串过�
   ③ 隐私模式整行隐藏且「secret-pw」录不进存储、关闭恢复可见、✕ 删单条 2→1、
   🗑 清空回 []。
 - node --check static/app.js 过；./sync-native.sh 全绿（87 单测，副本一致）。
+# 第12轮：Now Playing 快退/快进 ±15s（2026-09-26）
+
+## 学习源
+Plyr（sampotts/plyr，MIT）src/js/controls.js + defaults.js：
+① seekTime 默认 10s 的固定偏移 seek，不做任意 scrub，标签显式带秒数（Rewind 10s）；
+② 直播/无时长（hls.js/dash.js 用 2**32 哨兵值）时隐藏进度、不给 seek 控件；
+③ rewind / fast-forward 与手势互补，作为显式单步操作。
+
+## 设计
+- npmeta 内两个 tiny 按钮 ⏪15 / ⏩15，点击走 sendKey(89) / sendKey(90)（后端无精确 seek，透传 media key）。
+- npSeekSync()：seekable = !!(NP.shown && NP.duration)；false 时容器切 noseek class（变暗 + pointer-events:none）并禁用两按钮；true 时还原。renderNowPlaying 的 show / !show 两个分支都调用。
+- seek 后 setTimeout(refreshNowPlaying, 800) 回读真值；与触摸板双指横滑（隐式连发）互补不重复。
+- 无 duration 的直播流：禁用而非报错，用户点不到、也不会触发无用按键。
+
+## 踩到的坑
+- adb 没有精确 seek，实际幅度取决于当前 App；标签照 Plyr 带秒数，语义诚实，不假装精确。
+- apply_patch 上下文行必须在当前文件里连续：本轮所有匹配失败都是自己先前的探针补丁破坏了相邻性，写大补丁前先 sed -n 看准原文，探针与正式补丁别交错。
+- 同一文件多个 *** Update File: 段会被拒（multiple operations target <file>），同文件要合并成一个段 + 多个 @@ hunk。
+- 「音量 OSD」是多行块注释的首行，行尾没有 */。
+- CDP Runtime.evaluate 里别写 repl 作用域的 document（报 document is not defined），也别用自造的 _.result；用 IIFE 直接 return。
+
+## 验证
+- node --check static/app.js OK；./sync-native.sh 全绿（副本同步 + 87 单测 OK）。
+- CDP 实测：点击 #npSeekBack / #npSeekFwd 日志 → keyevent 89 / → keyevent 90 无 ⚠；直播路径 renderNowPlaying({...duration:0}) → 双禁用 + class npseek noseek + npTime 空；refreshNowPlaying() 恢复 enabled（1:02 / 3:33, Rick Astley）。截图交付用户。
