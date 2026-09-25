@@ -874,3 +874,74 @@ script 实体只回答「跑到哪了」，trace 再回答「每一步发生了�
   - C 的品红盒落 CSS x 844..870 × y 299..325，与 top:1px/right:5px 相对按钮严丝合缝
     （position:relative 挂在 .dk.remapped 上，未改绑时 computed position 是 static）；
   - 落盘 /tmp/atv-keymap-dot.png（键 19 带点 / 键 20 无点对比，270×560，点区 65 个强蓝像素）。
+
+## 第十九轮：学 Ansible `--check` / Terraform `plan` 的「计划=执行」同源契约 → 宏预演 dry-run（1.22.0 / versionCode 23）
+
+### 学习源
+- Ansible `--check`：dry-run 不另写一套规则，而是复用同一批 handler，把「执行」换成「将要执行」。
+- Terraform `plan`：plan 与 apply 共享同一份 HCL + state 求值路径，plan 的输出就是对执行的承诺。
+- 共同点：**预览的规则必须和执行的规则同源**。自己另抄一份规则的预览比没有预览更糟——它说
+  「没问题」而真跑失败，用户就再也不会信任何预览。
+
+### 为什么选它
+第 17/18 轮把按键和宏编辑器做厚之后，宏成了站内最重的「盲发」入口：20 步 × 每步最多 10s 延时，
+拼错包名、键码写成 `abc`、忘装 ADBKeyboard 打中文——错误只在点了「运行」几秒后才从 stderr 冒出来，
+而宏是异步线程跑的，请求早就返回 200。把「运行时才发现」提前成「编辑时就知道」，是这一轮的事。
+
+### 设计
+- 点「🔍 预演」（⌘/Ctrl+Enter）不发请求、不碰设备：本地把宏按服务端 `validate_macro_steps`
+  （server.py:1409）的同一套规则静态过一遍，逐行 ✓/⚠/✕ + 备注 + 预计耗时。
+- 常量 FE/BE 一一对应，测试逐项比对（改一边忘另一边就红）：`MACRO_MAX_STEPS`/20、
+  `MACRO_MAX_DELAY`/10000、`MAX_KEYCODES`/32、`MAX_TEXT_LEN`/5000、`MACRO_STEP_TYPES`、`APP_ID_RE`。
+- 环境只回答「本地能回答的问题」：`imeCurrent`（当前是不是 ADBKeyboard）、`knownPkgs`（APPS +
+  Now Playing 常见包名）。未知包名给 ⚠ 不给 ✕——「装没装」由设备回答，与服务端口径一致。
+- 代码分两段、marker `/* ===== macro-dry-run:begin/end ===== */` 隔开：**纯函数段**（规则，可整段搬进
+  node harness 与 Python 测试）+ **DOM 胶水**（取环境、渲染）。纯函数段禁 DOM/localStorage/fetch，有测试盯着。
+
+### 落地
+- static/index.html：宏编辑器按钮行加 `#macroDryBtn`（title 写明「本地静态检查，不发送、不执行」），
+  其后 `#macroDry`（`aria-live="polite"`）与「预演不执行任何操作」hint。预演与「运行」并排而不是藏进
+  折叠——它必须比运行更好点。
+- static/app.js：+约 190 行。`macroDryRun(m, env)` 返回 `{rows, errs, warns, steps, totalMs, ok}`；
+  行内容全部 textContent（设备名/IP 禁 innerHTML 的同源纪律）。
+- static/style.css：「宏预演（dry-run）」段，全语义色（--ok-text/--warn-text/--danger-text），无 hex；
+  汇总左侧一道 danger/warn 描边。
+- tests/macro_dryrun_harness.js（新）：从 app.js 抽纯函数段 `new Function` 执行，17 用例
+  → `ALL_DRYRUN_CASES_PASSED`。真行为在这儿给证据，不靠读代码。
+- tests/test_macro_dryrun.py（新）：14 个测试——Markup 契约 / WiringAndPurity / ServerParity
+  （常量逐项比对）/ HarnessBehavior（subprocess 跑 node）/ Style / SelectorDrift。
+- VERSION：versionName=1.22.0 / versionCode=23。
+
+### 踩到的坑
+- **CDP 抓到一个只有真点才现的 bug**：`macroShowDryRun()` 的 JSON 解析失败分支有
+  `box.classList.remove("hidden")`，成功渲染分支忘了——DOM 全渲染好了、面板还带着 hidden，用户点
+  「预演」什么都没发生，而单测（断言 markup + harness 纯函数）一片绿。修法是在成功路径补上，并加
+  `test_panel_unhidden_on_both_paths` 数这个函数里 `classList.remove` 出现次数必须为 2。
+  教训：**「内容对不对」和「用户看不看得见」是两件事，后者只能靠浏览器里真点。**
+- 第二个真 bug：延时超限时把 `dl.warn + "；"` 直接拼进备注，没有后续备注时就留下尾部分隔符
+  （「会被钳到 10s；」）。改成 notes 数组 join，harness 里断言整串相等。
+- harness 立抓 `String(c).lstrip("-")`：那是 Python 不是 JS，静态规则段根本跑不起来。JS 用
+  `/^[0-9]+$/.test(String(c).replace(/^-+/, ""))`——注意与服务端 `str(c).lstrip("-").isdigit()`
+  并不等价（服务端对 `-25` 放行、设备会失败），FE 端按「服务端口径 + 已知设备失败模式」双列，-25 给 ⚠。
+- harness 下标假设：有 name 的宏没有顶层行（顶层行只在 name 缺失时出现），照搬「rows[0] 是汇总」直接错位。
+- server.py 常量带行尾注释（`MACRO_MAX_DELAY = 10000      # 单步延时上限 ms`），测试比对前要
+  `split("#")[0]`；FE 端 `//` 注释也要剥——两边注释风格不同，容易只剥一边（这次就漏了服务端）。
+- harness 的汇总输出没有空格（`{"total":17,"failed":0}`），测试正则按 `{"total": 17, ...}` 写匹配不上。
+- `tail` 后接 `echo $?` 判退出码会被管道吃掉，unittest 结果看 `OK` 字样。
+- CDP 派发按键仍只派 pointerdown/pointerup（第十八轮教训复用）。
+
+### 验证
+- node --check static/app.js、python3 -c 'import server; import atv_backend' 通过。
+- ./check.sh + ./sync-native.sh：145 单测 OK（新增 14）+ 内嵌副本逐字节一致 → ALL CHECKS PASSED。
+- CDP 实测（fake adb，http://127.0.0.1:8411/，unregister SW + reload ignoreCache）：
+  - 错误宏（`["abc"]` 键码 + 中文无 ADBKeyboard + 未知包名 + delay 99999）→ 点预演 →
+    `#macroDry` 现身，汇总 `✕ 4 步 · 预计约 12.2s · 1 处会被服务端拒绝 · 4 处提醒`，
+    5 行级别 [warn, err, warn, warn, warn]，备注逐条对得上；
+  - **零副作用双证据**：fetch hook `window.__cmd` = 0，且 CDP `Network.requestWillBeSent` 里
+    POST `/api/cmd` 计数为 0（预演期间与前后 delta 都是 0）；
+  - Ctrl+Enter 在 `#macroText` 上同样触发；坏 JSON 走「⚠ JSON 解析失败」分支；
+  - 干净宏（YouTube + 键码 85）→ `✓ 2 步 · 预计约 1.4s——可以放心跑`；
+  - 计算样式：汇总 err 底 rgb(34,37,43) / 前景 rgb(244,113,118) / 12.5px / 左侧 rgb(215,66,71) 描边；
+    warn 行 glyph rgb(246,194,90)、err 行 rgb(244,113,118)；面板 436×186 CSS px，
+    无横向溢出（scrollW == clientW == 1200）；
+  - 落盘 /tmp/atv-dryrun.png、/tmp/atv-dryrun-ok.png（2400×3816@2x 全页）。
