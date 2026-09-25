@@ -397,3 +397,37 @@ Android TV / Google TV 官方遥控与 Apple TV Remote：按音量键立刻弹�
 - curl -D - /static/sw.js 有 Service-Worker-Allowed: /；manifest 为
   application/manifest+json。
 - ./check.sh 全绿（87 单测）+ ./sync-native.sh 副本一致。
+
+# 第11轮：键盘输入历史（2026-09-26）
+
+## 学习源
+npm @algolia/autocomplete-plugin-recent-searches@1.19.11（dist/esm 源码）：submit 时
+onAdd 前置追加、getAll 截 limit、有查询时大小写不敏感子串过滤、localStorage 先试写
+探测可用性（Safari 隐私模式 setItem 会抛）。补它的缺口：trim + 去重（它的去重靠
+服务端 Query Suggestions 插件配合）；隐私模式整行隐藏 + 不记录。
+
+## 设计
+- #phraseRow 后加一行 #histRow：最近 N=10 条发送过的文本（单条截 200 字符），chip
+  点击回填 #textInput 并聚焦，✕ 删单条，🗑 清空；输入框打字时按大小写不敏感子串
+  收窄，无匹配整行隐藏。
+- 数据结构就 atv.kbhist 一个 string[]，写入走 histSave() 试写容错；不进 state.json
+  （敏感文件不放可编辑内容）的纪律与自定义宏一致。
+- 历史文本一律 textContent 渲染（同 phrase chips），不碰 innerHTML。
+
+## 踩到的坑
+- Algolia 那个插件**不去重**（去重靠服务端 Query Suggestions），本地版必须自己补
+  [t, ...filter(h!==t)]。
+- 隐私模式「整行隐藏」比「仅不记录」更稳：否则旁人点一下输入框就看见此前的记录。
+- chip 内层要再包一个 span（.hist-t）才能 ellipsis：flex 子项默认 min-width:auto，
+  不会小于内容宽。
+- CDP 行为流别在一条 evaluate 里塞 ~8 个 sleep（超时）；拆 3 段跑，每段少放 await。
+- iab 的 playwright.evaluate 只读沙箱没有 navigator / localStorage 副作用，行为断言
+  必须走 CDP Runtime.evaluate。
+- 无匹配过滤时 renderHist 会清空整行 innerHTML，行为脚本要在点 chip 前把输入框清回去。
+
+## 验证
+- CDP 实测三段全过：① 发送记录 + 最新在前 + 重复发送去重不增条 + localStorage 一致；
+  ② 「ep」「EVEN」大小写不敏感子串过滤、「zzz-nomatch」整行隐藏、chip 回填 + 聚焦；
+  ③ 隐私模式整行隐藏且「secret-pw」录不进存储、关闭恢复可见、✕ 删单条 2→1、
+  🗑 清空回 []。
+- node --check static/app.js 过；./sync-native.sh 全绿（87 单测，副本一致）。
