@@ -455,3 +455,32 @@ Plyr（sampotts/plyr，MIT）src/js/controls.js + defaults.js：
 ## 验证
 - node --check static/app.js OK；./sync-native.sh 全绿（副本同步 + 87 单测 OK）。
 - CDP 实测：点击 #npSeekBack / #npSeekFwd 日志 → keyevent 89 / → keyevent 90 无 ⚠；直播路径 renderNowPlaying({...duration:0}) → 双禁用 + class npseek noseek + npTime 空；refreshNowPlaying() 恢复 enabled（1:02 / 3:33, Rick Astley）。截图交付用户。
+# 第13轮：引导改为连接后才提示（2026-09-26）
+
+## 学习源
+- driver.js@1.3.1 dist/driver.js.iife.js（20322 B，jsdelivr 固定版本路径）：找不到目标元素时退到 0×0 的 driver-dummy-element，spotlight 绝不为空；API 面是 drive / moveNext / moveTo / isFirstStep / isLastStep / hasNextStep + stagePadding / stageRadius；onDestroyed 钩子用来做「关掉即持久化」。
+- shepherd.js@11.2.0 src/js/tour.js + src/js/step.js：tour 本质是 stage queue（addStep(options,index) / addSteps / getById(id) / show(key,forward) / next()，末尾自动 complete()）；关键在 Step.show() 是 beforeShowPromise().then(() => this._show())——步骤出不出场由前置条件决定，不是「进页面就全糊上来」。
+
+## 设计
+- 引导拆两段、key 分开存：COACH_KEY_PRE = atv.coached.pre（连接前只教连接），COACH_KEY_POST = atv.coached.post（连接后才教手势：长按连发 / 触摸板四手势 / 键盘遥控 / ⏪15⏩15）。看完、跳过、Esc 关掉都算看过（#coachMark 监听 closeModal 广播的 modalclosed 后 markCoachStage），之后不反复骚扰；设置里「重看一遍」= startCoach("all") 整段 5 步重放。
+- coachStage 三态 "pre" / "post" / "all"：startCoach(stage) 里 "all" = COACH_HELP.pre.concat(COACH_HELP.post)；markCoachStage 对 "all" 同时记两个 key，避免重看完还漏一段。
+- maybePostCoach()：postCoachPending 防重入 + coachOpen() + coachSeen("post") + status.connected 四道闸；过闸后 setTimeout 400ms 再出场，等本轮 renderStatus 把输入法查询、设备 chips 收尾后再量尺寸，光圈不会对到没稳定的布局上。挂点两处：renderStatus() 末尾（开着页面时连接成功就靠这次）与 boot 首帧（已连接走 maybePostCoach，未连接且没看过才 startCoach("pre")）。
+- finishCoach() 的 chained：引导期间用户自己去点了连接，刚教完「怎么连」就已经连着 → 400ms 后顺势接 post，不用等刷新或下一次 8s 轮询。
+- 隐藏目标跳步（showCoachStep）：目标 offsetParent === null 或 rect 宽高 < 1px → 后面还有步就 showCoachStep(i+1)，没有了就 finishCoach()。没东西在播时 npCard 整张收起，⏪15 那步自动消失；别家分支没有的卡同理——宁可少一步，也不把光圈空打在页面上。
+- 步骤带 tab 字段：showCoachStep 先点 .tab[data-tab=...] 再读 rect（class 切换后同步读会触发重排，拿到的是新值）；resize 与 capture 阶段 scroll 时 repositionCoach 重新对光。
+
+## 踩到的坑
+- apply_patch 的上下文行必须先核对原文：static/app.js:167 是多行注释块的首行，行尾并没有 */*（*/ 在第 171 行末尾），连续两次补丁失败都是自己臆造了行尾；补丁后必须 awk 回看结果区——第一版把 #coachPrevBtn 的 classList.toggle 那行写重了一份。
+- driver.js 的 master/dist/driver.js.iife.js 路径是 0 字节，必须用带版本号的 npm 路径（@1.3.1/dist/...）才拿得到真文件。
+- iab 里新开 tab 才是恢复被 URL 策略困住的 data: 错误页的正解：Page.navigate / Page.reload / tab.goto / tab.back / 点页面内「重新加载」在策略层视角里全是「当前页是 data: URL」而被一律拒绝，换 cua.createBrowserTab("iab", url) 新开标签页即可绕开（tab 天生带 cd / 含 Runtime.evaluate）。
+
+## 验证
+- node --check static/app.js、import server + atv_backend、./sync-native.sh（87 单测 OK + 副本逐字节一致）、./sync-native.sh --check 全绿。
+- CDP 实测 6 场景全过（fake adb + http://127.0.0.1:8411/）：
+  A 已连接 + 清 keys → reload → 出 post 第 1 步「方向键可以长按连发」1/4，光圈 262×262；
+  B 点「跳过」→ atv.coached.post=1 落盘 → reload 不再自动弹；
+  C 断开 + 清 keys → reload → 出 pre「连接电视」1/1，光圈 208×60；
+  D 跳过 pre 后连接 192.168.9.9:5555 成功 → 400ms 后自动接上 post 第 1 步（chained）；
+  E 设置「重看一遍」→ stage "all" 共 5 步，顺序为 连接电视 → 方向键长按连发 → 触摸板四种手势 → 直接用键盘遥控 → ⏪15/⏩15 快进快退；
+  F 隐藏 #touchpad 后 showCoachStep(2) → 直接跳到第 4 步「直接用键盘遥控」；隐藏 #npSeek 后 showCoachStep(4) → finishCoach() 收尾、弹窗关闭、key 落盘。
+- 截图交付：post 第 1 步、chained 连接成功接 post、常态 UI。
