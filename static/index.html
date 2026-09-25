@@ -239,8 +239,24 @@
       <button id="clearPhrasesBtn" class="btn tiny danger">清空</button></div>
     <div class="setrow"><span>自定义宏</span>
       <button id="clearMacrosBtn" class="btn tiny danger">清空</button></div>
+    <div class="setrow"><span>使用指引</span>
+      <button id="coachBtn" class="btn tiny">查看</button></div>
     <p class="hint" id="verHint"></p>
     <div class="brow center"><button id="settingsCloseBtn" class="btn primary" data-autofocus>完成</button></div>
+  </div>
+</div>
+
+<div id="coachMark" class="modal hidden coach" role="dialog" aria-modal="true" aria-label="使用指引">
+  <div class="spotlight" id="coachSpot"></div>
+  <div class="coachcard" id="coachCard">
+    <div class="coachstep"><span id="coachIdx">1</span> / <span id="coachTotal">4</span></div>
+    <h2 class="settitle" id="coachTitle"></h2>
+    <p class="hint" id="coachDesc"></p>
+    <div class="brow center">
+      <button id="coachSkipBtn" class="btn tiny">跳过</button>
+      <button id="coachPrevBtn" class="btn tiny hidden">上一步</button>
+      <button id="coachNextBtn" class="btn tiny primary" data-autofocus>下一步</button>
+    </div>
   </div>
 </div>
 

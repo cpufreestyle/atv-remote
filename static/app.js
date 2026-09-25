@@ -132,6 +132,7 @@ function closeModal(sel) {
   if (!openModals.length) document.body.style.overflow = "";
   // 焦点还给打开弹窗的那个按钮（读屏用户不会「弹窗一关就丢了位置」）
   if (lastModalTrigger && lastModalTrigger.focus) lastModalTrigger.focus();
+  el.dispatchEvent(new CustomEvent("modalclosed"));   // 给有「关闭即持久化」需求的弹窗用
 }
 
 // capture 阶段拦截：弹窗开着时电视导航键不许穿透
@@ -162,6 +163,74 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Enter" || e.key === " ") e.stopPropagation();
   else { e.preventDefault(); e.stopPropagation(); }
 }, true);
+
+/* ---------------- 首次使用引导（coach mark） ----------------
+   对标 Material 的 feature discovery：暗场里只留目标元素一块光圈 + 吸附说明卡。
+   双指手势、长按滚动这类隐形能力不引导根本发现不了，所以首次进页面自动走一遍，
+   看完/跳过/Esc 关掉都记一刀（localStorage），之后随时能从设置里重看。 */
+const COACH_KEY = "atv.coached";
+const COACH_STEPS = [
+  { tab: "dpad", sel: "#targetInput", title: "连接电视",
+    desc: "输入电视 IP 点「连接」；连过的地址会留在下方芯片里，点一下就能重连。" },
+  { tab: "dpad", sel: ".dpad", title: "方向键可以长按连发",
+    desc: "方向、音量、seek 键按住 450ms 后会连续发送——滚列表、调音量不用点到手酸。" },
+  { tab: "pad", sel: "#touchpad", title: "触摸板的四种手势",
+    desc: "轻点 = 点击、拖动 = 滑动；✌️ 双指上下滑 = 音量、左右滑 = 快进，双轻点 = 播放/暂停；单指长按 = 连续滚动。" },
+  { tab: "pad", sel: "#textInput", title: "直接用键盘遥控",
+    desc: "点一下页面空白处：方向键移动、回车 = OK、Esc = 返回、退格 = 删除、媒体键控制播放；在输入框里打字则作为文本发送。" },
+];
+let coachStep = 0;
+
+function showCoachStep(i) {
+  coachStep = i;
+  const st = COACH_STEPS[i];
+  // 目标可能在另一个 tab 的面板里，先切过去再量尺寸（class 切换后同步读 rect 会触发重排，拿到的是新值）
+  document.querySelector(`.tab[data-tab="${st.tab}"]`)?.click();
+  const el = $(st.sel);
+  if (!el) return finishCoach();
+  const r = el.getBoundingClientRect();
+  const pad = 8;
+  const spot = $("#coachSpot");
+  spot.style.left = (r.left - pad) + "px";
+  spot.style.top = (r.top - pad) + "px";
+  spot.style.width = (r.width + pad * 2) + "px";
+  spot.style.height = (r.height + pad * 2) + "px";
+  $("#coachTitle").textContent = st.title;
+  $("#coachDesc").textContent = st.desc;
+  $("#coachIdx").textContent = i + 1;
+  $("#coachTotal").textContent = COACH_STEPS.length;
+  $("#coachPrevBtn").classList.toggle("hidden", i === 0);
+  $("#coachNextBtn").textContent = i === COACH_STEPS.length - 1 ? "完成" : "下一步";
+  // 说明卡优先吸附目标下方，下方放不下（矮屏/目标在底部）就翻到上方
+  const card = $("#coachCard");
+  const ch = card.offsetHeight || 180;
+  card.style.top = (r.bottom + pad + 12 + ch < innerHeight
+    ? r.bottom + pad + 12
+    : Math.max(12, r.top - pad - 12 - ch)) + "px";
+}
+function startCoach() {
+  openModal("#coachMark");
+  showCoachStep(0);
+}
+function finishCoach() {
+  localStorage.setItem(COACH_KEY, "1");   // 看完/跳过/Esc 都算数，别反复骚扰
+  closeModal("#coachMark");
+}
+$("#coachNextBtn").addEventListener("click", () => {
+  buzz();
+  if (coachStep >= COACH_STEPS.length - 1) return finishCoach();
+  showCoachStep(coachStep + 1);
+});
+$("#coachPrevBtn").addEventListener("click", () => { buzz(); showCoachStep(coachStep - 1); });
+$("#coachSkipBtn").addEventListener("click", finishCoach);
+// Esc/通用路径关掉也算看过——监听 closeModal 广播的 modalclosed
+$("#coachMark").addEventListener("modalclosed", () => localStorage.setItem(COACH_KEY, "1"));
+// 引导开着时窗口尺寸变化/内部滚动要重新对光
+const repositionCoach = () => {
+  if (!$("#coachMark").classList.contains("hidden")) showCoachStep(coachStep);
+};
+addEventListener("resize", repositionCoach);
+addEventListener("scroll", repositionCoach, true);
 
 function flashKey(code) {
   const btn = document.querySelector(`[data-key="${code}"]`);
@@ -1377,6 +1446,7 @@ $("#clearMacrosBtn").addEventListener("click", () => {
   loadMacros();
   toast("自定义宏已清空", true);
 });
+$("#coachBtn").addEventListener("click", () => startCoach());   // 随时能重看引导
 $("#appSettingsBtn").addEventListener("click", () => {
   $("#phraseCount").textContent = phrases.length;
   renderHapticBtn();
@@ -1390,4 +1460,6 @@ $("#settingsModal").addEventListener("click", (e) => {
 applyPrivacy();
 renderPhrases();
 refreshStatus();
+// 首次使用：等首屏渲染稳定后自动开始引导（跳过/看完都会记住，不再自动弹）
+if (localStorage.getItem(COACH_KEY) !== "1") setTimeout(startCoach, 600);
 setInterval(() => { if (pageVisible) refreshStatus(); }, 8000);

@@ -329,6 +329,26 @@ code {
 #toast.info { color: var(--accent-text); border-color: var(--accent-solid); }
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
+/* ---------- 首次使用引导（coach mark，对标 Material feature discovery） ----------
+   暗场里只给目标元素留一块光圈（spotlight 的巨型 box-shadow 充当遮罩），
+   说明卡吸附在目标下方/上方；新弹窗基础设施直接复用 .modal + openModal。 */
+.modal.coach { background: transparent; }        /* 遮罩交给 spotlight，别叠两层 */
+.spotlight {
+  position: fixed; border-radius: var(--r-lg); z-index: 41; pointer-events: none;
+  box-shadow: 0 0 0 9999px var(--scrim);
+  transition: top var(--dur) var(--ease), left var(--dur) var(--ease),
+              width var(--dur) var(--ease), height var(--dur) var(--ease);
+}
+.coachcard {
+  position: fixed; left: 50%; transform: translateX(-50%); z-index: 42;
+  width: min(320px, 88vw);
+  background: var(--card); border: 1px solid var(--accent); border-radius: var(--r-lg);
+  padding: var(--sp-4); box-shadow: var(--shadow-pop);
+  transition: top var(--dur) var(--ease);
+}
+.coachstep { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+.coachcard .hint { margin: 0 0 var(--sp-3); line-height: 1.7; text-align: left; }
+
 /* ---------- 设置弹窗 ---------- */
 .gear { margin-left: auto; font-size: 16px; }
 .settitle { font-size: 15px; margin: 0 0 6px; }
