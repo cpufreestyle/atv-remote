@@ -226,7 +226,7 @@ input:focus { border-color: var(--accent); }
   border-radius: var(--r-lg); display: flex; align-items: center; justify-content: center;
   touch-action: none; overflow: hidden;
 }
-#touchpad.dragging { border-color: var(--accent-solid); background: var(--accent-soft); }
+#touchpad.dragging, #touchpad.gesturing { border-color: var(--accent-solid); background: var(--accent-soft); }
 .padhint { color: var(--muted); font-size: 12.5px; pointer-events: none; text-align: center; padding: 0 var(--sp-3); }
 
 /* ---------- buttons ---------- */

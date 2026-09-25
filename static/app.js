@@ -558,9 +558,7 @@ function renderStatus(s) {
     lastImeTarget = imeTarget;
     refreshIme();
   }
-  $("#padHint").textContent = isApple
-    ? "轻点 = 点击 · 按住拖动 = 滑动（Apple TV 触控）"
-    : "轻点 = 点击 · 按住拖动 = 滑动（映射整块电视屏幕）";
+  $("#padHint").textContent = padHintText(isApple);
   $("#kbdHint").innerHTML = isApple
     ? '点一下页面空白处，然后直接用键盘遥控：<b>方向键</b> 移动 · <b>回车</b>=OK · <b>Esc</b>=返回 · <b>PageUp/Down</b> 快退/快进 · <b>媒体键</b> 播放控制。在输入框里打字则作为文本发送（支持中文）。'
     : '点一下页面空白处，然后直接用键盘遥控：<b>方向键</b> 移动 · <b>回车</b>=OK · <b>Esc</b>=返回 · <b>退格</b>=删除 · <b>PageUp/Down</b> 翻页 · <b>媒体键</b> 播放控制。在输入框里打字则作为文本发送。';
@@ -1095,23 +1093,93 @@ $$(".tab").forEach((t) => {
   });
 });
 
-/* ---------------- 触摸板 ---------------- */
+/* ---------------- 触摸板 ----------------
+   单指：轻点=点击、拖动=滑动（映射整块屏幕）。
+   双指（参照桌面触控板/Google TV 遥控的手势惯例）：上下滑=音量、左右滑=快进快退，
+   每 GESTURE_STEP px 发一次键（sendKey 自带 90ms 节流，天然限速）；双指轻点=播放/暂停。
+   手势期间作废单指滑动——两根手指都抬起才结算，避免误触发。 */
 const pad = $("#touchpad");
-let ptr = null;
+const padHint = $("#padHint");
+/* 触摸板提示语的单一来源：renderStatus 每 8s 轮询也会写这个元素，
+   两处必须同文，否则手势说明会被轮询悄悄覆盖回旧文案。 */
+function padHintText(isApple) {
+  return "轻点 = 点击 · 拖动 = 滑动（" +
+    (isApple ? "Apple TV 触控" : "映射整块电视屏幕") +
+    "）· ✌️ 双指上下滑=音量、左右滑=快进，双轻点=播放/暂停";
+}
+const GESTURE_STEP = 26;         // 双指每滑过 26px 发一次音量/seek
+let ptr = null;                  // 单指滑动状态
+const padPtrs = new Map();       // 按在触摸板上的指针（含单指）
+let gesture = null;              // 双指手势状态
+
 pad.addEventListener("pointerdown", (e) => {
   pad.setPointerCapture(e.pointerId);
   const r = pad.getBoundingClientRect();
-  ptr = { x0: e.clientX - r.left, y0: e.clientY - r.top, x1: e.clientX - r.left, y1: e.clientY - r.top, t0: performance.now() };
-  pad.classList.add("dragging");
+  padPtrs.set(e.pointerId, { x: e.clientX - r.left, y: e.clientY - r.top });
+  if (padPtrs.size === 2) {
+    // 第二根手指落下：进入双指手势，作废进行中的单指滑动
+    ptr = null;
+    const [a, b] = [...padPtrs.values()];
+    gesture = { t0: performance.now(), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2,
+                rx: 0, ry: 0, vol: 0, seek: 0, moved: false };
+    pad.classList.add("gesturing");
+    padHint.textContent = "✌️ 上下滑=音量 · 左右滑=快进";
+    buzz();
+  } else if (padPtrs.size === 1) {
+    ptr = { x0: e.clientX - r.left, y0: e.clientY - r.top, x1: e.clientX - r.left, y1: e.clientY - r.top, t0: performance.now() };
+    pad.classList.add("dragging");
+  }
 });
 pad.addEventListener("pointermove", (e) => {
-  if (!ptr) return;
   const r = pad.getBoundingClientRect();
-  ptr.x1 = e.clientX - r.left;
-  ptr.y1 = e.clientY - r.top;
+  if (padPtrs.has(e.pointerId)) padPtrs.set(e.pointerId, { x: e.clientX - r.left, y: e.clientY - r.top });
+  if (ptr) { ptr.x1 = e.clientX - r.left; ptr.y1 = e.clientY - r.top; }
+  if (!gesture || padPtrs.size < 2) return;
+  const [a, b] = [...padPtrs.values()];
+  const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
+  gesture.rx += cx - gesture.cx;
+  gesture.ry += cy - gesture.cy;
+  gesture.cx = cx; gesture.cy = cy;
+  if (Math.hypot(gesture.rx, gesture.ry) > 12) gesture.moved = true;
+  // 垂直：上滑(负)=音量增，下滑(正)=音量减
+  while (Math.abs(gesture.ry) >= GESTURE_STEP) {
+    const step = Math.sign(gesture.ry);
+    gesture.ry -= step * GESTURE_STEP;
+    gesture.vol += step;
+    sendKey(step < 0 ? 24 : 25);
+  }
+  // 水平：右滑(正)=快进，左滑(负)=快退
+  while (Math.abs(gesture.rx) >= GESTURE_STEP) {
+    const step = Math.sign(gesture.rx);
+    gesture.rx -= step * GESTURE_STEP;
+    gesture.seek += step;
+    sendKey(step > 0 ? 90 : 89);
+  }
+  padHint.textContent = gesture.vol
+    ? `${gesture.vol < 0 ? "🔊 音量 +" : "🔉 音量 -"}${Math.abs(gesture.vol)}`
+    : gesture.seek
+      ? `${gesture.seek > 0 ? "⏩ 快进 ×" : "⏪ 快退 ×"}${Math.abs(gesture.seek)}`
+      : "✌️ 上下滑=音量 · 左右滑=快进";
 });
-pad.addEventListener("pointerup", async () => {
-  if (!ptr) return;
+function endPadGesture() {
+  if (!gesture) return;
+  // 双指轻点（位移小、时间短）= 播放/暂停，比去点媒体键快一步
+  if (!gesture.moved && performance.now() - gesture.t0 < 350) {
+    sendKey(85);
+    padHint.textContent = "⏯ 播放/暂停";
+  }
+  gesture = null;
+  pad.classList.remove("gesturing");
+  setTimeout(() => { if (!gesture) padHint.textContent = padHintText(status.curType === "appletv"); }, 600);
+}
+pad.addEventListener("pointerup", async (e) => {
+  if (gesture) {                  // 手势中抬起任一指即结算，剩下那根手指不接续单指滑动
+    padPtrs.delete(e.pointerId);
+    endPadGesture();
+    return;
+  }
+  padPtrs.delete(e.pointerId);
+  if (!ptr) return;               // 单指滑动只在「一根手指按下又抬起」时结算
   pad.classList.remove("dragging");
   const { x0, y0, x1, y1, t0 } = ptr;
   ptr = null;
@@ -1138,7 +1206,12 @@ pad.addEventListener("pointerup", async () => {
     toast(e.message);
   }
 });
-pad.addEventListener("pointercancel", () => { ptr = null; pad.classList.remove("dragging"); });
+pad.addEventListener("pointercancel", (e) => {
+  padPtrs.delete(e.pointerId);
+  if (gesture) endPadGesture();
+  ptr = null;
+  pad.classList.remove("dragging");
+});
 
 /* ---------------- 截屏 / 画面 ---------------- */
 let shotUrl = null; // 上一次截屏的 blob URL，必须显式释放否则每次截屏都泄漏一张 PNG
