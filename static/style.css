@@ -241,6 +241,10 @@ input:focus { border-color: var(--accent); }
 }
 .nptime { font-size: 11px; color: var(--faint); margin-top: 3px; font-variant-numeric: tabular-nums; }
 .npcard #npToggle { flex: none; min-width: 44px; }
+.npseek { display: flex; gap: var(--sp-2); margin-top: 6px; }
+.npseekbtn { min-width: 52px; justify-content: center; font-variant-numeric: tabular-nums; }
+.npseek.noseek { opacity: .45; }
+.npseek.noseek .npseekbtn { pointer-events: none; }
 
 /* ---------- tabs ---------- */
 .tabs { display: flex; gap: var(--sp-1); margin-bottom: var(--sp-3); }

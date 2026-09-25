@@ -839,6 +839,7 @@ function renderNowPlaying(np) {
   if (!show) {
     NP.shown = false;
     card.classList.add("hidden");
+    npSeekSync();   // 收起卡片 / 直播无时长：快退快进一起禁用，别给点了没反应的按钮
     return;
   }
   NP.shown = true;
@@ -851,6 +852,7 @@ function renderNowPlaying(np) {
   $("#npSub").textContent = sub.join(" · ");
   $("#npToggle").textContent = np.playing ? "暂停" : "播放";
   npPaint();
+  npSeekSync();
 }
 
 async function refreshNowPlaying() {
@@ -866,6 +868,32 @@ $("#npToggle").addEventListener("click", async () => {
     await api("/api/cmd", { type: "key", code: 85 });   // 85 = 播放/暂停
     setTimeout(refreshNowPlaying, 500);   // 媒体状态切换有延迟，别读到旧缓存
   } catch (e) { toast(e.message); }
+});
+
+/* ---------------- Now Playing 快退 / 快进（±15s） ----------------
+   学 Plyr（MIT 开源播放器 src/js/controls.js）的三个决定：
+   1. 固定偏移 seek（seekTime，默认 10s）不做任意 scrub——电视端 adb 只能发系统
+      快退/快进键（89/90），幅度由当前 App 决定（YouTube ±10s，多数播放器 10–15s）。
+      所以按钮标签照 Plyr "Rewind 10s" 把秒数写在明处；与触摸板双指横滑（连发 89/90
+      按次数计）互补：那个隐式，这个显式一步。
+   2. Plyr 对直播/无时长（hls.js/dash.js 用 2**32 哨兵值）隐藏进度、不给 seek 控件。
+      本地同理：NP.duration 缺失时整行禁用变暗——直播里快退没有意义。
+   3. seek 后回读一次：media_session 更新有延迟，800ms 后拿真值校准本地进度，
+      不靠本地推算（seek 多远本地不知道）。 */
+function npSeekSync() {
+  const seekable = !!(NP.shown && NP.duration);
+  $("#npSeek").classList.toggle("noseek", !seekable);
+  $("#npSeekBack").disabled = !seekable;
+  $("#npSeekFwd").disabled = !seekable;
+}
+
+$("#npSeekBack").addEventListener("click", () => {
+  sendKey(89);
+  setTimeout(refreshNowPlaying, 800);   // seek 让本地缓存作废，回读真值
+});
+$("#npSeekFwd").addEventListener("click", () => {
+  sendKey(90);
+  setTimeout(refreshNowPlaying, 800);
 });
 
 /* ---------------- 音量 OSD（本地反馈） ----------------

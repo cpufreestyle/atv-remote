@@ -78,6 +78,11 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
           <div class="npsub" id="npSub"></div>
           <div class="npbar"><div class="npfill" id="npFill"></div></div>
           <div class="nptime" id="npTime"></div>
+          <!-- 快退 / 快进 ±15s：直播 / 无时长（NP.duration 缺失）时 JS 禁用整行 -->
+          <div class="npseek" id="npSeek">
+            <button class="btn tiny npseekbtn" id="npSeekBack" aria-label="快退">⏪15</button>
+            <button class="btn tiny npseekbtn" id="npSeekFwd" aria-label="快进">⏩15</button>
+          </div>
         </div>
         <button class="btn tiny" id="npToggle" aria-label="播放 / 暂停">暂停</button>
       </div>
