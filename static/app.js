@@ -308,6 +308,29 @@ function favResolve(list, apps, recent) {
 }
 /* ===== favorites:end ===== */
 
+/* ===== padsens:begin ===== */
+/* 触摸板灵敏度：学各遥控 App 的指针/滚动增益与游戏灵敏度滑条。双指手势每滑过
+   「基础步长 / 增益」px 发一次音量 / seek；单指长按按「基础间隔 / 增益」ms 发一次。
+   增益越大越跟手。纯函数可搬进 node 跑 harness；基础值与触摸板手势段常量一一对应。 */
+const PADSENS_KEY = "atv.padSens";
+const PADSENS_MIN = 0.5, PADSENS_MAX = 2, PADSENS_DEFAULT = 1;
+const PADSENS_BASE_STEP = 26;   // = GESTURE_STEP
+const PADSENS_BASE_RATE = 120;  // = PAD_HOLD_RATE
+const PADSENS_STEP_MIN = 8, PADSENS_STEP_MAX = 64;
+const PADSENS_RATE_MIN = 45, PADSENS_RATE_MAX = 400;
+function padSensClamp(gain) {
+  const n = (typeof gain === "number" && isFinite(gain)) ? gain : PADSENS_DEFAULT;
+  return Math.min(PADSENS_MAX, Math.max(PADSENS_MIN, Math.round(n * 20) / 20));
+}
+function padStepFor(gain) {
+  return Math.min(PADSENS_STEP_MAX, Math.max(PADSENS_STEP_MIN, Math.round(PADSENS_BASE_STEP / padSensClamp(gain))));
+}
+function padHoldRateFor(gain) {
+  return Math.min(PADSENS_RATE_MAX, Math.max(PADSENS_RATE_MIN, Math.round(PADSENS_BASE_RATE / padSensClamp(gain))));
+}
+function padSensLabel(gain) { return (Math.round(padSensClamp(gain) * 100) / 100).toString() + "×"; }
+/* ===== padsens:end ===== */
+
 /* ---- 通知队列 DOM 胶水：规则在上面纯函数段，这里只管渲染 / 计时 / 持久化 ---- */
 const notifQueue = [];
 let notifHistory = [];
@@ -344,7 +367,24 @@ function notifMount(n) {
   x.title = "关闭这条通知";
   x.setAttribute("aria-label", "关闭通知：" + n.msg);
   x.addEventListener("click", (e) => { e.stopPropagation(); notifDismiss(n, true); });
-  item.append(txt, x);
+  // 可撤销动作按钮（撤销 / 重试…）：插在文本与关闭键之间，只有带 act 的通知才有它
+  const kids = [txt];
+  if (n.act && n.act.text) {
+    const a = document.createElement("button");
+    a.className = "nact";
+    a.type = "button";
+    a.textContent = n.act.text;      // 文案来自我们自己的常量，永远不是局域网来的数据
+    a.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const act = n.act;
+      notifDismiss(n, true);         // 先收通知再跑回调，回调抛异常也不留一条死 toast
+      try { if (act && typeof act.onAction === "function") act.onAction(); }
+      catch (err) { /* 回调自己负责提示失败，这里只保证不冒泡成未捕获错误 */ }
+    });
+    kids.push(a);
+  }
+  kids.push(x);
+  kids.forEach((k) => item.append(k));
   n.el = item;
   box.prepend(item);               // 最新的在最上面
 }
@@ -372,14 +412,22 @@ function notifRender() {
 }
 
 // 只上屏、不入账：通知中心里点历史条目重新弹出时用
-function notifShow(msg, level) {
+// act = { text, onAction }：给了就多渲染一个动作按钮（撤销 Snackbar）；
+// 停留时长与 UNDO_MS 取 max，保证按钮永远先于反悔窗口本身消失。
+function notifShow(msg, level, act) {
   const box = $("#notifStack");
   if (!box) return null;
   const lv = notifNormLevel(level);
-  const n = { seq: ++notifSeq, msg: String(msg === null || msg === undefined ? "" : msg), level: lv, el: null, timer: 0 };
+  const n = {
+    seq: ++notifSeq,
+    msg: String(msg === null || msg === undefined ? "" : msg),
+    level: lv, el: null, timer: 0,
+    act: act && act.text && typeof act.onAction === "function"
+      ? { text: String(act.text), onAction: act.onAction } : null,
+  };
   notifQueue.push(n);
   notifRender();
-  n.timer = setTimeout(() => notifDismiss(n), notifDur(lv));
+  n.timer = setTimeout(() => notifDismiss(n), n.act ? Math.max(notifDur(lv), UNDO_MS) : notifDur(lv));
   return n;
 }
 
@@ -1011,12 +1059,19 @@ function macroButton(m, custom) {
     del.className = "btn tiny danger";
     del.textContent = "✕";
     del.title = "删除这个自定义宏";
-    del.addEventListener("click", async (e) => {
+    del.addEventListener("click", (e) => {
       e.stopPropagation();
-      const left = customMacros().filter((x) => x.name !== m.name);
-      localStorage.setItem(MACRO_LS, JSON.stringify(left));
-      loadMacros();
-      toast("已删除", true);
+      const all = customMacros();
+      if (all.findIndex((x) => x.name === m.name) < 0) return;   // 列表刚刷新过，这一下已经没有目标了
+      const prevRaw = localStorage.getItem(MACRO_LS);            // 撤销 = 把整份旧值原样写回
+      undoable("已删除宏「" + m.name + "」", () => {
+        localStorage.setItem(MACRO_LS, JSON.stringify(all.filter((x) => x.name !== m.name)));
+        loadMacros();
+      }, () => {
+        if (prevRaw === null) localStorage.removeItem(MACRO_LS);
+        else localStorage.setItem(MACRO_LS, prevRaw);
+        loadMacros();
+      });
     });
     const wrap = document.createElement("span");
     wrap.className = "withdel";
@@ -1957,6 +2012,15 @@ async function refreshStatus() {
 
 function renderStatus(s) {
   palStatus = s;
+  window.__atvLastStatus = s;   // chip 菜单要用（Apple TV 行的 connected 判断）
+  // 服务跑在手机 App 的 Chaquopy 引擎里时，「把遥控器装到手机」那张卡片没有意义：
+  // 手机上都装好了，而且 APK 文件不在包里——点下载只会拿到 404「APK 不存在」。
+  // 只看服务端标记、不看 UA：手机浏览器访问 Mac 的服务时卡片要保留。
+  if (s.embedded) {
+    const card = $("#phoneInstall");
+    const box = card && card.closest("section.card");
+    if (box) box.remove();
+  }
   status.curType = s.cur_type;
   const dot = $("#dot"), info = $("#tvInfo");
   const isApple = s.cur_type === "appletv";
@@ -2024,7 +2088,7 @@ function renderStatus(s) {
   // 设备列表每 8 秒轮询一次，数据没变就别重建 DOM（会打断 hover / 触发无谓重排）
   const chipSig = JSON.stringify([
     s.cur_type, s.current, s.current_state, s.recent, s.devices,
-    (s.appletv.devices || []).map((d) => d.id),
+    (s.appletv.devices || []).map((d) => d.id), s.adb_found,
   ]);
   if (chipSig === lastChipSig) return;
   lastChipSig = chipSig;
@@ -2036,9 +2100,9 @@ function renderStatus(s) {
     const c = document.createElement("span");
     c.className = "chip" + (s.cur_type === "android" && t === s.current ? " active" : "");
     c.textContent = t;
-    c.title = "点击连接 · 右键移除";
+    c.title = "点击连接 · 长按/右键打开菜单";
     c.onclick = () => connect(t);
-    c.oncontextmenu = (e) => { e.preventDefault(); api("/api/forget", { target: t }).then(refreshStatus); };
+    sheetBindChip(c, sheetDevOfRecent(s, t, wolTargets));
     rc.appendChild(c);
   });
 
@@ -2049,9 +2113,13 @@ function renderStatus(s) {
     const c = document.createElement("span");
     c.className = "chip";
     c.textContent = `${d.serial}（${d.state === "device" ? "在线" : d.state}）`;
+    c.title = "点击切换 · 长按/右键打开菜单";
     c.onclick = () => api("/api/switch", { target: d.serial }).then(refreshStatus).catch((e) => toast(e.message));
+    sheetBindChip(c, sheetDevOfDevice(s, d));
     dc.appendChild(c);
   });
+
+  renderEstate(s);   // chips 全空时给空状态：一句解释 + 一个下一步（规则见 empty 段）
 
   // 已配对的 Apple TV（未连接当前页也展示）
   if (isApple || !s.current) renderAtvKnown(s);
@@ -2092,6 +2160,7 @@ let wolWaitIp = "";
 let wolAskSig = "";
 let wolAskAt = 0;
 let wolLastStatus = null;
+let wolTargets = [];   // 最近一次 WOL 发现结果，供 chip 菜单判断能否远程开机
 
 function wolSetWatch(text) {
   $("#wolWatch").classList.toggle("hidden", !text);
@@ -2113,6 +2182,7 @@ async function wolDiscover(ips) {
   $("#wolRefreshBtn").disabled = true;
   try {
     const r = await api("/api/wol?action=discover&ips=" + encodeURIComponent(ask.join(",")));
+    wolTargets = r.targets || [];
     wolRender(r.targets || [], r.asked || ask);
     return r.targets || [];
   } catch (e) {
@@ -2315,6 +2385,250 @@ function renderAdbScan(hosts) {
 
 $("#scanAdbBtn").addEventListener("click", adbScan);
 
+/* ---- 空状态 DOM 胶水：规则在上方 empty 纯函数段，这里只管建 DOM / 映射动作 ---- */
+let estateSig = "";
+/* 快照只取 Android 连接面板视角：Apple TV 的 current 是另一页的事，不能算「有设备」 */
+function estateSnap(s) {
+  return {
+    recent: s.recent || [],
+    devices: s.devices || [],
+    current: s.cur_type === "android" ? s.current : "",
+    adb_found: !!s.adb_found,
+  };
+}
+/* 图标：一台睡着的显示器（电源符号）。stroke 走 currentColor 跟随双主题；
+   手搓 createElementNS，不引图标库、不碰 innerHTML。 */
+function estateIcon() {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 64 48");
+  svg.setAttribute("width", "64");
+  svg.setAttribute("height", "48");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2.5");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("aria-hidden", "true");
+  const el = (tag, attrs) => {
+    const n = document.createElementNS(NS, tag);
+    Object.keys(attrs).forEach((k) => n.setAttribute(k, attrs[k]));
+    return n;
+  };
+  svg.append(
+    el("rect", { x: 8, y: 6, width: 40, height: 28, rx: 4 }),   // 屏幕
+    el("path", { d: "M24 34h12" }),                             // 底座颈
+    el("path", { d: "M17 41h26" }),                             // 底座
+    el("path", { d: "M28 14v8" }),                              // 电源竖线
+    el("path", { d: "M22.5 18.5a7.5 7.5 0 0 1 11 0" }),         // 电源弧
+  );
+  return svg;
+}
+function estateBtn(label, cls, fn, title) {
+  const b = document.createElement("button");
+  b.className = "btn " + cls;
+  b.textContent = label;
+  if (title) b.title = title;
+  b.onclick = fn;
+  return b;
+}
+/* 动作键 -> 真行为：reconnect 顺手把 IP 填进输入框，让「连的哪台」可见 */
+function estateAct(act, ip) {
+  if (act === "scan") return adbScan;
+  if (act === "focus") return () => $("#targetInput").focus();
+  if (act === "reconnect") return () => { $("#targetInput").value = ip; connect(ip); };
+  return null;
+}
+function renderEstate(s) {
+  const box = $("#estateAndroid");
+  if (!box) return;
+  const snap = estateSnap(s);
+  const kind = emptyKind(snap);
+  if (kind === EMPTY_NONE) {
+    if (!box.classList.contains("hidden")) {
+      box.classList.add("hidden");
+      box.textContent = "";
+      estateSig = "";
+    }
+    return;
+  }
+  const copy = emptyCopy(kind, snap.recent);
+  const sig = emptySig(kind, snap.recent.length);
+  if (sig === estateSig) return;
+  estateSig = sig;
+  box.textContent = "";
+  const ic = estateIcon();
+  ic.setAttribute("class", "eicon");   // SVG 的 className 是只读的 SVGAnimatedString，赋值会抛
+  const title = document.createElement("div");
+  title.className = "etitle";
+  title.textContent = copy.title;
+  const desc = document.createElement("div");
+  desc.className = "edesc";
+  desc.textContent = copy.desc;
+  box.append(ic, title, desc);
+  const row = document.createElement("div");
+  row.className = "ecta";
+  const acts = [[copy.cta, copy.act, "primary"], [copy.cta2, copy.act2, ""]];
+  acts.forEach((a) => {
+    const fn = estateAct(a[1], snap.recent[0]);
+    if (a[0] && fn) row.appendChild(estateBtn(a[0], a[2], fn, copy.title));
+  });
+  if (row.childElementCount) box.appendChild(row);
+  box.classList.remove("hidden");
+}
+
+/* ---- 底部快捷菜单 DOM 胶水：规则在上方 sheet 纯函数段，这里只管手势 / 渲染 / 动作分发 ----
+   长按语义与触摸板同源：pointerdown 起 450ms 定时，位移超过 10px 视为要滚动列表、
+   取消长按；松手时若长按已触发，接下来那一次 click 是「长按松手」产生的，必须吞掉，
+   否则又把设备连了一遍（chip 原有 onclick 绑定在前，只能包一层）。
+   桌面端右键（contextmenu）直达菜单。复制走 clipboard API、失败回落 execCommand——
+   局域网是明文 http，navigator.clipboard 在非安全上下文里根本不存在。 */
+const SHEET_HOLD_MS = 450;      // 长按判定：与触摸板长按连发同一量级
+const SHEET_MOVE_PX = 10;       // 位移超过它就当用户想滚动，取消长按
+let sheetHoldTimer = null;
+let sheetHoldCtx = null;        // 进行中的长按：{ dev, el, x0, y0 }
+let sheetHoldConsumed = false;  // 长按已触发：接下来那次 click 要吞掉
+
+function sheetCancelHold() {
+  if (sheetHoldTimer) { clearTimeout(sheetHoldTimer); sheetHoldTimer = null; }
+  sheetHoldCtx = null;
+}
+
+// Apple TV 行里自带的按钮（连接 / 配对 / ✕）有各自的点击语义，长按与右键都不该被菜单劫走
+function sheetOnControl(e) {
+  const t = e.target;
+  return !!(t && t.closest && t.closest("button, a, input, select, textarea"));
+}
+
+// el：chip / 设备行；dev：纯函数段构造的设备快照
+function sheetBindChip(el, dev) {
+  if (!el || !dev) return;
+  el.addEventListener("pointerdown", (e) => {
+    if (sheetOnControl(e)) return;                            // 控件上的手势归控件自己
+    if (e.pointerType === "mouse" && e.button !== 0) return;  // 鼠标右键走 contextmenu
+    sheetHoldConsumed = false;
+    sheetCancelHold();
+    const c = { dev, el, x0: e.clientX, y0: e.clientY };
+    sheetHoldCtx = c;
+    sheetHoldTimer = setTimeout(() => {
+      sheetHoldTimer = null;
+      sheetHoldCtx = null;
+      sheetHoldConsumed = true;
+      buzz(15);                 // 触觉确认：长按命中了（设置里可关）
+      sheetOpen(c.dev, c.el);
+    }, SHEET_HOLD_MS);
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (sheetHoldCtx && sheetHoldCtx.el === el &&
+        Math.hypot(e.clientX - sheetHoldCtx.x0, e.clientY - sheetHoldCtx.y0) > SHEET_MOVE_PX) {
+      sheetCancelHold();
+    }
+  });
+  const holdUp = () => sheetCancelHold();
+  el.addEventListener("pointerup", holdUp);
+  el.addEventListener("pointercancel", holdUp);
+  // 包一层既有 onclick：长按松手会补一次 click，直接放行就又把设备连/切了一遍
+  const prevClick = el.onclick;
+  el.onclick = (e) => {
+    if (sheetHoldConsumed) { sheetHoldConsumed = false; e.preventDefault(); e.stopPropagation(); return; }
+    if (prevClick) prevClick.call(el, e);
+  };
+  el.addEventListener("contextmenu", (e) => {
+    if (sheetOnControl(e)) return;   // 按钮上让浏览器出原生菜单
+    e.preventDefault();
+    sheetOpen(dev, el);
+  });
+}
+
+function sheetOpen(dev, trigger) {
+  const box = $("#sheet");
+  if (!box || !dev) return;
+  $("#sheetTitle").textContent = dev.label || dev.target;
+  $("#sheetSub").textContent = sheetStateText(dev);
+  const list = $("#sheetActs");
+  list.textContent = "";
+  sheetItems(dev).forEach((it) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "sheetact" + (it.danger ? " danger" : "");
+    b.setAttribute("role", "menuitem");
+    b.textContent = it.label;   // 文案一律 textContent：设备名 / IP 来自局域网广播，可伪造
+    b.onclick = () => { closeModal("#sheet"); sheetAct(it.id, dev); };
+    list.appendChild(b);
+  });
+  openModal("#sheet", trigger || document.activeElement);
+}
+
+// 明文 http 的局域网上 navigator.clipboard 不存在（非安全上下文），必须留 execCommand 兜底
+function sheetCopy(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(() => true, () => sheetCopyFallback(text));
+    }
+  } catch (e) { /* 老 Safari 访问 navigator.clipboard 也可能抛，落兜底 */ }
+  return Promise.resolve(sheetCopyFallback(text));
+}
+function sheetCopyFallback(text) {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return !!ok;
+  } catch (e) { return false; }
+}
+
+// 动作分发：只把 id 映射到既有入口，状态判断都在 sheetItems 里做完了
+async function sheetAct(id, dev) {
+  const t = dev.target;
+  const ip = wolIpOf(t);
+  try {
+    if (id === "copy") {
+      const ok = await sheetCopy(t);
+      toast(ok ? "已复制 " + t : "复制失败，请长按手动选择");
+      return;
+    }
+    if (id === "connect") { connect(t); return; }
+    if (id === "switch") { await api("/api/switch", { target: t }); refreshStatus(); return; }
+    if (id === "disconnect") {
+      if (dev.kind === "appletv") await api("/api/atv/disconnect", { id: t });
+      else await api("/api/disconnect", {});
+      refreshStatus();
+      return;
+    }
+    if (id === "wake") {
+      let mac = (wolTargets.find((w) => w.ip === ip) || {}).mac;
+      if (!mac) {   // 缓存没有（WOL 卡片还没自动发现过）就为这一台现查一次 ARP
+        const r = await api("/api/wol?action=discover&ips=" + encodeURIComponent(ip));
+        mac = ((r.targets || []).find((w) => w.ip === ip) || {}).mac;
+      }
+      if (!mac) {
+        toast("⚠ 没查到 " + ip + " 的 MAC：它可能从没和本机通信过（不在同一二层网络也查不到）");
+        return;
+      }
+      await api("/api/wol", { action: "send", mac });
+      toast("✓ 开机包已发往 " + ip);
+      wolWaitStart(ip);
+      return;
+    }
+    if (id === "forget") {
+      if (dev.kind === "appletv") await api("/api/atv/forget", { id: t });
+      else await api("/api/forget", { target: t });
+      toast("已移除 " + (dev.kind === "appletv" ? dev.label : t));
+      refreshStatus();
+      return;
+    }
+  } catch (e) {
+    toast("⚠ " + e.message);
+  }
+}
+// 遮罩点击关闭：触屏没有 Esc，必须能点外面关掉（与 shotModal/keymapModal 同一模式）
+$("#sheet").addEventListener("click", (e) => { if (e.target === $("#sheet")) closeModal("#sheet"); });
+
 /* ---------------- ADBKeyboard 中文键盘 ---------------- */
 function renderIme(st) {
   Object.assign(imeState, st || {}, { checked: true });
@@ -2392,7 +2706,7 @@ async function atvScan() {
   }
 }
 
-function atvRow(dev) {
+function atvRow(dev, s) {
   const row = document.createElement("div");
   row.className = "atvrow";
   const left = document.createElement("div");
@@ -2435,23 +2749,24 @@ function atvRow(dev) {
   }
   row.appendChild(left);
   row.appendChild(btns);
+  sheetBindChip(row, sheetDevOfAtv(s || window.__atvLastStatus || {}, dev));
   return row;
 }
 
-function renderAtvFound(devs) {
+function renderAtvFound(devs, s) {
   const box = $("#atvList");
   box.innerHTML = "";
   if (!devs.length) {
     box.innerHTML = '<p class="hint">未发现 Apple TV：确认电视与本机同网段、已唤醒（Apple TV 3 及更早型号不支持）。</p>';
     return;
   }
-  devs.forEach((d) => box.appendChild(atvRow(d)));
+  devs.forEach((d) => box.appendChild(atvRow(d, s)));
 }
 
 function renderAtvKnown(s) {
   const box = $("#atvList");
   if (!box.dataset.scanned) return; // 扫描结果优先展示，未扫描时展示已配对
-  renderAtvFound(s.appletv.devices.map((d) => ({ ...d, paired: true, stored: true })));
+  renderAtvFound(s.appletv.devices.map((d) => ({ ...d, paired: true, stored: true })), s);
 }
 
 async function atvConnect(dev) {
@@ -2634,7 +2949,7 @@ $$(".devtab").forEach((t) => {
         api("/api/status").then((s) => {
           if ((s.appletv.devices || []).length) {
             box.dataset.scanned = "1";
-            renderAtvFound(s.appletv.devices.map((d) => ({ ...d, paired: true, stored: true })));
+            renderAtvFound(s.appletv.devices.map((d) => ({ ...d, paired: true, stored: true })), s);
           }
         });
       }
@@ -2789,13 +3104,297 @@ $("#pkgInput").addEventListener("keydown", (e) => {
   if (e.key === "Enter") $("#pkgBtn").click();
 });
 
+/* ===== panemotion:begin ===== */
+/* 窗格转场与触控目标：学 Material 3 motion（emphasized 类短进场 200-300ms、缓出为主）
+   与 WCAG 2.2 目标尺寸（>=24x24 CSS px，本项目按 36px 从严，拇指点击）。
+   paneIdFor：data-tab 到面板 id 的纯映射；paneAnimMs：系统减少动效偏好下取 0。
+   CSS 侧 --pane-dur / --touch-min 消费同一组数值，tests/test_panemotion.py 正则
+   比对两处防漂移；DOM 胶水（matchMedia / style / classList）在下方 tabs 绑定处。 */
+const PANE_ANIM_MS = 240;     // = CSS --pane-dur
+const TOUCH_MIN_PX = 36;      // = CSS --touch-min（.btn.tiny min-height / .btn.tiny.gear min-width）
+function paneIdFor(name) { return "pane-" + String(name == null ? "" : name); }
+function paneAnimMs(reduced) { return reduced ? 0 : PANE_ANIM_MS; }
+
+/* ===== panemotion:end ===== */
+/* ===== collapse:begin ===== */
+/* 卡片折叠：学 WAI-ARIA Disclosure 模式与 Radix Collapsible / Accordion 的「状态即属性」
+   方法论——视觉与可访问性只认 data-state 这一个属性，CSS 不读 JS 变量、JS 不直接改样式；
+   aria-expanded 跟属性同步翻，折叠后 CSS 用 visibility 把它从 Tab 顺序里摘掉。
+   折叠态存浏览器 localStorage（键 atv.collapsed.v1）：state.json 会被打进 bundle.tgz
+   分发给局域网任何设备，可编辑偏好一律不放它。
+   纯函数段：禁 DOM / localStorage / fetch / innerHTML / $( （tests/collapse_harness.js
+   直接抽这段执行），DOM 胶水在下方。localStorage 是不可信输入：JSON 坏掉、类型不对、
+   混进不存在的 id 都要能兜住，否则一条坏数据能让整页卡片集体消失。 */
+const COLLAPSE_MS = 180;               // = CSS --collapse-dur
+const COLLAPSE_KEY = "atv.collapsed.v1";
+const COLLAPSE_OPEN = "open", COLLAPSE_CLOSED = "closed";
+function collapseAnimMs(reduced) { return reduced ? 0 : COLLAPSE_MS; }
+function collapseStateOf(current, forced) {
+  if (forced === COLLAPSE_OPEN || forced === COLLAPSE_CLOSED) return forced;
+  return current === COLLAPSE_CLOSED ? COLLAPSE_OPEN : COLLAPSE_CLOSED;
+}
+function parseCollapsed(raw, known) {
+  const allow = new Set(known || []);
+  let list = null;
+  if (typeof raw === "string" && raw) { try { list = JSON.parse(raw); } catch (e) { return []; } }
+  if (!Array.isArray(list)) return [];
+  const out = new Set();
+  for (const it of list) if (typeof it === "string" && allow.has(it)) out.add(it);
+  return Array.from(out).sort();
+}
+function serializeCollapsed(ids) {
+  const out = new Set();
+  for (const it of (ids || [])) if (typeof it === "string") out.add(it);
+  return JSON.stringify(Array.from(out).sort());
+}
+function collapseLabel(state) { return state === COLLAPSE_CLOSED ? "展开" : "折叠"; }
+
+/* ===== collapse:end ===== */
+
+/* ===== undo:begin ===== */
+/* 撤销（学 Gmail「已删除·撤销」/ Material Snackbar action / Radix Toast action）纯规则段。
+   破坏性操作（清短语 / 清宏 / 恢复默认按键 / 删单个宏）先执行、再给 6s 反悔窗口；
+   恢复语义 = 回到 doFn 执行前那一刻的快照，快照由调用方闭包持有，栈本身不落盘——
+   可编辑偏好不进 state.json，撤销机会同理不该跨重启存活。 */
+const UNDO_MS = 6000;          // 反悔窗口；通知停留时长与它取 max，按钮永远先于窗口消失
+const UNDO_STACK_MAX = 4;      // 同屏最多 4 条可撤销，防连点把内存堆满
+
+// 只留「没过期」的条目。at 缺失 / 非数字一律算已过期：没有时间戳就无从判断新旧。
+// now 由调用方注入（Date.now()），本段不自己读时钟，才能整段搬进 node 跑用例。
+function undoLive(entries, now) {
+  const arr = Array.isArray(entries) ? entries : [];
+  const t = typeof now === "number" ? now : 0;
+  return arr.filter((e) => !!e && typeof e.at === "number" && e.at >= 0 && e.at + UNDO_MS > t);
+}
+
+// 新条目排最前，顺手 prune 过期、去掉同 id 重复、截到上限。返回新数组（旧引用不变）。
+function undoPush(entries, entry, now) {
+  const kept = undoLive(entries, now).filter((e) => e.id !== entry.id);
+  const out = [entry].concat(kept);
+  return out.length > UNDO_STACK_MAX ? out.slice(0, UNDO_STACK_MAX) : out;
+}
+
+// 命中且未过期 → { entry, rest }；rest 已摘掉该条，同一次撤销不会被点两次。
+// 未命中（id 不认识 / 已过期）→ null，调用方据此提示「反悔时间已过」。
+function undoTake(entries, id, now) {
+  const live = undoLive(entries, now);
+  const i = live.findIndex((e) => e.id === id);
+  if (i < 0) return null;
+  return { entry: live[i], rest: live.slice(0, i).concat(live.slice(i + 1)) };
+}
+/* ===== undo:end ===== */
+ 
+/* ===== empty:begin ===== */
+/* 空状态（第二十八轮）规则段：学 Shopify Polaris Empty State / Material empty state
+   的契约——列表空着不是无话可说，而该给「一句解释 + 一个下一步动作」。
+   判空只看一份 Android 连接面板视角的快照，文案按 kind 查表；全部纯函数、
+   时钟与 DOM 一律不碰，可整段搬进 node 跑用例。 */
+const EMPTY_NONE = null;               // 有东西可看：不渲染空状态
+/* kind：intro = 从没连过（首次引导）；offline = 连过但现在不在线；noadb = 本机没 adb */
+function emptyKind(snap) {
+  const recent = Array.isArray(snap.recent) ? snap.recent.length : 0;
+  const online = Array.isArray(snap.devices) ? snap.devices.length : 0;
+  if (snap.current || online) return EMPTY_NONE;    // 正连着 / 有在线设备：chips 不空
+  if (!snap.adb_found) return "noadb";              // 没 adb 说什么都白费，先讲这个
+  return recent ? "offline" : "intro";
+}
+/* 文案查表：offline 要把「几台」说进去——空状态的可信度全靠具体数字。
+   cta / cta2 是按钮文案，act / act2 是动作键（glue 负责映射到真行为），
+   act 为 null 表示这个 kind 没有可执行的下一步（noadb 只能去装 adb）。 */
+function emptyCopy(kind, recent) {
+  const n = Array.isArray(recent) ? recent.length : 0;
+  if (kind === "intro") return {
+    title: "还没有连接过电视",
+    desc: "输入电视 IP 点「连接」，或点「扫描」找同一网段开着网络调试的设备。"
+      + "第一次用，需要先在电视「设置 → 开发者选项」里打开网络调试。",
+    cta: "🔍 扫描局域网", act: "scan",
+    cta2: "手输 IP", act2: "focus",
+  };
+  if (kind === "offline") return {
+    title: n + " 台设备当前离线",
+    desc: "连过的设备现在都不在：电视可能睡了。开机后点「重连」，或再扫描一次局域网。",
+    cta: "重连最近一台", act: "reconnect",
+    cta2: "🔍 扫描", act2: "scan",
+  };
+  if (kind === "noadb") return {
+    title: "本机没有找到 adb",
+    desc: "Android TV 控制走 adb。装好 platform-tools 并加进 PATH 后重启本应用即可。",
+    cta: null, act: null, cta2: null, act2: null,
+  };
+  return null;
+}
+/* 节流签名：输入没变就别重建（8s 轮询会反复进这里，重建会打断 hover / 焦点） */
+function emptySig(kind, n) { return kind + "|" + n; }
+/* ===== empty:end ===== */
+
+/* ===== sheet:begin ===== */
+/* 底部快捷菜单（第二十九轮）规则段：学 Material 3 Bottom Sheet / iOS Context Menu /
+   Home Assistant more-info 的行为契约——「属于这个对象的所有动作，收进一个单指可达的
+   弹层」。手机没有右键：最近连接的「右键移除」在触屏上根本不可达，在线设备 chip 也只剩
+   「点一下切换」。菜单长什么样子由纯函数按设备状态推算，时钟与 DOM 一律不碰，
+   可整段搬进 node 跑用例。 */
+const SHEET_NONE = null;   // 设备快照解析失败：不开菜单
+/* 标题旁那行小字。current 压过 online——「已连接」比「在线」信息量大。 */
+function sheetStateText(dev) {
+  if (!dev) return "";
+  if (dev.current) return "已连接 · 当前设备";
+  if (dev.online) return "在线";
+  return dev.kind === "appletv" ? "已配对 · 未连接" : "离线";
+}
+/* Android 最近连接 chip 的快照。online 要按 IP 匹配：adb 的 serial 带端口（host:5555），
+   而 ARP 表与最近列表只认 IP，先 wolIpOf 归一再比。wakes 是 WOL 发现结果（[{ip, mac}]），
+   只有「当前离线且查得到 MAC」才给唤醒——在线设备没有唤醒的必要，正连着的更不行。 */
+function sheetDevOfRecent(s, ip, wakes) {
+  const st = s || {};
+  const target = String(ip === null || ip === undefined ? "" : ip);
+  if (!target) return SHEET_NONE;
+  const online = (Array.isArray(st.devices) ? st.devices : [])
+    .some((d) => !!d && wolIpOf(d.serial) === target);
+  const current = st.cur_type === "android" && st.current === target;
+  const wake = (Array.isArray(wakes) ? wakes : [])
+    .some((w) => !!w && w.ip === target && !!w.mac);
+  return { target, kind: "android", label: target, online, current,
+           removable: true, canWake: !online && !current && wake };
+}
+/* Android 在线设备 chip（s.devices 里当前设备之外的那些）：只有「切换」和「复制」。
+   不给「移除」：它不在用户的最近连接历史里，forget 对它没有意义。 */
+function sheetDevOfDevice(s, dev) {
+  const st = s || {};
+  if (!dev || !dev.serial) return SHEET_NONE;
+  const target = String(dev.serial);
+  const current = st.cur_type === "android" && st.current === target;
+  return { target, kind: "android", label: target, online: true, current,
+           removable: false, canWake: false };
+}
+/* Apple TV 设备行：stored 的给「取消配对」；Apple TV 不走 adb/ARP，永远没有 WOL。 */
+function sheetDevOfAtv(s, dev) {
+  const st = s || {};
+  if (!dev || !dev.id) return SHEET_NONE;
+  const target = String(dev.id);
+  const current = !!(st.appletv && st.appletv.connected && st.current === target);
+  return { target, kind: "appletv", label: String(dev.name || "Apple TV"),
+           online: current, current, removable: !!dev.stored, canWake: false };
+}
+/* 动作表。三条硬规则（harness 有对应用例）：
+   1) 「复制」永远在——菜单至少要有一个无害动作，长按一下不至于白按；
+   2) 破坏性动作（移除 / 取消配对）永远排最后且 danger=true，胶水只照表执行；
+   3) 唤醒只出现在「当前离线且查得到 MAC」，重连/切换不打扰正连着的设备。 */
+function sheetItems(dev) {
+  if (!dev) return [];
+  const out = [];
+  if (dev.kind === "appletv") {
+    out.push(dev.current
+      ? { id: "disconnect", label: "⏏ 断开连接", danger: false }
+      : { id: "connect", label: "🔌 连接", danger: false });
+    out.push({ id: "copy", label: "📋 复制设备 ID", danger: false });
+    if (dev.removable) out.push({ id: "forget", label: "🗑 取消配对", danger: true });
+    return out;
+  }
+  if (dev.current) out.push({ id: "disconnect", label: "⏏ 断开连接", danger: false });
+  else if (dev.online) out.push({ id: "switch", label: "🔀 切换到此设备", danger: false });
+  else {
+    out.push({ id: "connect", label: "🔌 重新连接", danger: false });
+    if (dev.canWake) out.push({ id: "wake", label: "⚡ 远程开机（WOL）", danger: false });
+  }
+  out.push({ id: "copy", label: "📋 复制 IP 地址", danger: false });
+  if (dev.removable) out.push({ id: "forget", label: "🗑 从最近列表移除", danger: true });
+  return out;
+}
+/* ===== sheet:end ===== */
+
+/* ---- 折叠卡片 DOM 胶水：规则在上方 collapse 纯函数段，这里只管 localStorage / data-state / aria ----
+   单一决策点：collapseApply() 只翻属性（data-state + aria-expanded + aria-label + title），
+   样式全部由 CSS 按 data-state 自己算；collapseSave() 是唯一落盘处，键与格式由段里定。 */
+function collapseCards() { return Array.prototype.slice.call($$("[data-collapsible]")); }
+function collapseApply(el, state) {
+  el.dataset.state = state;
+  const btn = el.querySelector(".ctog");
+  if (btn) {
+    const act = collapseLabel(state);
+    btn.setAttribute("aria-expanded", state === COLLAPSE_CLOSED ? "false" : "true");
+    btn.setAttribute("aria-label", act + "「" + (el.dataset.collapseName || el.id) + "」");
+    btn.title = act + "「" + (el.dataset.collapseName || el.id) + "」";
+  }
+}
+function collapseSave() {
+  const closed = collapseCards().filter((el) => el.dataset.state === COLLAPSE_CLOSED).map((el) => el.id);
+  try { localStorage.setItem(COLLAPSE_KEY, serializeCollapsed(closed)); }
+  catch (e) { /* 隐私模式写不进 localStorage：这轮会话照常能用，重启不记得 */ }
+}
+function collapseRestore() {
+  const known = collapseCards().map((el) => el.id);
+  let hit = new Set();
+  try { hit = new Set(parseCollapsed(localStorage.getItem(COLLAPSE_KEY), known)); }
+  catch (e) { hit = new Set(); }
+  collapseCards().forEach((el) => collapseApply(el, hit.has(el.id) ? COLLAPSE_CLOSED : COLLAPSE_OPEN));
+}
+function collapseAll(want) {
+  collapseCards().forEach((el) => collapseApply(el, want));
+  collapseSave();
+}
+function collapseBind() {
+  collapseCards().forEach((el) => {
+    const btn = el.querySelector(".ctog");
+    if (btn) btn.addEventListener("click", () => {
+      collapseApply(el, collapseStateOf(el.dataset.state));
+      collapseSave();
+    });
+  });
+  const seg = $("#collapseSeg");
+  if (seg) Array.prototype.slice.call(seg.querySelectorAll("[data-collapse-all]")).forEach((b) => {
+    b.addEventListener("click", () => {
+      const want = b.dataset.collapseAll === "closed" ? COLLAPSE_CLOSED : COLLAPSE_OPEN;
+      collapseAll(want);
+      toast(want === COLLAPSE_CLOSED ? "已折叠全部次级卡片" : "已展开全部次级卡片");
+    });
+  });
+}
+// 初值先于首帧落地，再绑事件：restore 放 Bind 之后的话，第一次点击会按 DOM 初值反转
+collapseRestore();
+collapseBind();
+
+/* ---- 撤销 DOM 胶水：规则在上方 undo 纯函数段，这里只管执行 / 计时 / 回调 ---- */
+let undoStack = [];
+let undoSeq = 0;
+
+// 破坏性操作唯一入口：先立刻执行 doFn，再把「怎么恢复」压栈并弹带「撤销」按钮的通知。
+// 恢复语义 = 回到 doFn 执行前那一刻，所以快照必须在调 undoable 之前抓，undoFn 只负责写回。
+// label 同时决定通知级别（「已…」开头算成功）并进通知历史，写用户看得懂的话。
+function undoable(label, doFn, undoFn) {
+  const now = Date.now();
+  const entry = { id: ++undoSeq, label: String(label === undefined || label === null ? "" : label), at: now, undo: undoFn };
+  doFn();
+  undoStack = undoPush(undoStack, entry, now);
+  notifShow(entry.label, notifLevel(entry.label), { text: "撤销", onAction: () => undoRun(entry.id) });
+  return entry.id;
+}
+
+// 点「撤销」：命中未过期就跑回调，否则提示反悔时间已过。返回是否真的撤成了。
+function undoRun(id) {
+  const hit = undoTake(undoStack, id, Date.now());
+  if (!hit) { toast("反悔时间已过，恢复不了啦"); return false; }
+  undoStack = hit.rest;
+  try {
+    hit.entry.undo();
+    toast("已撤销");
+    return true;
+  } catch (e) {
+    toast("撤销失败，请手动重试");
+    return false;
+  }
+}
+
 /* tabs */
 $$(".tab").forEach((t) => {
   t.addEventListener("click", () => {
     $$(".tab").forEach((x) => x.classList.remove("on"));
     t.classList.add("on");
     $$(".tabpane").forEach((p) => p.classList.remove("on"));
-    $("#pane-" + t.dataset.tab).classList.add("on");
+    const pane = $("#" + paneIdFor(t.dataset.tab));   // paneIdFor 给裸 id，$ 吃完整选择器
+    // 系统「减少动效」偏好：时长压到 0（CSS 全局兜底之外，UI 线程同步再拦一道）
+    pane.style.setProperty("--pane-dur",
+      paneAnimMs(window.matchMedia("(prefers-reduced-motion: reduce)").matches) + "ms");
+    pane.classList.add("on");
   });
 });
 
@@ -2804,6 +3403,27 @@ $$(".tab").forEach((t) => {
    双指（参照桌面触控板/Google TV 遥控的手势惯例）：上下滑=音量、左右滑=快进快退，
    每 GESTURE_STEP px 发一次键（sendKey 自带 90ms 节流，天然限速）；双指轻点=播放/暂停。
    手势期间作废单指滑动——两根手指都抬起才结算，避免误触发。 */
+/* 触摸板灵敏度：默认 1×（出厂手感），存 localStorage（键 atv.padSens，可编辑内容
+   不进 state.json）。只影响触摸板的双指手势与单指长按连发；方向键按钮区固定节奏不动。 */
+let padGain = (() => {
+  try { return padSensClamp(JSON.parse(localStorage.getItem(PADSENS_KEY))); }
+  catch (e) { return PADSENS_DEFAULT; }
+})();
+function padSensSave() { try { localStorage.setItem(PADSENS_KEY, String(padGain)); } catch (e) {} }
+function padSensApply() {
+  const el = $("#padSens"); if (el) el.value = String(padGain);
+  const v = $("#padSensVal"); if (v) v.textContent = padSensLabel(padGain);   // textContent，禁 innerHTML
+}
+function padSensBind() {
+  const el = $("#padSens");
+  if (el) el.addEventListener("input", () => { padGain = padSensClamp(Number(el.value)); padSensApply(); padSensSave(); });
+  const r = $("#padSensReset");
+  if (r) r.addEventListener("click", () => { padGain = PADSENS_DEFAULT; padSensApply(); padSensSave(); toast("触摸板灵敏度已重置为 1×"); });
+}
+// 初值同步 DOM 与 localStorage：必须在 let padGain 初始化之后调用（TDZ）
+padSensApply();
+padSensBind();
+
 const pad = $("#touchpad");
 const padHint = $("#padHint");
 /* 触摸板提示语的单一来源：renderStatus 每 8s 轮询也会写这个元素，
@@ -2870,7 +3490,7 @@ pad.addEventListener("pointerdown", (e) => {
       holding = true;
       pad.classList.add("holding");
       padHoldTick();
-      holdTick = setInterval(padHoldTick, PAD_HOLD_RATE);
+      holdTick = setInterval(padHoldTick, padHoldRateFor(padGain));   // 增益越高间隔越短、越跟手
     }, PAD_HOLD_DELAY);
   }
 });
@@ -2880,6 +3500,7 @@ pad.addEventListener("pointermove", (e) => {
   if (ptr) { ptr.x1 = e.clientX - r.left; ptr.y1 = e.clientY - r.top; }
   if (holdTimer && Math.hypot(ptr.x1 - ptr.x0, ptr.y1 - ptr.y0) > 12) stopPadHold();
   if (!gesture || padPtrs.size < 2) return;
+  const sp = padStepFor(padGain);   // 灵敏度增益 → 双指每滑过 sp px 发一次键
   const [a, b] = [...padPtrs.values()];
   const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
   gesture.rx += cx - gesture.cx;
@@ -2887,16 +3508,16 @@ pad.addEventListener("pointermove", (e) => {
   gesture.cx = cx; gesture.cy = cy;
   if (Math.hypot(gesture.rx, gesture.ry) > 12) gesture.moved = true;
   // 垂直：上滑(负)=音量增，下滑(正)=音量减
-  while (Math.abs(gesture.ry) >= GESTURE_STEP) {
+  while (Math.abs(gesture.ry) >= sp) {
     const step = Math.sign(gesture.ry);
-    gesture.ry -= step * GESTURE_STEP;
+    gesture.ry -= step * sp;
     gesture.vol += step;
     sendKey(step < 0 ? 24 : 25);
   }
   // 水平：右滑(正)=快进，左滑(负)=快退
-  while (Math.abs(gesture.rx) >= GESTURE_STEP) {
+  while (Math.abs(gesture.rx) >= sp) {
     const step = Math.sign(gesture.rx);
-    gesture.rx -= step * GESTURE_STEP;
+    gesture.rx -= step * sp;
     gesture.seek += step;
     sendKey(step > 0 ? 90 : 89);
   }
@@ -3312,12 +3933,20 @@ function kmBind(code, action) {
 
 function kmResetAll() {
   const n = Object.keys(kmMap).length;
-  kmMap = {};
-  saveKeymap();
-  kmRefreshMarks();
-  log(n ? `⌨ 已恢复 ${n} 个默认按键` : "⌨ 没有改过的键");
-  toast(n ? `已恢复 ${n} 个默认按键` : "没有改过的键");
-  if (openModals.includes($("#keymapModal"))) closeModal("#keymapModal");
+  if (!n) { log("⌨ 没有改过的键"); toast("没有改过的键"); return; }   // 没得可撤，别弹撤销按钮
+  const prev = {};
+  Object.keys(kmMap).forEach((k) => { prev[k] = kmMap[k]; });
+  undoable("已恢复 " + n + " 个默认按键", () => {
+    kmMap = {};
+    saveKeymap();
+    kmRefreshMarks();
+    log("⌨ 已恢复 " + n + " 个默认按键");
+    if (openModals.includes($("#keymapModal"))) closeModal("#keymapModal");
+  }, () => {
+    kmMap = prev;
+    saveKeymap();
+    kmRefreshMarks();
+  });
 }
 
 // 改过的键带 • 标记 + title 提示当前绑定：一眼看出「这个键被我动过」
@@ -3362,34 +3991,72 @@ document.addEventListener("visibilitychange", () => {
 });
 
 /* ---------------- 手机安装引导 ---------------- */
-const installCmd = `curl -sL ${location.origin}/install${TOKEN_Q} | bash`;
-$("#installCmd").value = installCmd;
-$("#qrImg").src = "/api/qr.svg?text=" + encodeURIComponent(installCmd) + TOKEN_AMP;
+//   命令、二维码、提示里的地址一律用服务端给出的局域网 IP，不能用 location.origin：
+//   在 Mac 上打开页面时 origin 是 127.0.0.1，复制给手机的就是回环地址，一定连不上
+//   （访问不了页面 / ERR_ADDRESS_UNREACHABLE，往往就是照着错地址访问的结果）。
+//   服务端取不到局域网 IP 时才退回 origin（至少是当前页面能用的地址）。
+let installBase = location.origin;
+const installTip = document.createElement("p");
+installTip.className = "hint";
+function renderInstall() {
+  const installCmd = `curl -sL ${installBase}/install${TOKEN_Q} | bash`;
+  $("#installCmd").value = installCmd;
+  $("#qrImg").src = "/api/qr.svg?text=" + encodeURIComponent(installCmd) + TOKEN_AMP;
+  if (ATV_TOKEN) {
+    installTip.textContent = "🔒 本机已启用访问令牌，手机浏览器请打开：" +
+    installBase + "/?token=" + ATV_TOKEN + "（本机 127.0.0.1 访问免令牌）";
+  }
+  const lanUrl = $("#lanUrl");
+  if (lanUrl) {
+    lanUrl.textContent = installBase + "/";
+    $("#lanHint").hidden = false;
+    const lanTokenQ = $("#lanTokenQ");
+    if (lanTokenQ) lanTokenQ.textContent = ATV_TOKEN ? "?token=" + ATV_TOKEN : "";
+  }
+}
+renderInstall();
 $("#qrImg").onerror = () => { document.querySelector(".qrbox").style.display = "none"; }; // 无 qrcode 库时隐藏
 // 未启用令牌时 setupQrBox 保持 hidden；启用后这里换成「带令牌的页面地址」二维码，
 // 手机扫一次即完成首次接入（服务端会种 cookie，之后不再需要令牌）
-if (ATV_TOKEN) {
-  api("/api/setup").then((j) => {
-    if (!j.token) return;
-    $("#setupQrBox").hidden = false;
-    $("#setupQrImg").src = "/api/qr.svg?text=" + encodeURIComponent(j.url + "?token=" + j.token) + TOKEN_AMP;
-  }).catch(() => {});
+api("/api/setup").then((j) => {
+  if (!j || !j.url) return;
+  installBase = j.url;
+  renderInstall();
+  if (!ATV_TOKEN || !j.token) return;
+  $("#setupQrBox").hidden = false;
+  $("#setupQrImg").src = "/api/qr.svg?text=" + encodeURIComponent(j.url + "?token=" + j.token) + TOKEN_AMP;
+}).catch(() => {});
+
+if (ATV_TOKEN && $("#phoneInstall")) {
+  $("#phoneInstall").insertBefore(installTip, $("#phoneInstall").querySelector("ol"));
 }
 
 // 启用令牌后，APK 直链与手机访问地址都得带上它
 const apkLink = $("#apkLink");
 if (apkLink) apkLink.href = "/app.apk" + TOKEN_Q;
-if (ATV_TOKEN) {
-  const tip = document.createElement("p");
-  tip.className = "hint";
-  tip.textContent = "🔒 本机已启用访问令牌，手机浏览器请打开：" +
-    location.origin + "/?token=" + ATV_TOKEN + "（本机 127.0.0.1 访问免令牌）";
-  const box = $("#phoneInstall");
-  box.insertBefore(tip, box.querySelector("ol"));
-}
+$("#copyDebugBtn").addEventListener("click", async () => {
+  const i = $("#termuxDebugCmd");
+  const ok = await sheetCopy(i.value);
+  if (!ok) {
+    i.select();
+    toast("复制失败，请长按手动选择", false);
+    return;
+  }
+  toast("已复制！打开 Termux 粘贴回车即可", true);
+});
+$("#copyPyatvFixBtn").addEventListener("click", async () => {
+  const i = $("#pyatvFixCmd");
+  const ok = await sheetCopy(i.value);
+  if (!ok) {
+    i.select();
+    toast("复制失败，请长按手动选择", false);
+    return;
+  }
+  toast("已复制！在 Termux 里粘贴回车，装完就能遥控 Apple TV", true);
+});
 $("#copyCmd").addEventListener("click", async () => {
   try {
-    await navigator.clipboard.writeText(installCmd);
+    await navigator.clipboard.writeText($("#installCmd").value);
   } catch { // http 非安全上下文回退
     const i = $("#installCmd");
     i.select();
@@ -3422,16 +4089,32 @@ $("#hapticBtn").addEventListener("click", () => {
   if (hapticEnabled()) buzz(20);   // 打开时立刻震一下，让用户知道效果
 });
 $("#clearPhrasesBtn").addEventListener("click", () => {
-  localStorage.removeItem(PHRASE_KEY);
-  phrases = DEFAULT_PHRASES.slice();
-  renderPhrases();
-  $("#phraseCount").textContent = phrases.length;
-  toast("常用短语已重置为默认", true);
+  const prevPhrases = phrases.slice();
+  const prevRaw = localStorage.getItem(PHRASE_KEY);   // null = 用户从没存过：撤销时删键而不是写 "null"
+  undoable("已重置常用短语为默认", () => {
+    localStorage.removeItem(PHRASE_KEY);
+    phrases = DEFAULT_PHRASES.slice();
+    renderPhrases();
+    $("#phraseCount").textContent = phrases.length;
+  }, () => {
+    if (prevRaw === null) localStorage.removeItem(PHRASE_KEY);
+    else localStorage.setItem(PHRASE_KEY, prevRaw);
+    phrases = prevPhrases.slice();
+    renderPhrases();
+    $("#phraseCount").textContent = phrases.length;
+  });
 });
 $("#clearMacrosBtn").addEventListener("click", () => {
-  localStorage.removeItem(MACRO_LS);
-  loadMacros();
-  toast("自定义宏已清空", true);
+  if (!customMacros().length) { toast("没有自定义宏可清空"); return; }   // 空列表再清一次只会换来一条废撤销
+  const prevRaw = localStorage.getItem(MACRO_LS);
+  undoable("已清空自定义宏", () => {
+    localStorage.removeItem(MACRO_LS);
+    loadMacros();
+  }, () => {
+    if (prevRaw === null) localStorage.removeItem(MACRO_LS);
+    else localStorage.setItem(MACRO_LS, prevRaw);
+    loadMacros();
+  });
 });
 $("#coachBtn").addEventListener("click", () => startCoach("all"));   // 随时能整段重看
 

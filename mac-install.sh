@@ -11,6 +11,9 @@ sleep 1
 
 PLIST="$HOME/Library/LaunchAgents/com.atv.remote.plist"
 mkdir -p "$(dirname "$PLIST")"
+# 启动参数加 --no-token：手机/平板直接开 http://<Mac局域网IP>:8300 就能用，不必输访问令牌。
+# 代价是同网段任何设备都能遥控（家里内网可接受）；想收紧就删掉下面那行 --no-token，
+# 重启后令牌会打印在启动横幅里，也可直接读 state.json 的 token 字段。
 cat > "$PLIST" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -22,6 +25,7 @@ cat > "$PLIST" << EOF
         <string>$PY</string>
         <string>$PWD/server.py</string>
         <string>--no-open</string>
+        <string>--no-token</string>
     </array>
     <key>WorkingDirectory</key><string>$PWD</string>
     <key>RunAtLoad</key><true/>

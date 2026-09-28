@@ -71,3 +71,35 @@ D-pad / 播放 / 音量 / 系统键 + 当前设备名，全部走 `127.0.0.1:830
 `swiftc -O -target arm64-apple-macos26.0` 编译通过。
 
 第一批（智能唤醒 / 睡眠定时 / 隐私模式）与第二批（mDNS 扫描配对 / 自动重连 / 剪贴板短语 / 语音输入）均已实现并提交（`ea1a84f`、`eaf94a8`）。
+
+## 第三轮进度（2026-09-26，输入校验加固）
+
+对应 Lumi 客户端 2026-09-25 交接的 3 个 bug：服务端能根治的部分已全部落地，另有两处同族
+潜伏 500 一并修掉。核心事实：畸形 body（缺字段 / 坏值 / 整个不是对象）以前会以 `KeyError` /
+`ValueError` / `AttributeError` 逃到 `do_POST` 兜底，回 500「服务器内部错误」——客户端拿到的
+是一句没有信息量的通用文案，没法告诉用户错在哪、更没法自纠。
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| Lumi bug2：connect 必须带真实 id | **已修** | `handle_atv_connect` 从 body 重建 entry 后校验 id/ip，缺则 400「缺少设备信息（id/ip）」（措辞对齐同文件 `handle_atv_pair`） |
+| 11 条畸形 body 复现路径 | **已修（9 条原 500 + 2 条同族潜伏）** | `/tmp/repro_bugs.py` 前后对比：B1–B11 全部从 500 变 400 + 中文提示；appletv `tap` 不带坐标仍合法 200（没误伤） |
+| appletv 键码不过滤 | **已修** | `handle_cmd_appletv` 的 `key` 分支补齐 Android 分支同款 `isdigit` 过滤，空则 400「键码不合法」 |
+| 坐标裸取 / 垃圾坐标 | **已修** | `clamp_coord` 加 `try/except`；新增 `coord_of(body, key)`（缺字段 400）与 `norm_coord(body, key)`（appletv 归一化坐标，越界仍照旧夹到边界） |
+| 手势时长 `int()` 强转 | **已修（android + appletv 两处）** | 新增 `clamp_duration()`：缺省 300ms、坏值 400「手势时长不合法」、越界照旧夹 100~2000ms |
+| body 不是 JSON 对象 | **已修** | `do_POST` 单一收口加 `isinstance(body, dict)` 守卫：`[]` / `5` 一律 400「请求体必须是 JSON 对象」（所有 POST 路由都按对象取字段） |
+| 回归测试 | **新增 `tests/test_input_validation.py`（20 例）** | 真 `ThreadingHTTPServer` + 假 adb/atv_mgr，假件强转口径与真实包装一致（`send_keys` 走 `int()`、`swipe` 走 `float()`），漏校验照样炸、不会因换桩藏住 bug；20 例全绿，含 4 条正向对照与 1 条「appletv tap 无坐标合法」基线 |
+| 全量验收 | **通过** | `./check.sh` 全绿：import（system + .venv）、`node --check` 双文件、406 例 unittest 双环境全过、`./sync-native.sh --check` 内嵌副本一致 |
+| 版本 | **1.33.0 / versionCode 34** | `VERSION` 单一来源；`tests/test_sheet.py` 的版本断言改成下限守卫（滚动断言只留 `test_undo.py` 一份，免得每轮回来改） |
+
+### 三条 Lumi bug 的处置结论
+- **bug1**（HTTP 200、要靠 body 里的 error 区分未连接）：`handle_connect` 未授权时返回
+  200 + `info.error` + `warning` 是**有意的展示契约**，两个客户端都已适配，**不改**。
+- **bug2**：已修，见上表。
+- **bug3**（宏键码编解码 / 延时）：服务端 `validate_macro_steps` / `_macro_step_delay`
+  （clamp 0–10000ms）逻辑正确，属客户端编码问题，**服务端不改**。
+
+### 仍未决（需真机或需另行安排，勿盲改）
+- P3 触摸坐标按真实分辨率映射（依赖真机实测）；
+- 8 处默认设备地址硬编码；
+- P2 `atv_backend._call()` 的 RLock 横跨 12s（结构性放开需先确认 pyatv 并发安全）。
+

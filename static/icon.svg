@@ -1,7 +1,39 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="96" fill="#121315"/>
-  <rect x="96" y="128" width="320" height="224" rx="28" fill="none" stroke="#006afd" stroke-width="20"/>
-  <rect x="128" y="160" width="256" height="128" rx="12" fill="#006afd" opacity="0.18"/>
-  <circle cx="256" cy="224" r="34" fill="none" stroke="#4f9cff" stroke-width="14"/>
-  <path d="M336 352v24M176 352v24M256 352v24" stroke="#006afd" stroke-width="16" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- 与 mac/make_icon.swift、tools/make_icons.py 同一套 Apple 风格视觉：
+       品牌蓝对角渐变 + 左上高光 + 底部压暗 + 白色电视屏/播放键字形（带柔和投影） -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2f7eff"/>
+      <stop offset="1" stop-color="#0047c4"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.28" cy="0.24" r="0.55">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="vig" x1="0" y1="0.66" x2="0" y2="1">
+      <stop offset="0" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.16"/>
+    </linearGradient>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="26"/>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" rx="232" fill="url(#bg)"/>
+  <rect width="1024" height="1024" rx="232" fill="url(#glow)"/>
+  <rect width="1024" height="1024" rx="232" fill="url(#vig)"/>
+
+  <!-- 电视屏的柔和投影（向下偏移 14、模糊 26、30% 黑） -->
+  <rect x="196" y="278" width="632" height="404" rx="76" fill="#000000"
+        opacity="0.30" filter="url(#soft)"/>
+
+  <!-- 白色字形：电视屏 + 支架 -->
+  <g fill="#f5f8fc">
+    <rect x="196" y="264" width="632" height="404" rx="76"/>
+    <rect x="466" y="668" width="92" height="42" rx="8"/>
+    <rect x="378" y="714" width="268" height="34" rx="17"/>
+  </g>
+  <!-- 播放键（品牌蓝 #064fda，中心 522,464） -->
+  <path d="M456 381 L456 547 L588 464 Z" fill="#064fda"/>
 </svg>
+

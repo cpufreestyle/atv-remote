@@ -314,7 +314,7 @@ class FrontendContractTest(unittest.TestCase):
         self.assertIn("left: perfClamp01(right - width), width", seg)
 
     def test_html_card_markup(self):
-        for frag in ('<section class="card" id="perfCard" data-needs-device>',
+        for frag in ('<section class="card" id="perfCard" data-needs-device data-collapsible data-state="open" data-collapse-name="调用时间线">',
                      '<div class="perfsum" id="perfSum"></div>',
                      '<div class="perfrows" id="perfRows" aria-live="polite"></div>',
                      '<button id="perfRefreshBtn" class="btn tiny">',

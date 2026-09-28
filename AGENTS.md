@@ -95,7 +95,8 @@ python3 -c 'import server; import atv_backend' && node --check static/app.js && 
 ./sync-native.sh --check    # 只检查；./sync-native.sh 则同步并顺带跑一遍 check.sh
 ```
 
-- 覆盖 `android-native/app/src/main/python/` 下的 5 个副本
+- 覆盖 `android-native/app/src/main/python/` 下的 6 个副本（含 `manifest.webmanifest`——
+  它的 `start_url` 若写成相对路径，装到桌面后启动地址会解析到 `/static/` 而 404）
 - 验证内容：内嵌进 APK 的前后端与根目录**逐字节一致**。不一致就 `./sync-native.sh` 同步，
   不要手工 `cp`（上一次手工同步把 `static/` 拷成了 `static/static/`，APK 里于是装了一份旧前端）。
 

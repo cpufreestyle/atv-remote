@@ -9,6 +9,7 @@ Apple TV 后端 — 基于 pyatv（MediaRemote 协议，与 iOS「遥控器」Ap
 
 import asyncio
 import ipaddress
+import os
 import threading
 import time
 from concurrent import futures
@@ -394,24 +395,32 @@ class AppleTvManager:
 
 
 if not PYATV_AVAILABLE:
+    # Mac 与 Termux 装 pyatv 的命令不一样：Termux 里没有 .venv。按平台给出能直接
+    # 粘贴执行的那一条，别让用户拿着 Mac 的命令去 Android 上跑。
+    _IS_TERMUX = os.path.isdir("/data/data/com.termux/files/usr")
+
+    def _pyatv_hint():
+        if _IS_TERMUX:
+            return "在 Termux 里执行：pip install pyatv==0.18.0"
+        return "在 ~/atv-remote 下执行：.venv/bin/pip install pyatv（或用 .venv/bin/python 启动）"
+
     class AppleTvManager:  # noqa: F811 — 降级占位
         connected = False
 
         def scan(self, hosts=None):
-            raise AppleTvError("pyatv 未安装：请在 ~/atv-remote 下执行 "
-                               ".venv/bin/pip install pyatv（或用 .venv/bin/python 启动）")
+            raise AppleTvError("pyatv 未安装，" + _pyatv_hint())
 
         def pair_begin(self, dev):
-            raise AppleTvError("pyatv 未安装")
+            raise AppleTvError("pyatv 未安装，" + _pyatv_hint())
 
         def pair_finish(self, pin):
-            raise AppleTvError("pyatv 未安装")
+            raise AppleTvError("pyatv 未安装，" + _pyatv_hint())
 
         def pair_stop(self):
             pass
 
         def connect(self, dev):
-            raise AppleTvError("pyatv 未安装")
+            raise AppleTvError("pyatv 未安装，" + _pyatv_hint())
 
         def disconnect(self):
             pass
@@ -420,25 +429,25 @@ if not PYATV_AVAILABLE:
             return None
 
         def send_keys(self, codes):
-            raise AppleTvError("pyatv 未安装")
+            raise AppleTvError("pyatv 未安装，" + _pyatv_hint())
 
         def send_text(self, text, enter=False):
-            raise AppleTvError("pyatv 未安装")
+            raise AppleTvError("pyatv 未安装，" + _pyatv_hint())
 
         def tap(self):
-            raise AppleTvError("pyatv 未安装")
+            raise AppleTvError("pyatv 未安装，" + _pyatv_hint())
 
         def swipe(self, *a, **kw):
-            raise AppleTvError("pyatv 未安装")
+            raise AppleTvError("pyatv 未安装，" + _pyatv_hint())
 
         def apps(self):
-            raise AppleTvError("pyatv 未安装")
+            raise AppleTvError("pyatv 未安装，" + _pyatv_hint())
 
         def launch_app(self, bundle):
-            raise AppleTvError("pyatv 未安装")
+            raise AppleTvError("pyatv 未安装，" + _pyatv_hint())
 
         def artwork(self):
-            raise AppleTvError("pyatv 未安装")
+            raise AppleTvError("pyatv 未安装，" + _pyatv_hint())
 
         def keyboard_focus(self):
             return "Unknown"

@@ -43,3 +43,68 @@
 - **第二批**：A3 语音、A4 剪贴板/短语、B2 自动重连、B1 Android 扫描。
 - **第三批（平台绑定较重）**：C1 菜单栏 App、D1 宏、B3 服务自发现。
 - 提案与未决项的分工：O2（默认无鉴权）仍是**产品决策**，任何新功能都不改变这个前提；A2 只降低 O8 的泄露面，不替代 CSP。
+
+---
+
+## E. 第 30 轮候选（2026-09-26 追加）
+
+前置说明：A1–D2 共 12 条**已全部落地**（进度见 `remediation-plan.md`「第二轮进度」），
+C1 菜单栏 App / C2 快捷指令也在其中。因此本节只提**仍然空缺**的能力；每条都逐一 grep 过
+当前源码，`getGamepads` / `macroRec` / 导出导入 / `/api/diag` / 跨设备 step 均为 0 命中，
+不与已实现功能重复，也不与前 29 轮 UI 能力重叠。
+
+| # | 功能 | 治什么 | 做法 | 成本 | 验收口径 |
+|---|---|---|---|---|---|
+| E1 | **⏺ 宏录制器** | D1 宏已能跑，但自定义宏要**手写** `steps` JSON（`static/app.js:1040` 注释明说存 localStorage）；「观影」8 步让用户打字描述按键，摩擦比直接按 8 次还大 | 纯前端状态机：开录后拦 `sendKey`/`sendText`/`launchApp` 的上行，把 `{type, code/pkgs/text, 距上一步延时}` 压进 buffer（上限与 server `MACRO_MAX_STEPS` 同源=20，延时 clamp 100–10000ms）→ 停止 → 命名 → 走现有 `macroWrite`/撤销链路写 `MACRO_LS`；附「分享」：宏数组 → base64url → 二维码（`/api/qr.svg` 已有） | 低（~150 行前端，**server 零改动**，`validate_macro_steps` 已兜住安全） | 录 3 步 → 回放逐帧一致；dry-run 展示与录制一致；超 20 步截断并提示；回放中取消立即停 |
+| E2 | **自然语言遥控**（语音/命令面板 → 意图） | A3 语音已实现但只把识别结果**当字面文本**发给电视：说「声音小一点」会被打进搜索框 | 在语音结果与 `palCommands` 之间加一层同义词路由：词典挂在命令数据的 `alias` 字段（小一点/大声/静音/暂停/上一集…），命中走 `palExec`，未命中保持原 `sendText`。**零依赖、不联网** | 低（~100 行前端 + 一组中文同义词） | 说「声音小一点」→ 音量减、电视不出错字；说「打开 Netflix」→ 起 App；说「周杰伦」→ 仍走文本下发不被抢 |
+| E3 | **🔧 一键体检报告**（`GET /api/diag`） | 用户报「连不上」时要来回问版本/adb 版本/IME 三态/token 开没开/mDNS 起没起；`./check.sh` 是**开发者构建期**视角，没有**运行期**视角 | 新增只读路由，只回非敏感字段：`version`/`uptime`/`adb`(版本+设备数)/`pyatv`(可用性)/`ime`三态/`token_enabled`(bool，**不含值**)/`mdns`(在播?)/当前设备与在线态/最近一条宏错误；前端「诊断」卡片 + 「复制报告」。字段清单走**单一白名单函数**（对齐 `bundle_files()` 的做法，别散着写） | 低（server ~80 行 + 前端一卡片） | `curl /api/diag` 输出里 grep `token 值|cred|pairing` 为 0；有/无令牌两种启动都 200；复制内容可直接贴 issue；补 `tests/test_diag.py` 钉字段白名单 |
+| E4 | **🎮 手柄 / 物理键盘当 D-pad** | 在 Android TV 上玩游戏或接蓝牙手柄时，手机虚拟 D-pad 是多余的；而 `padSens*` 的精细调校只有触屏能用 | `gamepadconnected` 后起 rAF 轮询（**无手柄零开销**）：轴死区 + 边沿触发映射方向键，Btn0=OK、Btn1=Back、Btn9=Menu，复用 `sendKey` 与 `kmSend` 的映射结构。断连立即停轮询 | 低（纯前端 ~120 行） | 推摇杆连续滚动不重复触发；A 键=OK；断连后 CPU 回落；`pageerror` 为空 |
+| E5 | **单手模式（左/右手布局镜像）** | D-pad 在 6.1″ 屏一角，右手持机时拇指要横跨整屏；`pane*`/`collapse*` 已有先例但没有按持机手做布局 | 设置项「单手：左/右」→ **数据级镜像**：只 `row-reverse` D-pad 与快捷键条，**不翻转文字方向**；与主题/折叠并用例 `serializeCollapsed` 同款本地持久化 | 低 | 切换后 D-pad 落拇指区；文字仍 LTR；重启保留；`./check.sh` 过 |
+| E6 | **配置导入 / 导出（换机不重来）** | 键位图/自定义宏/短语/主题/灵敏度/收藏全在浏览器 localStorage；换手机或换浏览器 = 全部重配，而 `state.json` 敏感不能整包导出 | 「设置 → 导出」生成 JSON，**只含上述非敏感键**，绝不读 `state.json`；「导入」走同一 schema 校验后写入。与 E3 共用白名单思路 | 低中（~120 行 + schema 校验） | 导出文件 grep `token\|cred\|pairing` = 0；A 机导出 → B 机导入 → 宏/键位/短语逐一复现；坏 JSON 只报错不写坏现有配置 |
+| E7 | **跨设备宏**（steps 里切设备） | 宏 steps 全打到**当前**设备；「全屋关机」= 客厅 Android TV 电源 + 主卧 Apple TV 电源，现在要按两次 | steps 增加 `{type:"switch", target:"<id|ip>"}`，`_macro_worker` 串行到该步先切设备再继续，失败不中断（沿用现有语义）。切换是持 `state_lock` 操作，别在锁内长等待；设备在线态变化要 `adb.invalidate_devices()` | 中（动 `_macro_worker` + 前端 step 编辑器） | 两步宏跨两台各发一键；切换失败后续照跑；`validate_macro_steps` 拒绝未知 `target` |
+| E8 | **带「反悔窗口」的定时关机** | D2 睡眠定时已能 30/60/90 分钟关电视，但「周一至周五 23:30 自动关客厅」这类**周期规则**没有，且自动动作最怕误伤 | 极简 wall-clock 规则（**无 cron 依赖**，在既有 8s 轮询里顺手比一次），存 `state.json` 的 `rules` 键；触发前 **5s toast 倒计时 + 「取消」按钮**，过窗口才真发电源键；默认不开、逐条可关 | 中 | 规则到点先出 5s 可取消提示；点取消不发键；规则列表可单条关闭；`./check.sh` 过 |
+
+### 建议路线
+
+- **第一批（全前端 / server 零风险，可一个迭代全上）**：E1 录制器（把宏从「写」变「录」，是 D1 的最后一块摩擦）、E2 语音意图、E4 手柄、E5 单手模式。这四条都不碰 `state.json`、不碰 `_macro_worker`，回归面只有 `static/*`，跑 `./check.sh` + 现有 harness 就够。
+- **第二批（要动 HTTP 层，按项目约定必须补 `tests/`）**：E3 体检报告（字段白名单测试优先写，防以后手滑加敏感字段）、E6 导入导出。
+- **第三批（结构性强、需先确认并发语义）**：E7 跨设备宏、E8 定时规则——都改 Python 侧，且 E7 依赖 pyatv 并发安全的既有取舍，E8 要定「自动动作」的产品口径。
+
+### 与现有约束的接口
+
+- **安全**：E3 / E6 都要走「非敏感字段白名单」单点，和 `/bundle.tgz` 的 `bundle_files()` 一个思路；导出的任何文件都不能带 `token`/`companion_cred`/配对凭据（O8 隐私模式是另一条线，别混）。
+- **state_lock**：E7 / E8 动 `state.json`，一律持锁；`save_state()` 的临时文件 + `os.replace` 原子写不变。
+- **副本一致性**：E1/E2/E4/E5 只改 `static/*`，E3/E7/E8 改 Python——两种都要记得跑 `./sync-native.sh`，别手 `cp`。
+- **成本共同点**：8 条全部**零新增依赖**，与项目「pyatv/qrcode 导入失败即优雅降级」的取向一致。
+
+---
+
+## F. 第 31 轮候选（2026-09-26 追加，E1–E8 之后的新一批）
+
+前置说明：E1–E8 一条未做，本节提的是**另一组**更贴家庭场景的点子。逐条 grep 过当前源码，
+`speechSynthesis` / `kidsLock` / `guardian` / `location.search` / `URLSearchParams` / `dashboard`
+均为 0 命中，不与已实现功能（29 轮 UI + A–D 12 条）和 E 批重复，同样零新增依赖。
+证据锚点：`MACRO_LS`（static/app.js:1042）/ `macroWrite()`（app.js:1311）/ 撤销链路
+（app.js:1066–1072）/ `sendKey`（app.js:766）/ `launchApp`（app.js:3005）/
+`atvRow(dev, s)`（app.js:2701）/ `/api/qr.svg?text=`（server.py:2022，512 字符上限）。
+
+| # | 功能 | 治什么 | 做法 | 成本 | 验收口径 |
+|---|---|---|---|---|---|
+| F1 | **🛡 观影守护（儿童锁）** | 主卧电视给孩子看：乱按退出 App、误关机；现在没有任何「只留几个键」的态 | 设置项开「守护模式」：勾选保留键（方向 / OK / 音量默认保留，电源默认排除）+ 4 位 PIN（localStorage，明说这是「防误触」不是安全边界）+ 无操作 5 分钟自动上锁；锁态盖一层不点透的浮层，PIN 键盘解锁。学 YouTube Kids parental gate / Netflix profile lock | 低（~150 行前端） | 锁后仅保留键可点；PIN 错 3 次禁 30s；刷新锁态保持；`pageerror` 空 |
+| F2 | **🧠 智能建议（本地用量洞察 → 一键宏）** | 宏（D1）和 E1 录制器都在，但用户不知道「自己天天重复的动作」值得固化；预置 5 场景不命中个人习惯 | 在 `sendKey`/`sendText`/`launchApp`/`macro` 四个出口打点（localStorage `atv_stats_v1`，**只记类型+标识、不记文本**，复用 A2 隐私取舍）；同一动作组一周 ≥3 次时出建议卡「检测到「Netflix → OK → 音量+」本周 4 次 → [生成一键宏]」，一键走现有 `macroWrite()` + 撤销链路，生成过记 `suggested` 标记不再重复弹。学 Spotify Wrapped / iOS 屏幕使用时间 | 低（~120 行前端） | 造 4 次同序列出建议卡；点生成后可回放；「忽略」后同序列不再出现 |
+| F3 | **🔗 家庭观影深链（扫码即播）** | 家人一句「帮我开 Netflix 调原画」要口头教 7 步；现有二维码只解决「接入」不解决「执行」 | 宏详情加「🔗 分享」：`http://<lan_ip>:<port>/?macro=<id>` 二维码复用 `/api/qr.svg`；扫码落地页是大按钮（≥120px）：宏名 + ▶，点击执行与 `palExec` 同款；无参数正常打开遥控页。令牌启用时二维码带 token（与 `/api/setup` 同取舍：持码=授权）。学 Spotify Code / Universal Links / NFC 标签 | 低（~100 行前端） | 扫码页只有大按钮与取消；执行与回放逐帧一致；未知 id 显示「宏不存在」不崩 |
+| F4 | **🏠 全屋设备看板** | 客厅 Android TV + 主卧 Apple TV 靠顶部 chip「串行」切换；谁在放什么、哪台没开，要逐个切过去看 | 顶栏「🏠」进看板：每台设备一张卡（在线态 / 前台 App / 最近动作 / 电源与常用 App 直达 / 点卡片=切当前设备），数据直接吃现有 8s 轮询的 devices 数组，**零新增请求**；单设备时入口隐藏。学 HA Overview 实体卡片 / Google Home devices tab | 低（~120 行前端） | 两台同屏且 ≤8s 随轮询刷新；点卡片切换后其余 UI 联动 |
+| F5 | **🔊 操作播报（TTS 反馈）** | 按键后视线不在屏幕（找手机 / 投影环境）不确定成没成；31 处 `aria-label` 之外没有听觉通道 | 设置开关「操作播报」：`speechSynthesis`（zh-CN rate 1.4）在按键 / 连接状态变化 / 宏每步完成时播一句（「已静音」「正在打开 Netflix」），新播报先 cancel 上一条防堆积；默认关（宿舍 / 办公室会吵） | 极低（~60 行前端） | 开开关按键即播；连按不重叠；关则完全静默；断连播「服务端连接中断」复用 F12 文案 |
+| F6 | **🧩 智能家居联动（HA 配方）** | 有 HA / 米家的用户想「人体传感器无人 → 暂停」「观影场景跟着宏走」；现在只有 C2 的 Siri 配方 | **纯文档**：README 一节给 HA `rest_command`（pause / mute / volume / macro 四个 POST 配方）+ automation YAML（无人 5 分钟暂停、回家续播），写明令牌启用时 `X-ATV-Token` 头填法；E3 的 `/api/diag` 落地后可作 `command_line sensor` 数据源。学 HA `wake_on_lan` / `command_line` 集成惯例 | 极低（只写文档） | YAML 复制即用；不新增端点 |
+
+### 建议路线
+
+- **第一批（全前端、回归面只有 `static/*`）**：F3 观影深链、F5 操作播报、F2 智能建议。三条都不碰 `state.json`、不碰 HTTP 层，跑 `./check.sh` + 现有 harness 足够。
+- **第二批（含产品决策）**：F1 守护模式（要先定 PIN 存哪儿、自动上锁阈值）、F4 全屋看板。
+- **第三批（文档级、随 E3 加分）**：F6 HA 配方。
+
+### 与现有约束的接口
+
+- **隐私**：F2 打点与 A2 隐私模式同口径——只记「哪个键 / 哪个 App」，文本内容一律不进计数；F3 深链的 `?macro=<id>` 也不含任何凭据（令牌进二维码是 /api/setup 既有取舍）。
+- **副本一致性**：F1–F5 只改 `static/*`，F6 只改 README——跑一次 `./sync-native.sh` 即可，别手 `cp`。
+- **轮次口径**：6 条全部零新增依赖，延续「pyatv / qrcode 导入失败即优雅降级」的取向。

@@ -44,18 +44,29 @@ cd mac && swiftc -O -target arm64-apple-macos26.0 -o ATVRemote main.swift -frame
 
 后台服务（`http://127.0.0.1:8300`）由 LaunchAgent 常驻，浏览器仍可访问。取消自启：`launchctl unload ~/Library/LaunchAgents/com.atv.remote.plist`。
 
-### 图标
+### 💻 桌面快捷方式（双击开遥控器）
 
-Mac 与 Android 共用一套设计（深色底 + 蓝色电视 + D-pad 徽章）。重新生成：
+不想装原生 App、也不想开终端？一条命令就能在桌面放一个 `ATV Remote.app`，双击即开：
 
 ```bash
 cd ~/atv-remote
-swift make_icon.swift        # 生成 mac/AppIcon_1024.png 和 mac/ic_launcher_fg_432.png
-# Mac: 见上文 mac/ 下的 iconset→iconutil 流程（产物已在 mac/ 下）
-# Android: 重新跑 android/build.sh 即可
+./mac/make-desktop-shortcut.sh      # 生成 ~/Desktop/ATV Remote.app
 ```
 
-### 手机（3 步变独立遥控器，之后不需要 Mac）
+生成的 app 是个 macOS AppleScript 小程序（只用系统自带的 `osacompile`，零第三方依赖），双击后依次做三件事：
+
+1. 探测 `http://127.0.0.1:8300/api/status`，服务在就直接打开；
+2. 不在就 `launchctl kickstart -k gui/$(id -u)/com.atv.remote` 把它拉起来
+   （LaunchAgent 被删、或从没装过时，退化为 `nohup .venv/bin/python server.py --no-open`），
+   之后按 0.5s 间隔轮询，最多等 20 秒；
+3. 用**默认浏览器**打开 `http://127.0.0.1:8300/`（不锁定某个浏览器，Edge / Safari / Chrome 都行）。
+
+任一步失败都会弹「请到 ~/atv-remote 查看 server.log」的对话框，不会静默什么都不发生。
+图标直接复用 `mac/AppIcon.icns`；脚本是幂等的（先 `rm -rf` 再重建），所以换过主图标后重跑一次即可刷新桌面图标。
+
+想彻底不用桌面这个 app：把 `~/Desktop/ATV Remote.app` 拖进废纸篓即可，服务与 LaunchAgent 都不受影响。
+
+### 手机（装个 APK 就能用，不需要电脑、不需要 Termux）
 
 ### ⚡ 一键宏
 
@@ -77,13 +88,33 @@ swift make_icon.swift        # 生成 mac/AppIcon_1024.png 和 mac/ic_launcher_f
 可用步骤类型：`key`（`code`/`codes`）、`text`（`text`，可加 `enter`）、`app`（`pkg`/`pkgs`），
 外加纯延时步骤 `{"delay":毫秒}`。上限 20 步、单步延时 ≤10s。
 
-打开 Mac 上的遥控器网页，底部有「📱 把遥控器装到手机」卡片：
+手机装的是 **`ATVRemote-native.apk`**（仓库根目录那个，Chaquopy 版）：Python 引擎、Web 界面、
+以及遥控 Android TV 用的 **adb 客户端** 全都打在包里，装完打开就能用。
 
-1. 手机浏览器打开同一页面 → 下载 `ATVRemote.apk` → 安装
-2. 安装 [Termux（F-Droid 版）](https://f-droid.org/packages/com.termux/) 并打开一次
-3. Termux 里粘贴卡片中那行 `curl ... | bash` 命令回车，自动装完（3-8 分钟，会同步 Mac 上的配对记录）
+1. 手机浏览器打开 Mac 的页面（底部「📱 把遥控器装到手机」卡片）→ 点「下载 ATVRemote.apk」
+2. 安装（提示「未知来源」时允许本次安装）
+3. 打开 App，等两三秒界面自己出来；Android TV 开「开发者选项 → 无线调试」后，在设备列表里点一下就连上
 
-之后打开 ATVRemote App 点「🚀 独立模式」即可。**微信/QQ 传文件给手机无法直接装 APK？** 用手机浏览器直接访问 Mac 页面下载即可。
+第一次连电视时电视屏幕会问「允许调试吗」，点允许（要拿电视遥控器操作）。
+
+#### 为什么 APK 里能跑 adb
+
+`server.py` 的 `Adb` 类是 `subprocess` 调 **adb 可执行文件** 的，而 Android App 沙箱里本来
+什么都没有，所以旧 APK 只是个空界面（会提示「adb 未安装」）。现在：
+
+- `adb` 本体放在 `android-native/app/src/main/jniLibs/arm64-v8a/libadb.so`，装机时由
+  PackageManager 解到 `nativeLibraryDir`——整个 Android 上基本只有这个目录允许 `execve()`
+  （Android 10+ 起 App 私有目录一律 noexec，解到 `files/` 再跑只会 EACCES）；
+- 它 DT_NEEDED 的几个库（`libprotobuf.so` / `libz.so.1` / `libzstd.so.1` …）在
+  `assets/adb-libs/`，首次启动由 `boot.py` 解到 `files/adb-libs`，再用 `LD_LIBRARY_PATH`
+  指过去。文件名字必须原样保留（`libz.so.1` 这种带版本号的不能改名），所以走 assets；
+- adb 是从 Termux 的 `android-tools` 包里抠出来的 aarch64 Android 版（官方不发 Android 客户端），
+  刷新方式：`python3 tools/fetch-adb-android.py`（可带包名只抓一个），清单看
+  `android-native/adb-bundle.txt`。
+
+> Apple TV 除外：它的遥控协议依赖 Mac 上的 pyatv，装不进 APK。用手机遥控 Apple TV 就直接
+> 浏览器打开 Mac 页面，按键全走 Mac。真想让手机不经过 Mac 自己遥控 Apple TV，才需要网页里
+> 那个折叠起来的 Termux 方案。
 
 ### 🤖 Android TV 连接（一次性）
 
@@ -132,7 +163,10 @@ swift make_icon.swift        # 生成 mac/AppIcon_1024.png 和 mac/ic_launcher_f
 
 ### 手机 App（Android APK）
 
-`android/ATVRemote.apk` — WebView 壳 App，装到手机上直接当遥控器用：
+> ⚠️ 这一节说的是 **WebView 壳 App**：它自己没有引擎，必须 Mac 上跑着服务才能用。
+> 只想「装个 APK 就能用」的话，看下一节「原生安卓 App（推荐）」，或者上面「手机」那一节。
+
+`android/ATVRemote.apk` — WebView 壳 App，装到手机上直接当遥控器用（前提是 Mac 上服务在跑）：
 
 1. Mac 上启动服务（`python3 server.py`，默认已开放局域网；当前已后台运行）
 2. 把 `android/ATVRemote.apk` 传到手机（微信/AirDroid/USB 均可），点击安装（允许"未知来源"）
@@ -143,17 +177,62 @@ swift make_icon.swift        # 生成 mac/AppIcon_1024.png 和 mac/ic_launcher_f
 
 ### 📱 原生安卓 App（推荐）
 
-`ATVRemote-native.apk`（约 33MB）——**Python 引擎直接内嵌**（Chaquopy），安装即用、零配置，无需 Mac 也无需 Termux：
+`ATVRemote-native.apk`（约 19MB）——**Python 引擎 + adb 客户端直接内嵌**（Chaquopy），安装即用、
+零配置，无需 Mac 也无需 Termux：
 
 - 打开 App → 自动启动内置引擎 → 直接进入遥控器
-- Apple TV 的扫描/配对/键盘输入（含中文）/应用启动全部内置；Android TV 因手机沙箱无 adb 二进制不可用（原生版主打 Apple TV）
-- 从 [Releases](https://github.com/cpufreestyle/atv-remote/releases) 下载安装即可
+- **Android TV 全功能**：按键、输入文字（含中文）、一键宏、截图、音量、应用列表
+- Apple TV 不在 APK 能力范围内：它的私有协议依赖 pyatv → pydantic-core（Rust），
+  Chaquopy 没有 Android 的预编译 wheel，交叉编译不出来。用手机遥控 Apple TV 请走浏览器模式
+  （手机打开 Mac 的页面），或者网页里折叠起来的 Termux 方案
 
-重新构建：
+重新构建（chaquo.com 不通就加降级参数）：
+### 🧪 在模拟器上验 APK（macOS + 本机 SDK）
+
+### 🎨 图标（四处同源，改一处要全跑）
+
+`mac/make_icon.swift` 是主图（1024 全出血 + 自适应前景 432），其余都是它的派生：
+
+```bash
+cd ~/atv-remote
+swift make_icon.swift                  # mac/AppIcon_1024.png + ic_launcher_fg_432.png
+mac/make-icns.sh                       # iconset -> mac/AppIcon.icns
+python3 tools/make_icons.py            # static/ 4 张 PWA / iOS 图标
+python3 tools/make-android-icons.py    # Android 五档前景（带对比度自查）
+./mac/make-desktop-shortcut.sh         # 刷新桌面 app 的图标
+```
+
+**为什么是四个脚本**：每处格式不同（icns / PWA PNG / Android 密度档），但都从同一张
+1024 主图派生。历史上漏跑过两次，各有测试兜底（`tests/test_icons.py`）：
+
+- 漏跑 `make-android-icons.py` → 手机上还是旧图，与自适应背景对比度 1.08:1，
+  桌面上就是一块深色方块（用户报的「看不到图标」）；
+- `index.html` 里留了早期写死的 emoji data-URI favicon → 浏览器取「最后一个 rel=icon」，
+  新图标被它顶掉。现在锁住顺序：PNG 在前、SVG 在后。
+
+"装完 APK 就能用"这条链路在 Mac 上测不到（Chaquopy 内嵌引擎、execve adb、依赖库查找）。
+用仓库里的脚本一键验：
+
+```bash
+tools/emulator-test.sh            # 默认用 test_avd；AVD 名作第一个参数
+```
+
+它做六件事：headless 起模拟器（交给 launchd，否则会被 exec 会话收掉）→ 装 APK →
+启 App 并抓引擎横幅 → 让模拟器自己变成"电视"（`setprop service.adb.tcp.port 5555`）→
+`adb forward` 后直接打 App 内嵌服务的 `/api/status`、`/api/connect`、`/api/cmd`、
+`/api/screenshot` → 截图看界面。
+
+判据：横幅里出现 `adb : .../libadb.so (Android Debug Bridge version 1.0.41)`，
+`connect` 拿得到设备信息，按键返回 `{"ok": true}`，截图是一张真 PNG。
+
+> 调试技巧：`adb forward` 之后从 Mac 上就能直接访问 App 内的服务，比点 UI 快得多。
 
 ```bash
 cd android-native
-./gradlew assembleRelease   # 产物: app/build/outputs/apk/release/app-release.apk
+./gradlew assembleRelease -PnoAppletv \
+  -PpypiMirror=https://mirrors.cloud.tencent.com/pypi/simple
+# 产物: app/build/outputs/apk/release/app-release.apk
+# 拷贝到仓库根目录当 ATVRemote-native.apk（网页「下载 APK」那个链接）
 ```
 
 > 必须用仓库里的 `./gradlew`（已钉 Gradle 8.14.3）：AGP 8.11 与 Gradle 9.x 不兼容，
@@ -190,22 +269,31 @@ python3 server.py [--host 127.0.0.1] [--port 8300] [--adb adb路径] [--no-open]
 
 用 `.venv/bin/python server.py` 启动会加载 Apple TV 支持（pyatv）；直接 `python3 server.py` 时 Apple TV 功能自动禁用、Android 照常可用。
 
-### 🔒 局域网访问令牌（默认自动生成）
+### 🔒 局域网访问令牌（LaunchAgent 默认不鉴权）
 
-服务默认监听 `0.0.0.0`。为了不让「同网段任何人都能对你的电视发 `input text` / `monkey`」成立，
-**首次启动会自动生成一个访问令牌**，打印在终端横幅里并存入 `state.json`（重启不变）。
-之后的行为：
+服务默认监听 `0.0.0.0`。令牌是可选能力，**本仓库的 Mac 开机自启默认把它关掉**：
+`mac-install.sh` 写进 `~/Library/LaunchAgents/com.atv.remote.plist` 的启动参数里有
+`--no-token`，所以手机/平板直接开 `http://<Mac局域网IP>:8300` 就能用，不必输令牌；
+LaunchAgent 重启（含开机、崩溃自愈）后依然如此。
 
-- **本机（`127.0.0.1` / `::1`）免令牌**，本机浏览器和 Mac App 用法不变；
+不启用令牌时：
+
+- 本机与局域网设备都直接可用，无登录页、无 `?token=`；
+- `/bundle.tgz` **不含 `state.json`**（Apple TV 配对凭据），手机装完引擎自行配对即可；
+- 同网段任何设备都能遥控电视——家里内网可接受，公共网络请务必收紧。
+
+想收紧（两种做法）：
+
+- 删掉 `mac-install.sh` 里那行 `--no-token` 重跑一次，或直接编辑 plist 的 `ProgramArguments` 删掉它，
+  然后 `launchctl kickstart -k gui/$(id -u)/com.atv.remote`；
+- 只想本机用：`--host 127.0.0.1`（此时任何设备都进不来）。
+
+启用令牌后（`--token 你的令牌` / 环境变量 `ATV_TOKEN`，或绑 `0.0.0.0` 且什么都不指定时
+首启自动生成，打印在终端横幅并存入 `state.json`，重启不变）：
+
+- 本机（`127.0.0.1` / `::1`）免令牌，本机浏览器和 Mac App 用法不变；
 - 局域网设备首次访问会看到登录页；打开本页面「📱 装到手机」里有**带令牌的二维码**，扫一次即完成
   接入（服务端种 cookie，之后不再需要令牌）；
-- 想指定自己的令牌：`--token 你的令牌`（或环境变量 `ATV_TOKEN`）；
-- 想退回「完全无鉴权」的自用内网：`--no-token`，或用 `--host 127.0.0.1` 只允许本机访问。
-
-开启后：
-
-- **本机（`127.0.0.1` / `::1`）免令牌**，本机浏览器和 Mac App 用法不变；
-- 局域网设备访问 `/` 会看到登录页，输入令牌即可（成功后种 cookie，后续请求自动带上）；
 - 脚本 / App 调用用 `X-ATV-Token` 头，或在 URL 后加 `?token=<令牌>`：
   ```bash
   curl -H 'X-ATV-Token: 你的令牌' -X POST -d '{"type":"key","code":19}' http://192.168.1.5:8300/api/cmd

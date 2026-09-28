@@ -376,14 +376,14 @@ class MarkupTest(unittest.TestCase):
         cls.html = (STATIC / "index.html").read_text(encoding="utf-8")
 
     def test_card_is_not_gated_on_being_connected(self):
-        self.assertIn('<section class="card" id="wolCard">', self.html)
+        self.assertIn('<section class="card" id="wolCard" data-collapsible', self.html)
         i = self.html.index('id="wolCard"')
         seg = self.html[i:self.html.index("</section>", i)]
         self.assertNotIn("data-needs-device", seg,
                          "设备离线正是这张卡唯一的用途，藏起来就白做了")
 
     def test_card_parts_exist(self):
-        for frag in ('<h2>⚡ 远程开机 <span id="wolCount" class="badge">—</span></h2>',
+        for frag in ('<h2 class="chead">⚡ 远程开机 <span id="wolCount" class="badge">—</span>',
                      '<div id="wolList"></div>',
                      '<p class="hint" id="wolHint">',
                      '<button id="wolRefreshBtn" class="btn tiny" type="button">↻ 刷新 MAC</button>',

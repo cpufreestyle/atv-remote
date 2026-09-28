@@ -1,15 +1,27 @@
 import AppKit
 
-// ATV Remote 图标生成：macOS 主图标(1024) + Android 自适应图标前景层(432)
-// 设计：深色圆角底 + 蓝色电视(播放) + D-pad 遥控徽章，对应 App 暗色主题
+// ATV Remote 图标生成（Apple 风格 / macOS 11+ 规范）
+//
+// 设计约定（与 tools/make_icons.py 的 PWA 图标、static/icon.svg 同一套视觉）：
+//   1) 1024 全出血，不自己画圆角、不加透明边 —— 系统会套连续圆角（squircle）遮罩，
+//      自己画圆角会双重遮罩、接缝处发虚；
+//   2) 品牌蓝对角渐变底（#2f7eff → #0047c4）+ 左上径向高光 + 底部轻压暗，
+//      这是 macOS 图标「有厚度的实物感」的来源；
+//   3) 单一白色字形（电视屏 + 播放键 + 支架）带柔和投影，小到 16px 仍认得出。
+//
+// 用法：swift make_icon.swift [输出目录]，默认 ./mac
 
-let BLUE = NSColor(srgbRed: 0.31, green: 0.55, blue: 1.0, alpha: 1)        // #4f8cff
-let BLUE_DEEP = NSColor(srgbRed: 0.18, green: 0.42, blue: 0.88, alpha: 1)  // #2f6ae0
-let BG_TOP = NSColor(srgbRed: 0.17, green: 0.196, blue: 0.26, alpha: 1)    // #2b3242
-let BG_BOT = NSColor(srgbRed: 0.066, green: 0.078, blue: 0.125, alpha: 1)  // #111420
+let OUT_ARG = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : nil
+let SIZE: CGFloat = 1024
 
-func roundRect(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ r: CGFloat) -> NSBezierPath {
-    return NSBezierPath(roundedRect: NSRect(x: x, y: y, width: w, height: h), xRadius: r, yRadius: r)
+// —— 配色（static/style.css 的 --accent #006afd 一族）——
+let BLUE_TOP = NSColor(srgbRed: 0.184, green: 0.494, blue: 1.000, alpha: 1)   // #2f7eff
+let BLUE_BOT = NSColor(srgbRed: 0.000, green: 0.278, blue: 0.769, alpha: 1)   // #0047c4
+let SCREEN   = NSColor(srgbRed: 0.961, green: 0.973, blue: 0.988, alpha: 1)   // #f5f8fc
+let TRIANGLE = NSColor(srgbRed: 0.024, green: 0.310, blue: 0.855, alpha: 1)   // #064fda
+
+func roundRect(_ r: CGRect, _ radius: CGFloat) -> NSBezierPath {
+    return NSBezierPath(roundedRect: r, xRadius: radius, yRadius: radius)
 }
 
 func triangle(_ p1: CGPoint, _ p2: CGPoint, _ p3: CGPoint) -> NSBezierPath {
@@ -18,57 +30,60 @@ func triangle(_ p1: CGPoint, _ p2: CGPoint, _ p3: CGPoint) -> NSBezierPath {
     return p
 }
 
-/// 在指定尺寸画主题元素（原点左下角；scale=1 时按 1024 布局）
-func drawMotif(scale s: CGFloat, badgeScale bs: CGFloat = 1.0) {
-    // —— 电视 ——
-    let tvX = 232 * s, tvY = 430 * s, tvW = 560 * s, tvH = 380 * s
-    // 机身
-    NSColor(srgbRed: 0.04, green: 0.05, blue: 0.07, alpha: 1).setFill()
-    roundRect(tvX, tvY, tvW, tvH, 44 * s).fill()
-    // 屏幕蓝色渐变 + 白色播放三角
-    let inset = 26 * s
-    let scr = roundRect(tvX + inset, tvY + inset, tvW - inset * 2, tvH - inset * 2 - 10 * s, 30 * s)
-    NSGradient(starting: BLUE, ending: BLUE_DEEP)!.draw(in: scr, angle: -90)
-    // 白色描边(机身)
-    BLUE.withAlphaComponent(0.9).setStroke()
-    let body = roundRect(tvX, tvY, tvW, tvH, 44 * s)
-    body.lineWidth = 10 * s
-    body.stroke()
-    // 播放三角
-    let cx = tvX + tvW / 2 - 24 * s, cy = tvY + (tvH - 10 * s) / 2
-    NSColor.white.setFill()
-    triangle(CGPoint(x: cx - 34 * s, y: cy + 52 * s),
-             CGPoint(x: cx - 34 * s, y: cy - 52 * s),
-             CGPoint(x: cx + 60 * s, y: cy)).fill()
-    // 底座
-    NSColor(srgbRed: 0.29, green: 0.33, blue: 0.42, alpha: 1).setFill()
-    roundRect(tvX + tvW / 2 - 52 * s, tvY - 42 * s, 104 * s, 40 * s, 10 * s).fill()
-    roundRect(tvX + tvW / 2 - 118 * s, tvY - 78 * s, 236 * s, 30 * s, 12 * s).fill()
+/// 全出血渐变底：对角渐变 + 左上高光 + 底部轻压暗（1024 坐标系，y 向上）
+func drawBackground(_ ctx: CGContext, size: CGFloat) {
+    let space = CGColorSpaceCreateDeviceRGB()
+    let layers = [BLUE_TOP.cgColor, BLUE_BOT.cgColor] as CFArray
+    let grad = CGGradient(colorsSpace: space, colors: layers, locations: [0, 1])!
+    ctx.drawLinearGradient(grad,
+                           start: CGPoint(x: 0, y: size),
+                           end: CGPoint(x: size, y: 0),
+                           options: [])
+    // 左上径向高光：给瓷面一点「光打上来」的通透感
+    let glowColors = [NSColor.white.withAlphaComponent(0.22).cgColor,
+                      NSColor.white.withAlphaComponent(0.0).cgColor] as CFArray
+    let glow = CGGradient(colorsSpace: space, colors: glowColors, locations: [0, 1])!
+    let gc = CGPoint(x: size * 0.28, y: size * 0.76)
+    ctx.drawRadialGradient(glow, startCenter: gc, startRadius: 0,
+                           endCenter: gc, endRadius: size * 0.70,
+                           options: .drawsBeforeStartLocation)
+    // 底部压暗：让字形站得住，也避免整块纯平
+    let vigColors = [NSColor.black.withAlphaComponent(0.0).cgColor,
+                     NSColor.black.withAlphaComponent(0.16).cgColor] as CFArray
+    let vig = CGGradient(colorsSpace: space, colors: vigColors, locations: [0, 1])!
+    ctx.drawLinearGradient(vig, start: CGPoint(x: 0, y: size * 0.34),
+                           end: CGPoint(x: 0, y: 0), options: [])
+}
 
-    // —— D-pad 遥控徽章（压在电视右下角）——
-    let bR = 176 * s * bs
-    let bCx = tvX + tvW - 22 * s, bCy = tvY - 8 * s
-    // 外圈
-    NSColor(srgbRed: 0.09, green: 0.10, blue: 0.15, alpha: 1).setFill()
-    NSBezierPath(ovalIn: NSRect(x: bCx - bR, y: bCy - bR, width: bR * 2, height: bR * 2)).fill()
-    BLUE.setStroke()
-    let ring = NSBezierPath(ovalIn: NSRect(x: bCx - bR, y: bCy - bR, width: bR * 2, height: bR * 2))
-    ring.lineWidth = 9 * s
-    ring.stroke()
-    // 四向箭头
-    NSColor.white.setFill()
-    let d = 86 * s * bs, a = 30 * s * bs   // 距中心 / 箭头半径
-    triangle(CGPoint(x: bCx - a, y: bCy + d - a), CGPoint(x: bCx + a, y: bCy + d - a),
-             CGPoint(x: bCx, y: bCy + d + a)).fill()                                    // 上
-    triangle(CGPoint(x: bCx - a, y: bCy - d + a), CGPoint(x: bCx + a, y: bCy - d + a),
-             CGPoint(x: bCx, y: bCy - d - a)).fill()                                    // 下
-    triangle(CGPoint(x: bCx - d + a, y: bCy - a), CGPoint(x: bCx - d + a, y: bCy + a),
-             CGPoint(x: bCx - d - a, y: bCy)).fill()                                    // 左
-    triangle(CGPoint(x: bCx + d - a, y: bCy - a), CGPoint(x: bCx + d - a, y: bCy + a),
-             CGPoint(x: bCx + d + a, y: bCy)).fill()                                    // 右
-    // 中心 OK 圆
-    NSGradient(colors: [BLUE, BLUE_DEEP])!.draw(in: NSBezierPath(ovalIn:
-        NSRect(x: bCx - 44 * s * bs, y: bCy - 44 * s * bs, width: 88 * s * bs, height: 88 * s * bs)), angle: -90)
+/// 主题字形：白色电视屏（含播放键）+ 支架。s 为缩放系数，1024 布局下传 1。
+func drawMotif(scale s: CGFloat) {
+    let scr = CGRect(x: 196 * s, y: 356 * s, width: 632 * s, height: 404 * s)
+    // 柔和投影：Apple 图标「浮在瓷面上」的关键一笔
+    let shadow = NSShadow()
+    shadow.shadowColor = NSColor.black.withAlphaComponent(0.30)
+    shadow.shadowBlurRadius = 26 * s
+    shadow.shadowOffset = NSSize(width: 0, height: -14 * s)
+    shadow.set()
+    // 屏
+    SCREEN.setFill()
+    roundRect(scr, 76 * s).fill()
+    NSShadow().set()   // 后面的支架/三角不要重复投影
+    // 播放键（品牌蓝，等比嵌在屏里）
+    let cx = scr.midX + 10 * s
+    let cy = scr.midY
+    let tw: CGFloat = 132 * s
+    let th: CGFloat = 166 * s
+    TRIANGLE.setFill()
+    triangle(CGPoint(x: cx - tw / 2, y: cy + th / 2),
+             CGPoint(x: cx - tw / 2, y: cy - th / 2),
+             CGPoint(x: cx + tw / 2, y: cy)).fill()
+    // 支架（颈 + 脚）
+    let neckH: CGFloat = 46 * s
+    SCREEN.setFill()
+    roundRect(CGRect(x: scr.midX - 46 * s, y: scr.minY - neckH,
+                     width: 92 * s, height: neckH), 8 * s).fill()
+    roundRect(CGRect(x: scr.midX - 134 * s, y: scr.minY - neckH - 34 * s,
+                     width: 268 * s, height: 34 * s), 17 * s).fill()
 }
 
 func savePng(_ image: NSImage, _ path: String, _ px: CGFloat) {
@@ -82,38 +97,34 @@ func savePng(_ image: NSImage, _ path: String, _ px: CGFloat) {
     NSGraphicsContext.restoreGraphicsState()
     let data = rep.representation(using: .png, properties: [:])!
     try! data.write(to: URL(fileURLWithPath: path))
-    print("已生成 \(path) (\(px)px)")
+    print("wrote " + path)
 }
 
-// 输出目录：第一个参数优先，否则当前目录下的 mac/（README 在仓库根目录跑 swift make_icon.swift）
-let out = CommandLine.arguments.count > 1
-    ? CommandLine.arguments[1]
-    : (FileManager.default.currentDirectoryPath as NSString).appendingPathComponent("mac")
+let out = OUT_ARG ?? ((FileManager.default.currentDirectoryPath as NSString)
+                      .appendingPathComponent("mac"))
 
-// —— 1) macOS 图标 1024：圆角底 + 主题 ——
-let mac = NSImage(size: NSSize(width: 1024, height: 1024))
+// —— 1) macOS 主图标：1024 全出血 ——
+let mac = NSImage(size: NSSize(width: SIZE, height: SIZE))
 mac.lockFocus()
-let bg = roundRect(20, 20, 984, 984, 232)
-NSGradient(starting: BG_TOP, ending: BG_BOT)!.draw(in: bg, angle: -90)
-NSColor(srgbRed: 0.29, green: 0.32, blue: 0.40, alpha: 0.55).setStroke()
-let border = roundRect(26, 26, 972, 972, 226)
-border.lineWidth = 5
-border.stroke()
-drawMotif(scale: 1.0, badgeScale: 1.0)
+let ctx = NSGraphicsContext.current!.cgContext
+drawBackground(ctx, size: SIZE)
+drawMotif(scale: 1.0)
 mac.unlockFocus()
-savePng(mac, out + "/AppIcon_1024.png", 1024)
+savePng(mac, out + "/AppIcon_1024.png", SIZE)
 
-// —— 2) Android 前景层 432（透明底，内容在中心 66% 安全区）——
-let fg = NSImage(size: NSSize(width: 432, height: 432))
+// —— 2) Android 自适应图标前景层 432（透明底，内容收在 66% 安全区内）——
+let FG: CGFloat = 432
+let fg = NSImage(size: NSSize(width: FG, height: FG))
 fg.lockFocus()
 NSGraphicsContext.current?.saveGraphicsState()
-let safe = NSBezierPath(ovalIn: NSRect(x: 60, y: 60, width: 312, height: 312))
-safe.setClip()  // 只在安全圆内画，防裁切出怪边
-// 按比例：把 1024 布局中的主题（约 x212..1010, y300..870 → 中心 (611,585)）映射到 432 中心
-let s: CGFloat = 0.36
-NSGraphicsContext.current?.cgContext.translateBy(x: 216 - 611 * s, y: 216 - 585 * s)
+let safe = NSBezierPath(ovalIn: NSRect(x: FG * 0.17, y: FG * 0.17, width: FG * 0.66, height: FG * 0.66))
+safe.setClip()   // 裁掉安全圆外的东西，防自适应遮罩切出怪边
+let s: CGFloat = 0.39
+// 1024 布局里字形的包围盒中心约 (512, 517)，映射到 432 的画布中心 (216, 216)
+NSGraphicsContext.current?.cgContext.translateBy(x: 216 - 512 * s, y: 216 - 517 * s)
 NSGraphicsContext.current?.cgContext.scaleBy(x: s, y: s)
-drawMotif(scale: 1.0, badgeScale: 0.92)
+drawMotif(scale: 1.0)
 NSGraphicsContext.current?.restoreGraphicsState()
 fg.unlockFocus()
-savePng(fg, out + "/ic_launcher_fg_432.png", 432)
+savePng(fg, out + "/ic_launcher_fg_432.png", FG)
+

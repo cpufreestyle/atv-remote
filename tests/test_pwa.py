@@ -7,6 +7,7 @@ import shutil
 import struct
 import subprocess
 import unittest
+import re
 from pathlib import Path
 
 from server import static_ctype
@@ -92,6 +93,55 @@ class ServiceWorkerTest(unittest.TestCase):
 
     def test_cache_versioned(self):
         self.assertRegex(self.sw, r'CACHE\s*=\s*"atv-shell-v\d+"')
+
+
+class IconDesignTest(unittest.TestCase):
+    """三处图标源（macOS / PWA / SVG）必须还在同一套 Apple 风格版式上。
+
+    改图标时最容易悄无声息发生的两件事：macOS 那张又自己画上圆角（系统会再套一次
+    squircle，接缝发虚），以及 1024 布局坐标只在一边改、另一边忘了同步。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.swift = (ROOT / "make_icon.swift").read_text(encoding="utf-8")
+        cls.py = (ROOT / "tools" / "make_icons.py").read_text(encoding="utf-8")
+        cls.svg = (STATIC / "icon.svg").read_text(encoding="utf-8")
+
+    def test_mac_icon_is_full_bleed(self):
+        # macOS 11+：不预套圆角，系统自己裁。旧版画过的 roundRect(20, 20, 984, 984, 232)
+        # 不能再回来
+        self.assertIn("let SIZE: CGFloat = 1024", self.swift)
+        self.assertNotIn("roundRect(20, 20, 984, 984", self.swift,
+                         "不要再自己画圆角底：系统会再套一次 squircle，接缝发虚")
+        self.assertIn("drawBackground", self.swift)
+        self.assertIn("shadow", self.swift, "字形要带投影（Apple 图标的实物感）")
+
+    def test_layout_numbers_stay_in_sync(self):
+        # Swift 与 Python 共用同一套 1024 布局；只改一边=渐变对不上、字形错位
+        swift_scr = re.search(r"CGRect\(x: (\d+) \* s, y: (\d+) \* s, "
+                              r"width: (\d+) \* s, height: (\d+) \* s\)",
+                              self.swift)
+        py_scr = re.search(r"SCR = \((\d+), (\d+), (\d+), (\d+)\)", self.py)
+        self.assertTrue(swift_scr and py_scr, "两边都要能解析出电视屏坐标")
+        sx0, sy0, sw, sh = (int(v) for v in swift_scr.groups())
+        px0, py0, px1, py1 = (int(v) for v in py_scr.groups())
+        # Swift 用左下原点（NSGraphicsContext 默认），PIL 用左上原点，y 要翻一下
+        self.assertEqual((sx0, 1024 - (sy0 + sh), sx0 + sw, 1024 - sy0),
+                         (px0, py0, px1, py1),
+                         "电视屏坐标在 Swift 与 Python 之间不一致")
+        for name in ("NECK", "FOOT"):
+            m = re.search(name + r" = \((\d+), (\d+), (\d+), (\d+)\)", self.py)
+            self.assertTrue(m, "Python 侧缺 " + name)
+
+    def test_svg_shares_palette(self):
+        for color in ("#2f7eff", "#0047c4", "#f5f8fc", "#064fda"):
+            self.assertIn(color, self.svg, "SVG favicon 与主图标配色不一致：" + color)
+        self.assertIn("viewBox", self.svg)
+
+    def test_iconset_script_exists(self):
+        self.assertTrue((ROOT / "mac" / "make-icns.sh").is_file(),
+                        "iconset→icns 的构建脚本要在仓库里，别只留在某台机器上")
 
 
 class StaticCtypeTest(unittest.TestCase):

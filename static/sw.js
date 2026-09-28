@@ -7,7 +7,9 @@
      下次加载即为新版本；activate 时清旧缓存，不会「新 HTML + 旧 JS」幽灵
    - 只认 origin 相同的 GET；/api/* 一律放行（实时状态进缓存就是 bug）
    - 升级前端若要强制刷新离线副本：递增下面的 CACHE 版本号 */
-const CACHE = "atv-shell-v4";
+// v5：修「点了下载无法下载」——下载类请求（*.apk 等）不再进 SW 缓存分支，
+// 且缓存写入失败不再吞掉网络响应。版本号必须递增，否则老客户端还跑旧逻辑。
+const CACHE = "atv-shell-v5";
 const SHELL = [
   "/",
   "/static/app.js",
@@ -44,6 +46,11 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith("/api/")) return;
+  // 大文件（APK 包）不要经手：Cache Storage 写 20MB 会触发配额失败，
+  // 而下面那条 .catch(() => hit) 会把「缓存写失败」和「网络失败」混为一谈 ——
+  // 网络明明是好的，却因为没缓存命中而 respondWith(undefined)，浏览器就报「无法下载」。
+  // 下载类请求直接放行给网络，别进 SW 的缓存逻辑。
+  if (req.mode === "no-cors" || /\.(apk|tgz|zip)$/i.test(url.pathname)) return;
 
   if (req.mode === "navigate") {
     event.respondWith((async () => {
@@ -69,12 +76,21 @@ self.addEventListener("fetch", (event) => {
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);
     const hit = await cache.match(req);
-    const net = fetch(req)
-      .then((res) => {
-        if (res && res.ok && res.type !== "opaque") cache.put(req, res.clone());
-        return res;
-      })
-      .catch(() => hit);
-    return hit || net;
+    // 先起网络请求；缓存写入是「顺手做的事」，绝不能因为写缓存失败而丢掉响应
+    const net = fetch(req).then((res) => {
+      if (res && res.ok && res.type !== "opaque") {
+        // 不 await、也不让它影响返回值：写缓存失败（配额、大文件）只丢缓存，
+        // 不能丢响应
+        cache.put(req, res.clone()).catch(() => {});
+      }
+      return res;
+    });
+    if (hit) {
+      // stale-while-revalidate：有缓存先返缓存，网络请求继续跑（失败也无所谓，
+      // 上面已经 catch 掉，不会变成 unhandled rejection）
+      net.catch(() => {});
+      return hit;
+    }
+    return net;
   })());
 });

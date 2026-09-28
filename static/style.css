@@ -10,20 +10,20 @@
    - 键盘可达性统一 :focus-visible 描边。 */
 :root {
   /* 中性色（Radix slate 暗色档） */
-  --bg:        hsl(220, 14%, 8%);
-  --card:      hsl(220, 13%, 11%);
-  --card2:     hsl(220, 12%, 15%);
-  --card3:     hsl(220, 11%, 19%);
-  --line:      hsl(220, 10%, 24%);
-  --line-soft: hsl(220, 10%, 19%);
+  --bg:        hsl(220, 16%, 7%);
+  --card:      hsl(220, 16%, 21%);
+  --card2:     hsl(220, 15%, 26% / .94);
+  --card3:     hsl(220, 14%, 30% / .90);
+  --line:      hsl(220, 20%, 38% / .52);
+  --line-soft: hsl(220, 20%, 32% / .42);
   --text:      hsl(220, 15%, 93%);
   --muted:     hsl(220, 8%, 63%);
   --faint:     hsl(220, 8%, 45%);
   /* 语义色（Radix 暗色档：9 实心 / 11 文字） */
-  --accent:      hsl(212, 100%, 62%);
-  --accent-solid:hsl(212, 100%, 50%);
-  --accent-soft: hsl(212, 60%, 20%);
-  --accent-text: hsl(212, 100%, 78%);
+  --accent:      hsl(211, 100%, 64%);
+  --accent-solid:hsl(211, 100%, 52%);
+  --accent-soft: hsl(211, 100%, 66% / .24);
+  --accent-text: hsl(211, 100%, 80%);
   --ok:          hsl(151, 55%, 45%);
   --ok-text:     hsl(151, 55%, 62%);
   --warn:        hsl(40, 80%, 52%);
@@ -35,11 +35,11 @@
   --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px;
   --sp-4: 16px; --sp-6: 24px;
   /* 圆角 */
-  --r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-full: 999px;
+  --r-sm: 10px; --r-md: 15px; --r-lg: 22px; --r-full: 999px;
   /* 阴影：遥控器是「按下去有回应」的隐喻，press 一律压缩阴影 */
-  --shadow-card: 0 1px 2px hsl(220 30% 4% / .4);
-  --shadow-pop:  0 8px 24px hsl(220 30% 4% / .5);
-  --shadow-press: inset 0 1px 3px hsl(220 30% 4% / .55);
+  --shadow-card: 0 1px 1px hsl(220 40% 3% / .24), 0 10px 30px hsl(220 45% 3% / .28);
+  --shadow-pop:  0 24px 64px hsl(220 50% 2% / .48), 0 6px 20px hsl(220 45% 2% / .34);
+  --shadow-press: inset 0 1px 3px hsl(220 35% 3% / .48);
   /* 按键底部立体棱（深色下用更黑的边；浅色主题见下方覆盖） */
   --key-edge:    0 2px 0 hsl(220 10% 4% / .6);
   /* 弹窗遮罩 / 日志底板（跟着主题走，不再写死） */
@@ -47,6 +47,10 @@
   --log-bg:      hsl(220 14% 6% / .94);
   /* 动效 */
   --dur-fast: 60ms; --dur: 160ms; --ease: cubic-bezier(.2, .7, .3, 1);
+  --pane-dur: 240ms; --touch-min: 36px;   /* 窗格转场 / 触控目标：数值与 app.js panemotion 段对齐，勿单边改 */
+  --collapse-dur: 180ms;             /* 卡片折叠高度过渡：数值与 app.js collapse 段 COLLAPSE_MS 对齐，勿单边改 */
+  --glass-blur: 18px;
+  --glass-saturate: 1.45;
 }
 
 /* ---------- 浅色主题（跟随系统） ----------
@@ -60,19 +64,19 @@
    2. 跟随系统：@media 里用 :not([data-theme])——用户一旦显式选过，媒体查询退场。
    深色是 :root 基座，显式 dark 不需要重复声明。 */
 :root[data-theme="light"] {
-    --bg:        hsl(220, 24%, 97%);
-    --card:      hsl(220, 20%, 100%);
-    --card2:     hsl(220, 18%, 95%);
-    --card3:     hsl(220, 16%, 90%);
-    --line:      hsl(220, 14%, 86%);
-    --line-soft: hsl(220, 14%, 91%);
+  --bg:        hsl(220, 22%, 93%);
+    --card:      hsl(220, 14%, 96%);
+    --card2:     hsl(220, 16%, 99% / .94);
+    --card3:     hsl(220, 18%, 93% / .92);
+    --line:      hsl(220, 14%, 68% / .28);
+    --line-soft: hsl(220, 16%, 78% / .30);
     --text:      hsl(220, 20%, 14%);
     --muted:     hsl(220, 10%, 40%);
     --faint:     hsl(220, 8%, 56%);
 
     --accent:      hsl(212, 90%, 44%);
     --accent-solid:hsl(212, 95%, 48%);
-    --accent-soft: hsl(212, 80%, 92%);
+    --accent-soft: hsl(211, 100%, 54% / .16);
     --accent-text: hsl(212, 85%, 36%);
     --ok:          hsl(151, 55%, 34%);
     --ok-text:     hsl(151, 60%, 27%);
@@ -82,9 +86,9 @@
     --danger-text: hsl(358, 70%, 37%);
 
     /* 浅色下阴影换成灰调（黑阴影叠白底会脏），立体棱改用浅灰下探边 */
-    --shadow-card: 0 1px 2px hsl(220 20% 55% / .14);
-    --shadow-pop:  0 8px 24px hsl(220 25% 40% / .16);
-    --shadow-press: inset 0 1px 3px hsl(220 20% 50% / .22);
+  --shadow-card: 0 1px 1px hsl(220 35% 62% / .06), 0 18px 36px hsl(220 35% 58% / .08);
+    --shadow-pop:  0 24px 64px hsl(220 35% 45% / .20), 0 6px 18px hsl(220 35% 45% / .12);
+    --shadow-press: inset 0 1px 3px hsl(220 25% 50% / .20);
     --key-edge:    0 2px 0 hsl(220 14% 78% / .9);
     --scrim:       rgba(15, 23, 42, .45);
     --log-bg:      hsl(220 20% 98% / .94);
@@ -92,18 +96,18 @@
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
     --bg:        hsl(220, 24%, 97%);
-    --card:      hsl(220, 20%, 100%);
-    --card2:     hsl(220, 18%, 95%);
-    --card3:     hsl(220, 16%, 90%);
-    --line:      hsl(220, 14%, 86%);
-    --line-soft: hsl(220, 14%, 91%);
+    --card:      hsl(220, 14%, 96%);
+    --card2:     hsl(220, 16%, 99% / .94);
+    --card3:     hsl(220, 18%, 93% / .92);
+    --line:      hsl(220, 14%, 68% / .28);
+    --line-soft: hsl(220, 16%, 78% / .30);
     --text:      hsl(220, 20%, 14%);
     --muted:     hsl(220, 10%, 40%);
     --faint:     hsl(220, 8%, 56%);
 
     --accent:      hsl(212, 90%, 44%);
     --accent-solid:hsl(212, 95%, 48%);
-    --accent-soft: hsl(212, 80%, 92%);
+    --accent-soft: hsl(211, 100%, 54% / .16);
     --accent-text: hsl(212, 85%, 36%);
     --ok:          hsl(151, 55%, 34%);
     --ok-text:     hsl(151, 60%, 27%);
@@ -113,9 +117,9 @@
     --danger-text: hsl(358, 70%, 37%);
 
     /* 浅色下阴影换成灰调（黑阴影叠白底会脏），立体棱改用浅灰下探边 */
-    --shadow-card: 0 1px 2px hsl(220 20% 55% / .14);
-    --shadow-pop:  0 8px 24px hsl(220 25% 40% / .16);
-    --shadow-press: inset 0 1px 3px hsl(220 20% 50% / .22);
+    --shadow-card: 0 1px 1px hsl(220 35% 62% / .06), 0 18px 36px hsl(220 35% 58% / .08);
+    --shadow-pop:  0 24px 64px hsl(220 35% 45% / .20), 0 6px 18px hsl(220 35% 45% / .12);
+    --shadow-press: inset 0 1px 3px hsl(220 25% 50% / .20);
     --key-edge:    0 2px 0 hsl(220 14% 78% / .9);
     --scrim:       rgba(15, 23, 42, .45);
     --log-bg:      hsl(220 20% 98% / .94);
@@ -144,12 +148,19 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 }
 
 .app { max-width: 480px; margin: 0 auto; padding: var(--sp-4) var(--sp-3) 96px; }
+@media (max-width: 420px) {
+  .app { padding: var(--sp-3) var(--sp-2) 96px; }
+  .card { padding: var(--sp-3) var(--sp-2) var(--sp-3); }
+  .hint { line-height: 1.7; }
+}
+.hint { font-size: 12.5px; }
+.estate .edesc { font-size: 12.5px; }
 
 /* ---------- header ---------- */
 header { margin-bottom: var(--sp-3); }
 .brand { display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-3); }
 .logo { font-size: 34px; line-height: 1; }
-.brand h1 { font-size: 20px; margin: 0; letter-spacing: .5px; }
+.brand h1 { font-size: 21px; margin: 0; letter-spacing: -.2px; }
 .sub { color: var(--muted); font-size: 12.5px; margin-top: 3px; display: flex; align-items: center; gap: 6px; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; }
 .dot.on  { background: var(--ok); box-shadow: 0 0 8px hsl(151 55% 45% / .8); animation: pulse 2.4s var(--ease) infinite; }
@@ -179,14 +190,24 @@ input:focus { border-color: var(--accent); }
 .chip.active { color: #fff; border-color: var(--accent-solid); background: var(--accent-soft); }
 
 /* ---------- 设备类型页签 ---------- */
-.devtabs { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-2); }
+.devtabs {
+  display: flex; gap: 3px; margin-bottom: var(--sp-2); padding: 3px;
+  background: var(--card2); border: 1px solid var(--line-soft);
+  border-radius: var(--r-full); backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow: var(--shadow-card);
+}
 .devtab {
-  flex: 1; background: var(--card2); color: var(--muted); border: 1px solid var(--line);
-  border-radius: var(--r-md); padding: var(--sp-2) 0; font-size: 14px; cursor: pointer;
+  flex: 1; color: var(--muted); border: 0;
+  border-radius: var(--r-full); padding: var(--sp-2) 0; font-size: 14px; cursor: pointer;
   min-height: 42px; transition: color var(--dur-fast), background var(--dur-fast), border-color var(--dur-fast);
 }
 .devtab:hover { color: var(--text); }
-.devtab.on { color: #fff; background: var(--accent-solid); border-color: var(--accent-solid); font-weight: 600; }
+.devtab.on {
+  color: #fff; background: var(--accent-solid);
+  box-shadow: 0 6px 18px hsl(211 100% 50% / .28);
+  font-weight: 600;
+}
 .devpane { display: none; }
 .devpane.on { display: block; }
 
@@ -212,11 +233,51 @@ input:focus { border-color: var(--accent); }
 
 /* ---------- card ---------- */
 .card {
-  background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg);
+  background: var(--card); border-radius: var(--r-lg);
   padding: var(--sp-3) var(--sp-3) var(--sp-4); margin-bottom: var(--sp-3);
-  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow: 0 0 0 1px hsl(220 15% 74% / .85), var(--shadow-card);
 }
 .card h2 { font-size: 13.5px; color: var(--muted); margin: 0 0 var(--sp-2); font-weight: 600; }
+
+/* ---------- 卡片折叠（学 WAI-ARIA Disclosure / Radix Collapsible：状态即属性） ----------
+   单一事实源是卡片上的 data-state（open / closed）：CSS 只读这个属性，JS 只翻这个属性，
+   两边都不直接改对方的样式——属性是唯一的合同，改样式不用碰 JS、改行为不用碰 CSS。
+   折叠态存浏览器 localStorage（键 atv.collapsed.v1）：与自定义宏同规矩，可编辑偏好不进
+   state.json（那份会被打进 bundle.tgz 分发给局域网任何设备）。
+   高度过渡用 grid-template-rows 1fr -> 0fr（不用 max-height 猜测值）；visibility 带
+   等长延迟隐藏，折叠后不会被 Tab 捞到，读屏也读不到。 */
+.card > .cbody {
+  display: grid; grid-template-rows: 1fr; visibility: visible;
+  transition: grid-template-rows var(--collapse-dur) var(--ease), visibility 0s;
+}
+.card[data-state="closed"] > .cbody {
+  grid-template-rows: 0fr; visibility: hidden;
+  transition: grid-template-rows var(--collapse-dur) var(--ease), visibility 0s linear var(--collapse-dur);
+}
+.cbody > .cinner { min-height: 0; overflow: hidden; transition: opacity calc(var(--collapse-dur) * 0.6) var(--ease); }
+.card[data-state="closed"] > .cbody > .cinner { opacity: 0; }
+
+/* 标题行：徽标靠左、折叠按钮靠右；按钮 36px 触控下限与 .btn.tiny.gear 同一套 */
+.card h2.chead { display: flex; align-items: center; gap: var(--sp-2); }
+.card h2.chead > .ctog { margin-left: auto; }
+.card .ctog {
+  flex: none; display: inline-grid; place-items: center; padding: 0;
+  min-width: var(--touch-min); min-height: var(--touch-min);
+  border: 0; background: none; color: var(--muted); cursor: pointer; border-radius: var(--r-sm);
+}
+.card .ctog:hover { color: var(--text); background: var(--card3); }
+.card .ctog .chev {
+  width: 9px; height: 9px;
+  border-right: 2px solid currentColor; border-bottom: 2px solid currentColor;
+  transform: rotate(45deg);                       /* 右下角描边转 45deg = 朝下的尖角 */
+  transition: transform var(--collapse-dur) var(--ease);
+}
+.card[data-state="closed"] .ctog .chev { transform: rotate(-45deg); }
+
+/* 设置弹窗里的「次级卡片」分段开关：.seg 默认按钮只有 25px 高，这里补到触控下限 */
+#collapseSeg button { min-height: var(--touch-min); padding: 0 14px; }
 
 /* ---------- 正在播放信息条 ---------- */
 .nprow { display: flex; align-items: center; gap: var(--sp-3); }
@@ -247,16 +308,23 @@ input:focus { border-color: var(--accent); }
 .npseek.noseek .npseekbtn { pointer-events: none; }
 
 /* ---------- tabs ---------- */
-.tabs { display: flex; gap: var(--sp-1); margin-bottom: var(--sp-3); }
+.tabs {
+  display: flex; gap: 3px; margin-bottom: var(--sp-3); padding: 3px;
+  background: var(--card2); border: 1px solid var(--line-soft); border-radius: var(--r-full);
+}
 .tab {
-  flex: 1; background: var(--card2); color: var(--muted); border: 1px solid var(--line);
-  border-radius: var(--r-md); padding: var(--sp-2) 0; font-size: 14px; cursor: pointer;
+  flex: 1; color: var(--muted); border: 0;
+  border-radius: var(--r-full); padding: var(--sp-2) 0; font-size: 14px; cursor: pointer;
   min-height: 40px; transition: color var(--dur-fast), background var(--dur-fast), border-color var(--dur-fast);
 }
 .tab:hover { color: var(--text); }
-.tab.on { color: #fff; background: var(--accent-solid); border-color: var(--accent-solid); }
+.tab.on {
+  color: #fff; background: var(--accent-solid);
+  box-shadow: 0 6px 18px hsl(211 100% 50% / .26);
+}
 .tabpane { display: none; }
-.tabpane.on { display: block; }
+.tabpane.on { display: block; animation: pane-in var(--pane-dur) var(--ease); }
+@keyframes pane-in { from { opacity: 0; transform: translateY(10px); } }
 
 /* ---------- dpad ---------- */
 .dpad {
@@ -304,7 +372,9 @@ input:focus { border-color: var(--accent); }
   border-radius: var(--r-md); padding: 11px var(--sp-3); font-size: 14px;
   text-decoration: none; min-height: 40px;
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  box-shadow: var(--key-edge);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow: 0 1px 0 hsl(0 0% 100% / .08), var(--key-edge);
   transition: transform var(--dur-fast) var(--ease), background var(--dur-fast),
               border-color var(--dur-fast), color var(--dur-fast);
 }
@@ -315,6 +385,10 @@ input:focus { border-color: var(--accent); }
 }
 .btn.primary { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; font-weight: 600; }
 .btn.primary:hover { background: var(--accent); border-color: var(--accent); }
+.btn.primary:active, .btn.primary.pressed {
+  background: var(--accent-solid); border-color: var(--accent-solid);
+  box-shadow: var(--shadow-press);
+}
 .btn.on { background: var(--accent-soft); border-color: var(--accent-solid); color: var(--accent-text); }
 .btn.danger { color: var(--danger-text); }
 .btn.danger:hover { border-color: var(--danger); color: var(--danger-text); }
@@ -323,7 +397,7 @@ input:focus { border-color: var(--accent); }
 
 .inputrow { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-1); }
 .inputrow input { flex: 1; }
-.hint { color: var(--muted); font-size: 12px; line-height: 1.7; margin: var(--sp-2) 0 0; }
+.hint { color: var(--muted); font-size: 13px; line-height: 1.65; margin: var(--sp-2) 0 0; }
 .hint b { color: var(--accent-text); }
 code {
   background: var(--card2); border: 1px solid var(--line); border-radius: 5px;
@@ -341,7 +415,8 @@ code {
 .imestate.warn { color: var(--warn-text); }
 .imestate.off  { color: var(--muted); }
 .withdel { display: inline-flex; align-items: center; gap: 2px; }
-.btn.tiny { padding: 6px 10px; font-size: 12px; border-radius: var(--r-sm); flex: none; min-height: 32px; }
+.btn.tiny { padding: 6px 10px; font-size: 12px; border-radius: var(--r-sm); flex: none; min-height: var(--touch-min); }
+.btn.tiny.gear { min-width: var(--touch-min); justify-content: center; }   /* 图标按钮：原宽 29-33px，低于 36px 触控目标 */
 
 /* ---------- 输入历史 ---------- */
 .brow.hist { justify-content: flex-start; }
@@ -416,6 +491,17 @@ code {
   font-size: 15px; border-radius: var(--r-sm);
 }
 .ntoast .ntof:hover { opacity: 1; }
+
+/* 可撤销动作按钮（撤销 Snackbar）：贴在通知文本右侧，36px 触控下限与 .ctog 对齐 */
+.ntoast .nact {
+  pointer-events: auto; flex: none; align-self: center;
+  min-height: var(--touch-min); min-width: 44px; padding: 0 var(--sp-2);
+  border: none; background: none; color: var(--accent-text);
+  font: inherit; font-weight: 600; font-size: 12.5px; line-height: 1.2;
+  cursor: pointer; border-radius: var(--r-sm); white-space: nowrap;
+}
+.ntoast .nact:hover { background: var(--card3); }
+.ntoast .nact:active { background: var(--card3); filter: brightness(.94); }
 .nmore {
   pointer-events: auto; font-size: 11.5px; padding: 3px var(--sp-3); cursor: pointer;
   background: var(--card); color: var(--muted); border: 1px solid var(--line);
@@ -455,6 +541,19 @@ code {
 .nrow.info .nmsg { color: var(--accent-text); }
 .nempty { color: var(--faint); font-size: 12.5px; text-align: center; padding: var(--sp-6); }
 .npanelfoot { color: var(--faint); font-size: 11.5px; }
+
+/* ---------- 空状态（第二十八轮）：学 Shopify Polaris Empty State ----------
+   契约：列表空着不是无话可说——一句解释 + 一个下一步动作。图标 currentColor
+   跟随主题，CTA 复用系统 .btn；触控下限与 panemotion 段同一个令牌，勿单边改。 */
+.estate {
+  margin-top: var(--sp-3); padding: var(--sp-6) var(--sp-4); text-align: center;
+  border: 1px dashed var(--line); border-radius: var(--r-lg); background: var(--card2);
+}
+.estate .eicon { display: block; margin: 0 auto; color: var(--faint); }
+.estate .etitle { margin-top: var(--sp-3); font-size: 14px; font-weight: 600; color: var(--text); }
+.estate .edesc { margin-top: var(--sp-2); font-size: 13px; line-height: 1.65; color: var(--muted); }
+.estate .ecta { margin-top: var(--sp-4); display: flex; flex-wrap: wrap; gap: var(--sp-2); justify-content: center; }
+.estate .ecta .btn { min-height: var(--touch-min); }
 
 /* ---------- 音量 OSD（本地反馈，学 Google TV 官方遥控） ----------
    位置取屏幕上部三分之一：不挡顶部设备信息、也不压底部按键区；纯浮层不吞点击。 */
@@ -596,8 +695,33 @@ code {
   padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom));
 }
 .modal .mbox { background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   padding: var(--sp-3); max-width: 92vw; max-height: 92vh; overflow: auto; box-shadow: var(--shadow-pop); }
 .modal img { max-width: 100%; max-height: 70vh; border-radius: var(--r-md); display: block; margin-bottom: var(--sp-2); }
+
+/* ---------- 底部快捷菜单（第二十九轮；学 Material 3 Bottom Sheet / iOS Context Menu） ----------
+   底端锚定而不是垂直居中：手机拇指热区在屏幕下半。动作行 >= 36px（--touch-min，
+   与空状态 CTA、pal 行高同一个令牌，勿单边改）；滑入 200ms 与窗格转场同量级，
+   全局 prefers-reduced-motion 兜底把动画一律关掉。颜色只吃令牌。 */
+.modal.sheet { align-items: flex-end; padding: 0; }
+.modal.sheet .sheetbox { width: 100%; max-width: 480px; margin: 0 auto; background: var(--card);
+  border-top: 1px solid var(--line); border-radius: var(--r-lg) var(--r-lg) 0 0;
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  padding: var(--sp-2) var(--sp-3) calc(var(--sp-3) + env(safe-area-inset-bottom));
+  box-shadow: var(--shadow-pop); animation: sheet-in .2s var(--ease); }
+@keyframes sheet-in { from { transform: translateY(28px); opacity: .5; } }
+.sheethandle { width: 36px; height: 4px; border-radius: var(--r-full); background: var(--card3); margin: 0 auto var(--sp-2); }
+.sheethead { display: flex; flex-direction: column; gap: 2px; padding: 0 var(--sp-1) var(--sp-2); min-width: 0; }
+.sheettitle { font-size: 14.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sheetsub { font-size: 12px; color: var(--muted); }
+.sheetacts { display: flex; flex-direction: column; }
+.sheetact { display: flex; align-items: center; min-height: var(--touch-min); padding: 0 var(--sp-2);
+  background: transparent; border: 0; border-radius: var(--r-sm); color: var(--text);
+  font-size: 14.5px; text-align: left; cursor: pointer; }
+.sheetact:hover, .sheetact:focus-visible { background: var(--card2); }
+.sheetact.danger { color: var(--danger-text); }
 
 /* ---------- 截屏工作台（第十七轮；学 HA camera snapshot 查看 + Google Photos 近期项目条 + macOS 预览） ----------
    舞台先适应、后放大：CSS 的 max-width/max-height 就是「适应态」，transform 只负责
@@ -709,6 +833,19 @@ code {
 .steps a { color: var(--accent-text); }
 .steps .inputrow { margin: var(--sp-2) 0 var(--sp-1); }
 .steps .inputrow input { font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
+#phoneInstall > .inputrow { margin: var(--sp-2) 0 var(--sp-1); }
+#phoneInstall > .inputrow input { font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
+#phoneInstall details.sub {
+  margin: var(--sp-2) 0 var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+  border-radius: var(--r-sm, 10px);
+}
+#phoneInstall details.sub > summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted, #9aa0a6);
+}
 .qrbox { display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-2); color: var(--muted); font-size: 12px; }
 .qrbox img { width: 132px; height: 132px; background: #fff; border-radius: var(--r-sm); padding: 8px; }
 #macroText {
@@ -719,7 +856,7 @@ code {
 
 /* ---------- 未连接电视：遥控区压暗，把注意力引向顶部的连接操作 ---------- */
 [data-needs-device] { transition: opacity var(--dur) var(--ease), filter var(--dur) var(--ease); }
-body.disc [data-needs-device] { opacity: .45; filter: saturate(.5); }
+body.disc [data-needs-device] { opacity: .68; filter: saturate(.8); }
 /* 不置 pointer-events:none：点了让服务端回「未连接电视」比完全没反应更能引导用户 */
 
 /* ---------- 宽屏 / 横屏：单列长滚动改双列，遥控主区保持一屏可见 ---------- */
@@ -823,3 +960,12 @@ body.disc [data-needs-device] { opacity: .45; filter: saturate(.5); }
 .brow.apps.rows .btn.tiny { flex: none; }
 .favstar[aria-pressed="false"] { color: var(--muted); }
 .favstar[aria-pressed="true"] { color: var(--warn-text); border-color: var(--warn); }
+
+/* ---------- 触摸板灵敏度（学各遥控 App 的滚动增益 / 游戏灵敏度滑条） ----------
+   一行排布：label + 滑条 + 读数 + 重置。读数用 tabular-nums，拖动时不抖字宽。
+   增益只影响触摸板的双指手势与单指长按连发，方向键按钮区节奏不动。 */
+.padsens { display: flex; align-items: center; gap: var(--sp-2); margin: 0 0 var(--sp-2); }
+.padsens label { font-size: 13px; color: var(--muted); flex: none; }
+.padsens input[type="range"] { flex: 1; min-width: 0; accent-color: var(--accent-solid); }
+.padsens .padsensval { flex: none; font-variant-numeric: tabular-nums; color: var(--text); font-size: 13px; min-width: 3.5ch; text-align: right; }
+.padsens .btn.tiny { flex: none; }

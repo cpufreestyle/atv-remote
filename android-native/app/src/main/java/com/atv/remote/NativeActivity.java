@@ -20,6 +20,7 @@ import com.chaquo.python.Python;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.io.File;
 
 /**
  * ATV Remote 原生版：App 内嵌 Python 引擎（Chaquopy），完全离线独立运行。
@@ -68,7 +69,14 @@ public class NativeActivity extends Activity {
             try {
                 Python py = Python.getInstance();
                 PyObject boot = py.getModule("boot");
-                boot.callAttr("start_server", 8300);
+                // adb 本体（jniLibs 里的 libadb.so）与它依赖的几个库要在这之前备好。
+                // 文件活放 Java 侧做：Chaquopy 的 Python 里 import com.chaquo.python
+                // 在某些线程上会直接 ModuleNotFoundError，而 Java 本来就有这些路径。
+                File libDir = extractAdbLibs();
+                boot.callAttr("start_server", 8300,
+                        getFilesDir().getAbsolutePath(),
+                        getApplicationInfo().nativeLibraryDir,
+                        libDir == null ? "" : libDir.getAbsolutePath());
             } catch (Throwable e) {
                 err = String.valueOf(e);
             }
@@ -94,6 +102,37 @@ public class NativeActivity extends Activity {
                 }
             });
         }).start();
+    }
+
+    /**
+     * 把 assets/adb-libs 里的依赖库解压到 files/adb-libs。
+     *
+     * adb 是 DT_NEEDED 按文件名找库的（libz.so.1 这种带版本号的名字不能改），
+     * 而 APK 的 jniLibs 只收 *.so，所以这些库走 assets，运行时解出来再用
+     * LD_LIBRARY_PATH 指过去。返回解压目录，失败返回 null。
+     */
+    private File extractAdbLibs() {
+        try {
+            String[] names = getAssets().list("adb-libs");
+            if (names == null || names.length == 0) return null;
+            File dir = new File(getFilesDir(), "adb-libs");
+            if (!dir.exists() && !dir.mkdirs()) return null;
+            byte[] buf = new byte[8192];
+            for (String n : names) {
+                if ("MANIFEST.txt".equals(n)) continue;
+                File out = new File(dir, n);
+                try (java.io.InputStream in = getAssets().open("adb-libs/" + n);
+                     java.io.FileOutputStream fos = new java.io.FileOutputStream(out)) {
+                    int r;
+                    while ((r = in.read(buf)) > 0) fos.write(buf, 0, r);
+                }
+                // noinspection ResultOfMethodCallIgnored
+                out.setReadable(true, true);
+            }
+            return dir;
+        } catch (IOException e) {
+            return null;
+        }
     }
 
     private void retryLater() {

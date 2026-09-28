@@ -61,6 +61,11 @@ def static_ctype(path: Path) -> str:
 # `adb devices` / `adb version` 的缓存秒数：按键路径每次 fork 进程是延迟大头，
 # 遥控器场景可接受 1.5s 的陈旧度（连接/断开等关键操作会主动失效缓存）
 DEVICES_CACHE_TTL = 1.5
+
+# 服务是否跑在手机 App 的 Chaquopy 引擎里（boot.py 设的）。页面据此隐藏
+# 「把遥控器装到手机」卡片：手机上已经装好了，而且 APK 文件不在包里，
+# 那张卡片的下载链接只会拿到 404「APK 不存在」。
+EMBEDDED = os.environ.get("ATV_EMBEDDED") == "1"
 # 单条命令允许的参数上限，防止构造超长指令（adb 命令行长度也有限制）
 MAX_TEXT_LEN = 5000
 MAX_KEYCODES = 32
@@ -172,7 +177,44 @@ def sh_quote(s: str) -> str:
 
 def clamp_coord(v) -> int:
     """触摸坐标夹到合理区间，避免超大数值进入 adb 命令行"""
-    return min(100000, max(-100000, int(v)))
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        # 畸形 body 的经典去处：缺字段 / 坏值在这一层挡住报 400，
+        # 否则 int() 的异常会一路逃到 do_POST 兜底，回一个没有信息量的 500
+        raise AdbError("坐标不合法：{!r}".format(v))
+    return min(100000, max(-100000, n))
+
+
+def coord_of(body, key) -> int:
+    """从请求体取一个坐标：缺字段与坏值都立刻 400，别让 body[key] 炸成 KeyError"""
+    if body.get(key) is None:
+        raise AdbError("缺少坐标参数 {}".format(key))
+    return clamp_coord(body[key])
+
+
+def norm_coord(body, key) -> float:
+    """Apple TV 触控的归一化坐标 0.0~1.0：缺字段 / 坏值提前报 400，
+    越界照旧夹到边界（与 atv_backend 内部钳制一致，不新增拒绝路径）"""
+    v = body.get(key)
+    if v is None:
+        raise AppleTvError("缺少坐标参数 {}".format(key))
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        raise AppleTvError("坐标不合法：{!r}".format(v))
+    return min(1.0, max(0.0, f))
+
+
+def clamp_duration(v, default=300) -> int:
+    """手势时长（ms）：缺省用 default，坏值报 400（以前 int() 会炸成 500）"""
+    if v is None:
+        return default
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        raise AdbError("手势时长不合法：{!r}".format(v))
+    return min(2000, max(100, n))
 
 
 # ---------------- 调用时间线（perf） ----------------
@@ -749,7 +791,12 @@ def make_status():
         },
         "sleep_timer": timer_state(),
         "macro": macro_state(),
+        "macro": macro_state(),
+        "macro": macro_state(),
+        "macro": macro_state(),
         "version": app_version(),
+        # 页面用它隐藏「把遥控器装到手机」卡片（手机 App 内嵌引擎时）
+        "embedded": EMBEDDED,
         "auto_reconnect": {
             "active": _auto_reconn["active"],
             "stopped": _auto_reconn["stopped"],
@@ -1097,13 +1144,13 @@ def handle_cmd_android(body):
         return {"ok": True}
 
     if t == "tap":
-        x, y = clamp_coord(body["x"]), clamp_coord(body["y"])
+        x, y = coord_of(body, "x"), coord_of(body, "y")
         run_shell(cur, "input tap {} {}".format(x, y))
         return {"ok": True}
 
     if t == "swipe":
-        args = [clamp_coord(body[k]) for k in ("x1", "y1", "x2", "y2")]
-        dur = min(2000, max(100, int(body.get("duration", 300))))
+        args = [coord_of(body, k) for k in ("x1", "y1", "x2", "y2")]
+        dur = clamp_duration(body.get("duration"))
         run_shell(cur, "input swipe {} {} {} {} {}".format(*args, dur))
         return {"ok": True}
 
@@ -1131,6 +1178,11 @@ def handle_cmd_appletv(body):
             raise AppleTvError("缺少键码")
         # 每条命令最坏阻塞 12s，不限量等于让一个请求长期占死遥控器通道
         codes = list(codes)[:MAX_KEYCODES]
+        # 与 Android 分支同款过滤：pyatv 的 send_keys 只吃整数键码，
+        # 客户端塞进 null / "abc" 时必须在这里挡住（以前一路炸成 500）
+        codes = [int(c) for c in codes if str(c).lstrip("-").isdigit()]
+        if not codes:
+            raise AppleTvError("键码不合法")
         atv_mgr.send_keys(codes)
         return {"ok": True, "sent": codes}
     if t == "text":
@@ -1145,8 +1197,9 @@ def handle_cmd_appletv(body):
         return {"ok": True}
     if t == "swipe":
         # 前端传归一化坐标 0.0~1.0
-        atv_mgr.swipe(body["x1"], body["y1"], body["x2"], body["y2"],
-                      body.get("duration", 300))
+        atv_mgr.swipe(norm_coord(body, "x1"), norm_coord(body, "y1"),
+                      norm_coord(body, "x2"), norm_coord(body, "y2"),
+                      clamp_duration(body.get("duration")))
         return {"ok": True}
     if t == "app":
         pkg = str(body.get("pkg", "")).strip()
@@ -1196,6 +1249,9 @@ def handle_atv_connect(body):
         entry = next((d for d in state["appletvs"] if d.get("id") == body.get("id")), None)
     if entry is None:  # 未保存过的扫描结果（未配对会在 connect 内提示）
         entry = {k: body[k] for k in ("id", "name", "ip") if k in body}
+    if not entry.get("id") or not entry.get("ip"):
+        # 空 body / 只带 ip：以前走到这里 entry["id"] 炸 KeyError 回 500
+        raise AppleTvError("缺少设备信息（id/ip）")
     atv_mgr.connect(entry)
     with state_lock:
         state["current"] = {"type": "appletv", "id": entry["id"]}
@@ -1328,19 +1384,30 @@ def handle_switch(body):
 # ---------------- 分发：手机一键安装 ----------------
 INSTALL_SCRIPT = r"""#!/data/data/com.termux/files/usr/bin/bash
 # ATV Remote 手机引擎一键安装（在 Termux 里: curl -sL __HOST__/install | bash）
-set -e
+# 顺序很关键：先把项目（含 start.sh）拉下来，再装依赖。依赖装不上只影响 Apple TV
+# 遥控；项目没拉到，手机连手动启动都做不到。用 set -u 而不是 set -e：依赖失败必须
+# 能继续。上一版 set -e 下一条 pip 失败就把整个安装静默中断了，用户只看到「无目录」。
+set -u
+PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 echo "📱 ATV Remote 引擎安装中（3-8 分钟，仅需这一次）..."
 pkg update -y >/dev/null 2>&1 || true
-pkg install -y python clang libffi openssl android-tools
+# libc++ 要先跟上：android-tools 的 adb 按新版 libc++ 链接，落后会
+# CANNOT LINK EXECUTABLE adb: cannot locate symbol _ZNSt6__ndk113__hash_memoryEPKVm
+pkg install -y libc++ || echo "⚠️ libc++ 更新失败，adb 可能起不来"
+pkg install -y python clang libffi openssl android-tools \
+  || echo "⚠️ 部分依赖装失败，继续拉取项目（Android TV 遥控不受影响）"
 # 预编译 cryptography（避免本地编 rust）
 pkg install -y tur-repo >/dev/null 2>&1 && pkg install -y python-cryptography || true
-pip install --upgrade pip wheel >/dev/null
-pip install "pyatv==0.18.0" || echo "⚠️ pyatv 安装失败（Apple TV 暂不可用，Android TV 正常），可稍后重试本命令"
 
 # 拉取项目（含 start.sh；仅当 Mac 启用了 --token 时才一并同步配对记录）
-curl -sL __HOST__/bundle.tgz__TOKENQ__ -o /data/data/com.termux/files/usr/tmp/atv.tgz
-tar xzf /data/data/com.termux/files/usr/tmp/atv.tgz -C "$HOME"
-rm -f /data/data/com.termux/files/usr/tmp/atv.tgz
+# -f：HTTP 报错时别把错误页当压缩包写进去；--retry：局域网抖一下不至于整轮重来
+mkdir -p "$PREFIX/tmp"
+if ! curl -fsSL --retry 3 --retry-delay 2 -o "$PREFIX/tmp/atv.tgz" __HOST__/bundle.tgz__TOKENQ__; then
+  echo "❌ 项目包下载失败：确认手机与电脑在同一 Wi-Fi，然后重跑本命令"
+  exit 1
+fi
+tar xzf "$PREFIX/tmp/atv.tgz" -C "$HOME" || { echo "❌ 解压失败，重跑本命令"; exit 1; }
+rm -f "$PREFIX/tmp/atv.tgz"
 chmod +x "$HOME"/atv-remote/start.sh
 
 # 允许 ATVRemote App 一键拉起
@@ -1348,8 +1415,38 @@ mkdir -p "$HOME/.termux"
 grep -q allow-external-apps "$HOME/.termux/termux.properties" 2>/dev/null || \
   echo "allow-external-apps=true" >> "$HOME/.termux/termux.properties"
 
+# 依赖放最后：失败只影响 Apple TV。stdout 静默、stderr 保留，出错能看见原因
+pip install --upgrade pip wheel >/dev/null \
+  || echo "⚠️ pip 升级失败，继续（不影响项目，也不影响 Android TV）"
+# pyatv 0.18 依赖 pydantic 2 → pydantic-core，而 PyPI 上没有 Android/aarch64 的预编译
+# wheel（只有 manylinux / musllinux / win / macOS），所以在 Termux 上必然要在本地用 Rust
+# 编一遍。不先装 rust，pip 只会甩一句
+#   ERROR: Failed to build pydantic-core when installing build dependencies
+# 看不出缺什么。先把同样逃不掉的依赖换成 Termux 预编译包，再上 rust 工具链。
+echo "🔧 装本地编译工具链（pydantic-core 在 Android 上没有预编译包，要用 Rust 编）..."
+pkg install -y rust python-cryptography \
+  || echo "⚠️ 工具链没装全，pip 可能要自己编，慢一些甚至失败"
+PYATV_LOG="$HOME/atv-remote/pyatv-install.log"
+if pip install "pyatv==0.18.0" >"$PYATV_LOG" 2>&1; then
+  echo "✅ pyatv 就绪（Apple TV 遥控可用，首次编译要等几分钟）"
+else
+  echo "⚠️ pyatv 安装失败（Apple TV 暂不可用，Android TV 正常）——失败原因："
+  tail -5 "$PYATV_LOG" | sed "s/^/    /"
+  echo "    补救（可反复跑）：pkg install rust clang libffi openssl python-cryptography && pip install pyatv==0.18.0"
+  echo "    完整日志：$PYATV_LOG"
+fi
+
+if ! python -c "import pyatv" 2>/dev/null; then
+  echo "⚠️ pyatv 仍未装好：pkg install rust clang libffi openssl python-cryptography && pip install pyatv==0.18.0（只影响 Apple TV）"
+fi
+
 echo ""
-echo "✅ 完成！打开 ATVRemote App 点「🚀 独立模式」即可遥控电视"
+if [ -x "$HOME/atv-remote/start.sh" ]; then
+  echo "✅ 完成！打开 ATVRemote App 点「🚀 独立模式」即可遥控电视"
+else
+  echo "❌ 安装不完整：$HOME/atv-remote/start.sh 不存在，请重跑本命令"
+  exit 1
+fi
 """
 
 
@@ -1893,6 +1990,8 @@ class Handler(BaseHTTPRequestHandler):
         body = data if isinstance(data, bytes) else json.dumps(data, ensure_ascii=False).encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        # HEAD 只回头：Content-Length 必须是「本来会发的字节数」，但一个字节都不写，
+        # 否则客户端会按长度等 body，等到超时（下载管理器普遍先发 HEAD 探测）。
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         for k, v in (extra_headers or {}).items():
@@ -1904,6 +2003,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.close_connection:
             self.send_header("Connection", "close")
         self.end_headers()
+        if getattr(self, "_head_only", False):
+            return
         self.wfile.write(body)
 
     def _body(self):
@@ -1924,7 +2025,20 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- GET ----
     def do_GET(self):
+        self._serve(head_only=False)
+
+    def do_HEAD(self):
+        """只回头不回体。
+
+        别小看它：下载管理器（浏览器内置的、IDM 一类）、以及「点链接后先探测」的
+        浏览器都会先发 HEAD。以前没实现，服务器回 501 Unsupported method，
+        表现就是「点了下载没反应 / 无法下载」——而直接敲 URL 又是好的，很难查。
+        """
+        self._serve(head_only=True)
+
+    def _serve(self, head_only):
         path = self.path.split("?")[0]
+        self._head_only = head_only
         if not self._check_auth():
             return
         try:
@@ -1993,11 +2107,28 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/bundle.tgz":
                 return self._send(200, cached_bundle(), "application/gzip")
             if path == "/app.apk":
-                apk = ROOT / "android" / "ATVRemote.apk"
+                # 优先发原生版（自带 Python 引擎 + adb 客户端，装完即用，不需要 Mac / Termux）；
+                # 只有它不在时才退回 WebView 壳（那个必须 Mac 上跑着服务才能用）。
+                # 注意：手机 App 内嵌引擎里这两个文件都不存在（APK 不会把自己装进自己），
+                # 所以那种情况下页面会先隐藏这张卡片；真被请求到就给一句人话。
+                apk = ROOT / "ATVRemote-native.apk"
                 if not apk.is_file():
-                    return self._send(404, {"error": "APK 不存在，请先在电脑上执行 android/build.sh"})
+                    apk = ROOT / "android-native" / "ATVRemote-native.apk"
+                if not apk.is_file():
+                    apk = ROOT / "android" / "ATVRemote.apk"
+                if not apk.is_file():
+                    return self._send(404, {"error": ("APK 不存在：" +
+                                            ("手机 App 里没有这个文件（已经装好了，不用再下载）；"
+                                             if EMBEDDED else "") +
+                                            "请在电脑上跑 android-native 的构建后重试")})
+                # Content-Disposition 不能少：没有它，Chrome 会按 URL 最后一段命名
+                # （app.apk），而且下载管理器把它当「网页」而不是「安装包」，
+                # 手机上会出现「无法下载」/ 下成 .bin 之类。
+                # 用 attachment 明确告诉浏览器「这是个要存盘的文件」。
                 return self._send(200, apk.read_bytes(),
-                                  "application/vnd.android.package-archive")
+                                  "application/vnd.android.package-archive",
+                                  {"Content-Disposition":
+                                   'attachment; filename="ATVRemote.apk"'})
             if path == "/api/macros":
                 return self._send(200, handle_macros(None))
             if path == "/api/wol":
@@ -2068,6 +2199,10 @@ class Handler(BaseHTTPRequestHandler):
             # 先读干净 body 再判 404：未匹配的路由也要把请求体消耗掉，
             # 否则这条长连接上的下一个请求会从半截 body 开始解析。
             body = self._body()
+            if not isinstance(body, dict):
+                # JSON 数组 / 标量：所有路由都按对象取字段，以前在这里炸
+                # AttributeError 回 500（例如 POST /api/cmd 的 body 为 []）
+                return self._send(400, {"error": "请求体必须是 JSON 对象"})
             if not fn:
                 return self._send(404, {"error": "not found"})
             return self._send(200, fn(body) or {"ok": True})
@@ -2099,15 +2234,70 @@ def resolve_adb(path: str) -> str:
 
 
 def lan_ip() -> str:
-    """取本机局域网 IP（不真正发包，仅用于显示）"""
+    # 常见「不是局域网」的 IPv4 前缀：回环、APIPA 链路本地、运营商级 NAT，以及 TUN /
+    # 代理客户端（Clash、Surge、OpenVPN 一类）默认租用的 198.18.0.0/15 假路由段。
+    # 这些段一旦抢走默认路由，UDP 探测就会把「隧道自己的地址」当本机局域网 IP 回上来。
+    _NOT_LAN_PREFIXES = ("127.", "169.254.", "100.64.", "198.18.", "198.19.", "0.")
+
+    def is_lan(ip):
+        """是否像「手机扫完二维码后真能连上」的那个地址"""
+        return bool(ip) and ":" not in ip and not ip.startswith(_NOT_LAN_PREFIXES)
+
+    def local_ipv4s():
+        """枚举本机全部 IPv4，不依赖默认路由 —— VPN / 多网卡下也不会被骗。
+
+        零第三方依赖：优先 SIOCGIFADDR（macOS 与 Linux 都有，常量同为 0xC0206921），
+        拿不到再退回去解析 ifconfig / ip -o -4 addr 的文本输出。
+        """
+        out = []
+        try:
+            import fcntl
+            import struct
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                for _, name in socket.if_nameindex():
+                    try:
+                        packed = struct.pack("256s", name.encode()[:15])
+                        res = fcntl.ioctl(sock.fileno(), 0xC0206921, packed)
+                    except OSError:
+                        continue  # 无地址的虚拟接口：gif0 / stf0 / anpi* / 未启用的 utun*
+                    ip = socket.inet_ntoa(res[20:24])
+                    if ip and ip not in out:
+                        out.append(ip)
+            finally:
+                sock.close()
+        except Exception:
+            pass
+        if not out:
+            for cmd in (["ifconfig"], ["ip", "-o", "-4", "addr"]):
+                try:
+                    txt = subprocess.run(
+                        cmd, capture_output=True, text=True, timeout=5).stdout or ""
+                except Exception:
+                    continue  # 命令不存在（Windows / 精简 PATH）就试下一条
+                for m in re.finditer(r"(?:inet\s+|addr:)((?:\d{1,3}\.){3}\d{1,3})", txt):
+                    ip = m.group(1)
+                    if ip not in out:
+                        out.append(ip)
+                if out:
+                    break
+        return out
+
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("223.5.5.5", 80))
-        ip = s.getsockname()[0]
+        probed = s.getsockname()[0]
         s.close()
-        return ip
+        # 无 VPN 时探测结果就是网卡地址，直接返回（历史行为不变）；
+        # 只有探测结果根本不像局域网地址（TUN 抢走默认路由）才继续往下找。
+        if is_lan(probed):
+            return probed
     except Exception:
-        return "本机局域网IP"
+        probed = ""
+    for ip in local_ipv4s():
+        if is_lan(ip):
+            return ip
+    return probed or "本机局域网IP"
 
 
 def start_mdns(port):
@@ -2143,12 +2333,15 @@ def main():
     ap.add_argument("--no-token", action="store_true",
                     help="关掉自动生成的令牌，恢复无鉴权（仅建议可信内网）")
     args = ap.parse_args()
+    # 必须先 load_state()：resolve_token 靠 state["token"] 认出已生成过的令牌。反过来的话
+    # 内存里永远读不到盘上的值，每轮启动都当「首启」重新生成，手机存的链接全失效
+    # （表现为扫完码 / 打开页面 401，看着像「页面无法加载」）。
+    load_state()
     AUTH_TOKEN = resolve_token(args.token, args.host, args.no_token, state, AUTH_TOKEN)
     if AUTH_TOKEN and str(state.get("token") or "") == AUTH_TOKEN:
         save_state()   # 首启生成的令牌必须落盘，否则重启就换、手机要重新配
 
     adb = Adb(resolve_adb(args.adb))
-    load_state()
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.daemon_threads = True
     threading.Thread(target=_sleep_timer_loop, daemon=True, name="sleep-timer").start()

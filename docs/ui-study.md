@@ -1237,3 +1237,389 @@ toast(msg)，而它是「一条盖一条」：上一条永远被下一条顶掉�
   - 刷新后 4 个收藏仍在、badge 4、`★ Netflix` 置顶、YouTube 星回 false、Netflix 星 true、存储不重复；
   - `no_uncaught_exceptions` / `no_undefined_reference_errors` 均为空。
 - 落盘截图 /tmp/atv-fav-1-pin.png、/tmp/atv-fav-2-full.png、/tmp/atv-fav-3-atvstar.png、/tmp/atv-fav-4-reload.png；明细 /tmp/atv-fav-result.json。
+
+## 第二十四轮：触摸板灵敏度（1.27.0 / versionCode 28）
+
+### 学习源
+macOS「触控板 → 跟踪速度」滑条与各游戏 / 遥控 App 的灵敏度设置项：同一个手势，
+不同人想要的速率不同，是输入设备的共性——解法历来不是换交互，而是加一层可调增益。
+
+### 为什么选它
+双指手势 seek 与单指长按连发此前是硬编码节奏（GESTURE_STEP 26px / PAD_HOLD_RATE
+120ms），手大手小只能将就：有「滑一下跳三集」和「长按半天不动」两类相反抱怨。
+
+### 设计
+- 增益 0.5×–2.0×，默认 1×（出厂手感），按 0.05 网格吸附；钳位 [0.5, 2]。
+- 手势步长 = 26 / 增益 px，钳 [8, 64]；长按连发间隔 = 120 / 增益 ms，钳 [45, 400]。
+- 存 localStorage 键 `atv.padSens`——可编辑内容不进 state.json（敏感文件）。
+- 读数（1.5×）走 textContent，保持整链路无 innerHTML。
+
+### 落地
+`static/app.js` padsens:begin/end 纯函数段（padSensClamp / padStepFor /
+padHoldRateFor / padSensLabel）+ `#padSens` 滑条 DOM 胶水；`tests/padsens_harness.js`
+12 组行为用例；`tests/test_padsens.py` 16 项（含与触摸板手势段 GESTURE_STEP /
+PAD_HOLD_RATE 的常量对齐断言）。
+
+### 踩到的坑
+段首注释一度插在 `padSensApply(); padSensBind();` 两行之间。JS 注释不影响执行，但
+`test_boot_applies_and_binds` 断言的「boot 首帧应用并绑定」被注释打散阅读顺序，
+误报失败。把两行调用贴紧即可。教训：启动序列的相邻调用不要被长注释隔开。
+
+### 验证
+- ./check.sh：296 单测 OK + 内嵌副本一致 → ALL CHECKS PASSED。
+- tests.test_padsens 16 OK。
+- ./sync-native.sh --check 通过。
+- CDP 实测滑条 1×→1.5×→重置 1×，toast 正常。
+
+## 第二十五轮：窗格转场与 ≥36px 触控目标（1.28.0 / versionCode 29）
+
+### 学习源
+- **Material 3 motion**：emphasized 类转场 200-300ms、缓出为主，界面「块」的进出
+  用位移 + 淡入，不用缩放弹跳。
+- **WCAG 2.2 §2.5.8 Target Size (Minimum)**：目标 ≥24×24 CSS px；移动端遥控按
+  36px 从严（本项目 .tab 本来就已是 40px，只有 .tiny 一档塌到 32px）。
+
+### 为什么选它
+Playwright 程序化审计（双视口 390×844 / 1280×800）的量化证据，不是观感：
+- `.tabpane` / `.card` 的 transition 与 animation 全为 `0s` / `none`——点「遥控 /
+  触摸板」整块瞬间硬切；
+- `#appSettingsBtn` 29×32、`#palBtn` 33×32、`#notifBtn` 37×34 三个图标按钮宽或高
+  低于 36px；`.btn.tiny` 高一档 32-34px。
+- 好消息：两视口横向溢出 0、无 ellipsis 截断、muted 文字低对比度 0 —— 布局底子干净，
+  本轮只补「动效 + 触控」两块短板。
+
+### 设计
+- `.tabpane.on` 播 `pane-in`（opacity 0→1 + translateY 10px→0，240ms，项目 --ease）；
+  切 tab 与首帧启动都会触发，class 移除再加即重放，无需 JS 计时器。
+- 时长 / 下限集中成令牌 `--pane-dur: 240ms` / `--touch-min: 36px`；JS 端
+  `PANE_ANIM_MS` / `TOUCH_MIN_PX` 是同一组数字的声明处，单测正则比对两处防单边漂移。
+- 系统「减少动效」双保险：CSS 全局 `animation: none !important` + JS 点击时把该 pane
+  的 `--pane-dur` 压 0（UI 线程同步生效，不等样式重算）。
+- `.btn.tiny` min-height 32→36px；`.btn.tiny.gear`（⌘ / 🔔 / ⚙）补 min-width 36px。
+
+### 落地
+- `static/style.css`：两个令牌 + `@keyframes pane-in` + `.tabpane.on` 动画 + 两条尺寸规则。
+- `static/app.js`：panemotion:begin/end 纯函数段（paneIdFor / paneAnimMs），tabs 绑定
+  改用 `$("#" + paneIdFor(t.dataset.tab))`。
+- `tests/panemotion_harness.js` 3 组行为用例 + `tests/test_panemotion.py` 11 项
+  （段纯度 / JS↔CSS 令牌对齐 / 转场三件套 / 图标按钮类覆盖 / 绑定走 helper）。
+
+### 踩到的坑
+`paneIdFor` 返回**裸 id**（`pane-pad`），直接喂 `$`（吃完整选择器）得到 null，
+`pane.style.setProperty` 抛 `Cannot read properties of null (reading 'style')`。
+启动时 coach 连点 3 次 tab，一次报 3 遍。修法是补 `"#"` 前缀，并把「裸 id 不得
+直接喂 `$`」写成断言钉住。教训：helper 的返回值形态（裸 id vs 选择器）要在命名或
+注释里显式声明，调用侧拼错不会 SyntaxError、只会静默 null。
+
+### 验证
+- python3 -c 'import server; import atv_backend'、node --check static/app.js 通过。
+- ./check.sh：307 单测 OK + 副本比对一致 → ALL CHECKS PASSED。
+- ./sync-native.sh 同步内嵌副本并复跑 check.sh 通过。
+- Playwright 实测（390×844）：boot 时 `#pane-dpad` animationName=`pane-in` /
+  duration 0.24s；palBtn / appSettingsBtn 36×36、notifBtn 37×36；切到触摸板 pane
+  `pane-in` 重放且 inline `--pane-dur=240ms`，切回正常；横向溢出 0；
+  `reduced_motion=reduce` 下 animationName=`none`、duration 0s；pageErrors 为空。
+
+## 第二十六轮：卡片折叠（1.29.0 / versionCode 30）
+
+### 学习源
+- **WAI-ARIA Disclosure 模式**：标题行按钮控制一块内容的展开 / 收起，
+  aria-expanded / aria-controls 是唯一对外承诺。
+- **Radix Collapsible / Accordion 的「状态即属性」方法论**：data-state="open|closed"
+  同时挂在 DOM 上，CSS 与 JS 都不存第二份真相——样式按属性算，JS 只翻属性。
+
+### 为什么选它
+- 第 25 轮审计的量化证据：390×844 视口文档高 2489px，而次级卡片（键盘输入 /
+  快捷启动 / 应用 / 工具 / 远程开机 / 调用时间线 / 一键宏 / 睡眠定时）一路做加法，
+  主路径（方向键 + 物理键）被越推越深。
+- 无可直接用依赖：Radix 是 React 组件，本项目是零依赖单页 + 原生后端，
+  只借鉴方法论，纯函数段重写。
+
+### 设计
+- 8 张次级卡片：data-collapsible data-state="open" data-collapse-name="<中文名>"；
+  标题行 h2.chead 右侧放手风琴按钮 .ctog（aria-expanded +
+  aria-controls 指向 cbody-<id>），内容包 div.cbody > div.cinner。
+- 高度过渡用 grid-template-rows: 1fr -> 0fr（内容自适应，不用 max-height 猜值）；
+  折叠后 visibility: hidden 带等长延迟，Tab 捞不到、读屏读不到。
+- chevron 两态：右下角描边 rotate(45deg)（朝下）/ closed 时 rotate(-45deg)（朝右）。
+- 折叠态存 localStorage 键 atv.collapsed.v1（可编辑偏好不进 state.json），
+  坏 JSON / 非数组 / 未知 id / 非字符串元素全兜住，去重排序。
+- 设置弹窗加「全部展开 / 全部折叠」分段开关；按钮 36px 触控下限。
+
+### 落地
+- static/index.html：8 张卡片改造 + 设置弹窗 collapseSeg。
+- static/style.css：--collapse-dur: 180ms 令牌 + cbody / ctog / chevron 规则块。
+- static/app.js：collapse:begin/end 纯函数段（collapseAnimMs / collapseStateOf /
+  parseCollapsed / serializeCollapsed / collapseLabel）+ DOM 胶水
+  （collapseApply 只翻属性：data-state + aria-expanded + aria-label + title）。
+- tests/collapse_harness.js 7 组行为用例 + tests/test_collapse.py 22 项。
+- 同步更新 test_perf / test_wol 里旧的卡片标记契约断言。
+
+### 踩到的坑
+1. **visibility: 0s 不是合法断言目标**：transition 简写里 visibility 段是空格分隔
+   （visibility 0s linear var(--collapse-dur)），测试按冒号形态断言，失败信息反而把
+   视线带向「双反斜杠」。教训：断言失败先核对目标文件的真实字符，再怀疑转义。
+2. 旧轮次契约（test_perf 的 perfCard 开标签、test_wol 的 wolCard）钉的是折叠改造前的
+   标记，本轮改 markup 后必须一起更新，否则整套测试凭空多 3 个失败。
+3. Playwright 点 .ctog 被页面既有遮罩拦截，改用 page.evaluate(el.click()) 绕过；
+   wait_until="networkidle" 在轮询页面上不可靠，换 domcontentloaded + 定长等待。
+
+### 验证
+- ./check.sh：329 单测 OK（7 个既有跳过）+ 内嵌副本一致 -> ALL CHECKS PASSED；
+  ./sync-native.sh 同步后复跑通过。
+- node --check static/app.js、collapse_harness ALL_COLLAPSE_CASES_PASSED。
+- Playwright（390×844）：8 卡默认全开、ctog 36×36；点折叠后 data-state=closed、
+  aria-expanded=false、grid-template-rows 241px -> 0px、visibility=hidden、chevron
+  rotate(-45deg)；刷新后折叠态与 localStorage 的 ["kbCard"] 都在；设置弹窗全部折叠 /
+  全部展开生效；横向溢出 0；pageErrors 为空。
+- 全展开文档高 2623px -> 全折叠 1694px（-929px，-35%）。
+- reduced_motion=reduce 下 .cbody transition-duration=0s。
+
+
+## 第二十七轮：撤销 Snackbar（1.30.0 / versionCode 31）
+
+### 学习源
+- **Material Design Snackbar 的 action 槽位**：短时提示右侧挂一个唯一动作，
+  文案短、动效不阻塞内容，超时自动收起。
+- **Gmail「已删除·撤销」**：破坏性操作照旧立即执行，但给一段明确的后悔窗口，
+  窗口内保持可见可点。
+- **Radix Toast 的 action 契约**：action 是可选第二动作位，不传时 toast 与普通
+  提示完全一致——扩展必须向后兼容，不能为了让少数调用点带按钮而改掉所有旧调用。
+
+### 为什么选它
+- 6 个弹窗已全部接入 `openModal / closeModal`（焦点陷阱 / Esc / 焦点
+  归还已完善），空态也有部分（nempty / palempty）。唯一没有的是「做错了怎么退回去」。
+- 定位到 4 个就地生效、零成本的破坏性入口：设置弹窗的「清空常用短语」与
+  「清空自定义宏」、按键映射的「全部恢复默认」、单个自定义宏的 ✕ 删除。
+  电视遥控是拿在手上用的，误触一下就要把攒好的短语 / 宏 / 改键全部重建，
+  代价远大于其他误触。
+- 无可直接用依赖：Material / Radix 都在 React 体系里，本项目是零依赖单页 +
+  原生后端，只借鉴行为契约，撤销规则用纯函数段重写。
+
+### 设计
+- 纯函数段 `undo:begin/end`：`UNDO_MS=6000` 反悔窗口、
+  `UNDO_STACK_MAX=4` 栈上限；`undoLive(entries, now)` 只留未过期
+  条目，`undoPush(entries, entry, now)` 新条目排最前并 prune / 同 id 去重 /
+  截断，`undoTake(entries, id, now)` 命中且未过期才返回
+  `{ entry, rest }`，rest 已摘掉该条——同一次撤销点不出第二次。
+- 恢复语义 = 回到 doFn 执行前那一刻的快照。快照由调用方闭包持有（短语数组 /
+  localStorage 原值 / kmMap 副本），撤销回调只负责写回去，不做差量计算。
+- 撤销栈不落盘：可编辑偏好不进 `state.json`（`bundle.tgz`
+  会把它带出局域网），撤销机会同理不该跨重启存活。重启丢的只是「最近 6 秒」，
+  不是数据。
+- 通知层向后兼容地开第三个参数 `act = { text, onAction }`：有 act 才渲染
+  按钮 `.nact`（`createElement` + `textContent`，
+  禁 innerHTML），停留时长取 `max(notifDur, UNDO_MS)`——按钮永远先于
+  反悔窗口本身消失，不会出现「窗口过了、按钮还在」的骗局。
+- label 只做文案：通知级别由 `notifLevel(label)` 推（「已…」开头算成功），
+  也进通知历史；匹配一律走 id，两条同名撤销不会被混成一条。
+
+### 落地
+- static/app.js：`undo:begin/end` 纯函数段 + DOM 胶水（undoable 先执行、
+  再压栈、最后弹通知；undoRun 先 take 再换栈，撤销回调包 try/catch）；
+  `notifShow(msg, level, act)` 加 act 第三参；`notifMount` 在文本与
+  关闭键之间插 `.nact`（先 notifDismiss 再跑回调，抛异常也不留死 toast）。
+- 4 个入口全部改走 `undoable()`，快照抓在调用之前。kmResetAll 在空映射时
+  直接提示「没有改过的键」，不弹撤销按钮（没得可撤）；clearMacrosBtn 在空列表时
+  同样降级为普通提示，避免换来一条废撤销。
+- static/style.css：`.ntoast .nact` 规则（`min-height:
+  var(--touch-min)` 36px、`color: var(--accent-text)`、
+  `pointer-events: auto` 打开被 `.ntoast` 关掉的指针事件）。
+- tests/undo_harness.js 8 组行为用例 + tests/test_undo.py 20 项。
+- VERSION -> versionName=1.30.0 / versionCode=31；`./sync-native.sh` 同步内嵌副本。
+
+### 踩到的坑
+1. **`git checkout static/app.js` 会连坐前几轮**：第 24-26 轮改动尚未提交，
+   一条 checkout 直接把 app.js 退回第 23 轮，collapse / padsens / panemotion 三段
+   纯函数段全部消失。救回来靠的是
+   `android-native/app/src/main/python/static/app.js`——上一轮同步过的内嵌副本，
+   `diff -q` 逐字节确认后才继续。教训：未提交轮次的恢复源不是 git，是内嵌副本；
+   动 git 之前先 `git status`。
+2. 行号锚点手术比 exact-match 替换稳：要改的 kmResetAll 旧代码里含反引号，
+   整段匹配穿不过工具调用这一层；改成「唯一起始行 + 往下扫到列 0 右花括号」。
+3. 但「扫到列 0 右花括号」在 macroButton 的删除监听上会扫过头——它的结尾是缩进
+   4 空格的 `    });`，不是 `}`，于是 macroButton 的尾巴
+   （wrap / return wrap / return b）被一起吃掉了，`node --check` 报
+   `Unexpected end of input`。改成允许调用方传显式 closer 才对。
+4. Playwright 的 `.ntoast` 是 prepend（最新在最前），按下标取「最后一条」
+   取到的其实是最旧那条，害我一度以为撤销按钮没弹出来。改成就按文本内容匹配。
+
+### 验证
+- `./check.sh`：349 单测 OK（7 个既有跳过）+ 内嵌副本一致 ->
+  ALL CHECKS PASSED。
+- `node --check static/app.js`；undo_harness ALL_UNDO_CASES_PASSED（8 组）。
+- Playwright（390×844）：4 个入口点击后均弹出带「撤销」的 toast，`.nact` 高 36px；
+  6s 内点撤销全部还原（短语 2->4->2、自定义宏 1->0->1、单宏删除 1->0->1、
+  改键 remapped 2->0->2 且 localStorage 原值逐字节还原），并弹「已撤销」确认；
+ 按键恢复时弹窗照旧自动关闭；等 6.2s 后 toast 自行消失；横向溢出 0（390/390）；
+ pageErrors 为空。
+
+## 第二十八轮：空状态（1.31.0 / versionCode 32）
+
+### 学习源
+- **Shopify Polaris Empty State 契约**：列表空着不是无话可说，而要给「一句解释 +
+  一个下一步动作」；主 CTA 唯一，次动作可选。
+- **Material Design empty state**：空态文案要说清「为什么空」与「接下来做什么」，
+  可执行入口就放在空态里，不让用户去别处翻。
+
+### 为什么选它
+- Android 连接面板本地历来只有一个 IP 输入框 + 扫描按钮：从没连过设备的新用户
+  面对一面空白没有任何指引；连过的设备全掉线时，也看不出「电视是不是睡了」。
+- 第 27 轮的弹窗空态（palempty / nempty）只覆盖弹窗内部；主连接面板这个真正的
+  「第一屏空」一直是裸的。
+- 零依赖重写：Polaris / Material 都在各自设计体系里，这里只借鉴行为契约——
+  判空规则、文案查表、节流签名全部落成纯函数段，可整段搬进 node 跑用例。
+
+### 设计
+- 纯函数段 empty:begin/end：emptyKind(snap) 判空优先级——有 current 或有在线
+  设备 -> null（chips 不空）；!adb_found -> noadb（没 adb 说什么都白费，先讲
+  这个）；recent 非空 -> offline；否则 intro。顺序即优先级：adb_found 压过
+  offline，避免「教用户重连」却连不上 adb。
+- emptyCopy(kind, recent) 三态文案表：offline 标题带台数（「N 台设备当前离线」）——
+  空态的可信度全靠具体数字；cta/cta2 是文案、act/act2 是动作键，两者解耦，
+  glue 才把动作键映射到真行为；noadb 全部为 null（没有可执行的下一步）。
+- 快照只认 Android 视角：estateSnap 里 current 仅在 cur_type === "android" 时取
+  ——Apple TV 页签的 current 是另一页的事，不能算「有设备」。
+- emptySig(kind, n) 节流签名：8s 轮询会反复进 renderEstate，签名没变就不重建，
+  避免打断 hover / 焦点；隐藏路径同时清空 box.textContent。
+- 图标是手搓 SVG「睡着的显示器」（电源符号），stroke 走 currentColor 跟随双主题；
+  CTA 复用 .btn，触控下限 var(--touch-min) 与 panemotion 段同一个令牌，勿单边改。
+
+### 落地
+- static/app.js：empty:begin/end 纯函数段（41 行）；DOM 胶水 estateSnap /
+  estateIcon / estateBtn / estateAct / renderEstate；renderStatus 在 chips 渲染
+  之后调 renderEstate(s)；chipSig 加 s.adb_found（否则判空输入变化不触发刷新）。
+- static/index.html：#deviceChips 之后加 class="estate hidden" 的
+  #estateAndroid（aria-live="polite"，内容变化可被读屏播报；默认隐藏，
+  有设备时不占地）。
+- static/style.css：.estate 虚线圈卡片（1px dashed var(--line) + var(--card2)），
+  图标 / 标题 / 描述 / CTA 四件套，无 hex 硬编码。
+- tests/empty_harness.js 16 组行为用例 + tests/test_empty.py 17 项；同步更新
+  test_undo.py 的版本断言，避免 VERSION 递增后旧测试挂掉。
+- VERSION -> versionName=1.31.0 / versionCode=32；./sync-native.sh 同步内嵌副本。
+
+### 踩到的坑
+1. **SVG 的 className 只读**：ic.className = "eicon" 直接抛
+   Cannot set property className of #<SVGElement> which has only a getter；
+   更毒的是它发生在 renderStatus 里，被 refreshStatus 的 catch 静默吞掉——
+   页面看着照常，只有状态栏一行「连不上服务端：...」暴露异常。Playwright 首轮
+   实测 estate 不渲染才抓到。改 setAttribute("class", ...)，test_empty 加断言防
+   回归。教训：允许静默降级的调用链里，异常会伪装成「没生效」。
+2. **布局方向与 undo 段相反**：empty 规则段在 undo:end 之后（3020 行），而 DOM
+   胶水在 renderStatus 附近（2376 行）——调用点站在 const EMPTY_NONE 之前，靠
+   函数声明提升生效；TDZ 安全由「顶层首次 refreshStatus(); 在 4137 行、段之后」
+   保证，测试里用 js.find("\nrefreshStatus();") > find(SEG_END) 锁住。
+3. 断言语要先剥注释再查禁词：注释里可以提 innerHTML（「不碰 innerHTML」），
+   直接 assertNotIn 会误报。
+4. apply_patch 的多个 @@ hunk 必须按行号升序；锚点仍用单行短代码，长注释数
+   破折号不靠谱。
+
+### 验证
+- ./check.sh：365 单测 OK（7 个既有跳过）+ .venv pyatv 分支同过 + 内嵌副本
+  一致 -> ALL CHECKS PASSED。
+- node tests/empty_harness.js：16 组全过，ALL_EMPTY_CASES_PASSED。
+- Playwright（390x844，真实服务器 + page.route 拦 /api/status）：intro 态标题
+  「还没有连接过电视」、双 CTA、点「手输 IP」后 document.activeElement 为
+  targetInput；offline 态标题「1 台设备当前离线」、点「重连最近一台」触发
+  /api/connect 且 payload {target: 192.168.1.50}、输入框被同步填值；current
+  非空时空态隐藏；noadb 态可见且零按钮。CTA 实测高 47px（>= 36px 触控下限）；
+  pageErrors 为空。截图存 /tmp/atv_empty_intro.png 等三张，PIL 像素校验：空态
+  区域约 1.27 万着墨像素、三张图互不相同（本环境不能直接看图，用像素 diff 佐证）。
+
+## 第二十九轮：设备 chip 长按 → 底部快捷菜单（1.32.0 / versionCode 33）
+
+### 学习源
+- **Material 3 Bottom Sheet**：属于某个对象的所有动作收进一个贴底的弹层，单指可达；
+  破坏性动作排尾，与「安全动作」拉开距离。
+- **iOS Context Menu（长按预览菜单）**：长按 450ms 量级起手、松手即出菜单；
+  菜单项按当前对象的状态动态裁剪，不是静态清单。
+- **Home Assistant more-info 弹窗**：一个实体一张卡，卡片里的动作来自实体当前状态
+  （开着才给「关」、离线才给「唤醒」）——菜单是状态的函数。
+
+### 为什么选它
+- 手机上根本没有右键：最近连接的「右键移除」在触屏上不可达，iOS Safari 的
+  contextmenu 事件干脆不触发——最近设备在手机上无法移除。
+- 在线设备 chip 此前只有「点一下切换」：复制 IP、断开当前设备都要去别处翻。
+- 零依赖重写：三条硬规则（复制恒在 / 破坏性动作排尾且 danger / 唤醒只在当前离线
+  且查得到 MAC）全部落成纯函数段，可整段搬进 node 跑用例，DOM 与时钟一律不碰。
+
+### 设计
+- 纯函数段 sheet:begin/end：sheetDevOfRecent / sheetDevOfDevice / sheetDevOfAtv
+  三个快照构造函数 + sheetItems 动作表。online 按 wolIpOf(serial) 归一再比 IP
+  （adb serial 带端口，ARP 与最近列表只认 IP）；current 压过 online——
+  「已连接」比「在线」信息量大。canWake 只在「离线 + 非当前 + ARP 查得到 MAC」。
+- sheetItems 三条硬规则：复制永远在（菜单至少有个无害动作，长按不至于白按）；
+  破坏性动作（移除 / 取消配对）永远排最后且 danger；唤醒不打扰正连着的设备。
+- 手势契约与触摸板长按连发同源：pointerdown 起 450ms 定时，位移 >10px 视为要
+  滚动列表、取消长按；命中时 buzz(15) 触觉确认。松手补发的那一次 click 必须吞掉
+  （chip 原有 onclick 绑在前，只能包一层），否则长按又把设备连了一遍。
+- 控件豁免：Apple TV 行里的连接 / 配对 / ✕ 按钮有自己的点击语义，长按与右键都
+  不劫走（sheetOnControl 查 closest("button, a, input, select, textarea")）。
+- 复制双通道：navigator.clipboard 优先，明文 http 非安全上下文里它不存在，
+  回落 execCommand——局域网是明文 http，这条不是防御性代码而是刚需。
+- 关闭双通道：Esc（桌面）+ 点遮罩（触屏没有 Esc），与 shotModal / keymapModal 同模式。
+
+### 落地
+- static/app.js：sheet:begin/end 纯函数段（6 个函数，74 行）；DOM 胶水段（153 行，
+  SHEET_HOLD_MS / SHEET_MOVE_PX / sheetBindChip / sheetOpen / sheetCopy /
+  sheetAct + #sheet 遮罩点击关闭）。recent chip、device chip、atvRow 三处接菜单；
+  renderStatus 存 window.__atvLastStatus 快照。
+- static/index.html：keymapModal 之后 #sheet（class="modal hidden sheet"、
+  role="dialog"、aria-modal、#sheetTitle / #sheetSub / #sheetActs role="menu"）。
+- static/style.css：.modal.sheet 底端锚定（align-items: flex-end + 只用上两角圆角
+  + env(safe-area-inset-bottom)），.sheetact 走 var(--touch-min)，sheet-in 动画，
+  .sheetact.danger 语义色，无 hex 硬编码。
+- tests/sheet_harness.js 17 组行为用例 + tests/test_sheet.py 21 项。
+
+### 踩到的坑
+1. **DOM 嵌套：#sheet 被插进了 #keymapModal 里**（Playwright 才抓到的真 bug）：
+   插入锚点选在 keymapModal 内层闭合之后、外层闭合之前，弹层成了 keymapModal 的
+   子节点——父级 display:none，「菜单开了但一个字都不显示」。node --check、单测、
+   diff 全都看不出来。更毒的是被「借走」的闭合标签会把后面所有节点一起埋进去，
+   音量 OSD（#volOsd）就是这么消失的。修复：补上 keymapModal 的闭合；并在
+   tests/test_sheet.py 新增 DomNestingTest——HTMLParser 数 div 嵌套，断言 #sheet /
+   #volOsd 都是 body 直接子元素；删掉那个闭合标签做反向验证，两条断言必挂。
+2. **Apple TV 行菜单读陈旧快照**：atvRow 原先从 window.__atvLastStatus 取状态，
+   而页签点击渲染行的路径（renderAtvFound）不经过 renderStatus，快照还是上一次
+   轮询的——连着的 Apple TV，菜单显示「已配对 · 未连接 / 连接」而不是「断开连接」。
+   修复：atvRow(dev, s) / renderAtvFound(devs, s) 显式传状态，renderAtvKnown 与
+   页签扫描两个调用点都传；scan 路径保持回退到全局快照的旧行为。
+3. **Playwright 首轮全 FAIL 是向导遮罩挡的**：全新 profile 首次启动会弹使用指引
+   （#coachMark + .spotlight 全屏盖层），长按落在 coach 卡上。加 add_init_script
+   预置 atv.coached.pre/post 再跑。教训：E2E 失败先看 elementFromPoint 命中测试，
+   别先怀疑业务代码。
+4. **断言写窄了会误报**：一开始断言 #sheetActs.innerHTML 无 <——按钮本身就是
+   markup，要断的是每个 .sheetact 的 innerHTML。另：Playwright 路由按「后注册优先」
+   匹配，通配假路由注册在具体断言路由后面，会把要记录的调用整个吃掉（I7 就这么假阴性过）。
+
+### 验证
+- ./check.sh → ALL CHECKS PASSED（386 单测 OK / 7 skipped；node --check static/app.js
+  与 static/sw.js；.venv pyatv 分支同过；内嵌副本一致）。./sync-native.sh 已同步 5 个副本。
+- node tests/sheet_harness.js：17 组全过，ALL_SHEET_CASES_PASSED。
+- Playwright（390×844，真实服务器 + page.route 注入 fixture）：43 项断言全过，
+  ALL_SHEET_PW_PASSED。recent chip 长按出菜单（标题=IP / 副题=离线 / 三动作 /
+  danger 只排尾 / 触控高 36px / role=menuitem / 标签纯文本）；长按不触发
+  /api/connect（click 被吞）而普通点击照常连；右键直达；Esc 与点遮罩都能关；
+  当前设备菜单第一动作是「断开连接」、副题「已连接 · 当前设备」；在线设备 chip
+  只有「切换 + 复制」且调 /api/switch；移除调 /api/forget；复制有「已复制」反馈；
+  Apple TV 行菜单三动作、行内按钮上的右键不被劫走；pageerror 为空。截图
+  /tmp/atv_sheet_recent.png、/tmp/atv_sheet_atv.png，PIL 像素校验：底部菜单区
+  着墨 73.9% / 76.8%（遮罩压暗后底色 142,146,156），两图互不相同。
+
+## 第三十轮：iOS 27 风格 UI 观感（2026-09-29）
+
+### 学习源
+- **iOS 分段控件**：胶囊容器 + 全圆角选中片，选中态用填充而不是描边。
+- **iOS 卡片层级**：浅色大圆角基座、极轻描边、短阴影加长扩散，避免硬边框和玻璃把内容压糊。
+- **iOS 排版**：标题负字距，说明文字紧凑但保留可读行高。
+
+### 落地
+- `style.css` 调整设计令牌：圆角升级到 10/15/22，引入柔和双层阴影、玻璃模糊与饱和度变量。
+- 深浅双主题分别校准卡片、次级面板、分隔线；浅色卡片改浅灰基座避免玻璃叠玻璃。
+- 设备页签与方向键/触摸板页签改为胶囊分段控件，选中态加轻投影。
+- 卡片去掉硬边框，用细描边阴影和柔和长阴影分层；按钮保留轻玻璃质感。
+- 调整标题字距、说明文本字号与小屏留白，减弱未连接区域的压暗强度。
+
+### 验证
+- Playwright 390×844 复核深浅两主题首屏与滚动区域，未连接卡片边界、分段控件与文本对比度可读。
+- `./check.sh` 最终通过：系统 Python 与 `.venv` 各 455 个用例 OK，内嵌副本一致，`git diff --check` 干净。

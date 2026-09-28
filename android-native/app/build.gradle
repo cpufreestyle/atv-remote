@@ -38,6 +38,13 @@ android {
             signingConfig signingConfigs.release
         }
     }
+    packagingOptions {
+        // jniLibs/arm64-v8a 里除了 Chaquopy 的 .so，还装了一份专为 Android
+        // 编译的 adb 和它依赖的几个库。它们必须被解压到磁盘上的 nativeLibraryDir
+        // 才能被 execve（Android 10+ 起 App 私有目录都是 noexec），所以要关掉
+        // 「不解压、直接从 APK 映射」的现代默认。细节见 tools/fetch-adb-android.py。
+        jniLibs.useLegacyPackaging = true
+    }
 }
 
 // 单一事实来源：内嵌进 APK 的 server.py / atv_backend.py / static 由仓库根目录在

@@ -21,7 +21,7 @@ copy() {  # copy <src> <dst>
 }
 
 for f in server.py atv_backend.py; do copy "$f" "$EMB/$f"; done
-for f in app.js index.html style.css; do copy "static/$f" "$EMB/static/$f"; done
+for f in app.js index.html style.css manifest.webmanifest; do copy "static/$f" "$EMB/static/$f"; done
 
 if [ "$check" -eq 1 ]; then
   [ "$rc" -eq 0 ] && echo "✅ 内嵌副本与根目录一致" || echo "❌ 内嵌副本已漂移，执行 ./sync-native.sh"
