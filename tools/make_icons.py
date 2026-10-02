@@ -4,7 +4,7 @@
 
 与 mac/make_icon.swift（macOS + Android 启动图标）、static/icon.svg 同一套视觉，
 即 Apple 风格：品牌蓝对角渐变底 + 左上径向高光 + 底部轻压暗，白色「电视屏 +
-播放键」字形带柔和投影。1024 布局坐标与 Swift 版共用（改这里记得同步那边）。
+播放键 + 支架」字形带柔和投影，屏内上方加品牌蓝信号弧（圆点 + 两弧）。1024 布局坐标与 Swift 版共用（改这里记得同步那边）。
 
 - maskable / apple-touch：全出血，交给 Android 自适应遮罩 / iOS 裁切；
 - 普通 PWA 图标：自带圆角（系统不替它裁）。
@@ -101,6 +101,12 @@ def _motif(size, scale=1.0, center=True):
     tw, th = TRI["tw"] / 2 * s, TRI["th"] / 2 * s
     d.polygon([(cx - tw, cy - th), (cx - tw, cy + th), (cx + tw, cy)],
               fill=TRIANGLE)
+    # 信号弧（圆点 + 两弧）：与播放键同色，收在屏内上方
+    scx, scy = 512 * s + ox, 372 * s + oy
+    d.ellipse([scx - 11 * s, scy - 11 * s, scx + 11 * s, scy + 11 * s], fill=TRIANGLE)
+    for r, alpha in ((76, 255), (42, 140)):
+        d.arc([scx - r * s, scy - r * s, scx + r * s, scy + r * s],
+              start=207, end=333, fill=TRIANGLE[:3] + (alpha,), width=int(15 * s))
     rect(NECK, 8)
     rect(FOOT, 17)
     return layer
@@ -143,4 +149,3 @@ ICONS = [
 for name, kw in ICONS:
     render(**kw).save(STATIC / name)
     print("wrote static/" + name)
-

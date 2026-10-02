@@ -7,7 +7,8 @@ import AppKit
 //      自己画圆角会双重遮罩、接缝处发虚；
 //   2) 品牌蓝对角渐变底（#2f7eff → #0047c4）+ 左上径向高光 + 底部轻压暗，
 //      这是 macOS 图标「有厚度的实物感」的来源；
-//   3) 单一白色字形（电视屏 + 播放键 + 支架）带柔和投影，小到 16px 仍认得出。
+//   3) 白色字形（电视屏 + 播放键 + 支架）带柔和投影，屏内上方加品牌蓝信号弧
+//      （圆点 + 两弧），小到 16px 仍认得出。
 //
 // 用法：swift make_icon.swift [输出目录]，默认 ./mac
 
@@ -77,6 +78,23 @@ func drawMotif(scale s: CGFloat) {
     triangle(CGPoint(x: cx - tw / 2, y: cy + th / 2),
              CGPoint(x: cx - tw / 2, y: cy - th / 2),
              CGPoint(x: cx + tw / 2, y: cy)).fill()
+    // 信号弧（圆点 + 两弧）：与播放键同色的品牌蓝，收在屏内上方
+    let sig = CGPoint(x: scr.midX, y: 1024 * s - 372 * s)
+    TRIANGLE.setFill()
+    NSBezierPath(ovalIn: CGRect(x: sig.x - 11 * s, y: sig.y - 11 * s,
+                                width: 22 * s, height: 22 * s)).fill()
+    for (r, alpha) in [(CGFloat(76), 1.0), (CGFloat(42), 0.55)] {
+        let ctx = NSGraphicsContext.current!.cgContext
+        ctx.saveGState()
+        ctx.setLineWidth(15 * s)
+        ctx.setLineCap(.round)
+        ctx.setStrokeColor(TRIANGLE.withAlphaComponent(alpha).cgColor)
+        ctx.addArc(center: sig, radius: r * s,
+                   startAngle: CGFloat(27) * .pi / 180,
+                   endAngle: CGFloat(153) * .pi / 180, clockwise: false)
+        ctx.strokePath()
+        ctx.restoreGState()
+    }
     // 支架（颈 + 脚）
     let neckH: CGFloat = 46 * s
     SCREEN.setFill()
@@ -127,4 +145,3 @@ drawMotif(scale: 1.0)
 NSGraphicsContext.current?.restoreGraphicsState()
 fg.unlockFocus()
 savePng(fg, out + "/ic_launcher_fg_432.png", FG)
-
