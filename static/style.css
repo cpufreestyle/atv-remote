@@ -147,20 +147,20 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
 
-.app { max-width: 480px; margin: 0 auto; padding: var(--sp-4) var(--sp-3) 96px; }
+.app { max-width: 480px; margin: 0 auto; padding: var(--sp-3) var(--sp-3) 72px; }
 @media (max-width: 420px) {
-  .app { padding: var(--sp-3) var(--sp-2) 96px; }
-  .card { padding: var(--sp-3) var(--sp-2) var(--sp-3); }
+  .app { padding: var(--sp-2) var(--sp-2) 72px; }
+  .card { padding: var(--sp-2) var(--sp-2) var(--sp-3); }
   .hint { line-height: 1.7; }
 }
 .hint { font-size: 12.5px; }
 .estate .edesc { font-size: 12.5px; }
 
 /* ---------- header ---------- */
-header { margin-bottom: var(--sp-3); }
-.brand { display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-3); }
-.logo { font-size: 34px; line-height: 1; }
-.brand h1 { font-size: 21px; margin: 0; letter-spacing: -.2px; }
+header { margin-bottom: var(--sp-2); }
+.brand { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-2); }
+.logo { font-size: 28px; line-height: 1; }
+.brand h1 { font-size: 19px; margin: 0; letter-spacing: -.2px; }
 .sub { color: var(--muted); font-size: 12.5px; margin-top: 3px; display: flex; align-items: center; gap: 6px; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; }
 .dot.on  { background: var(--ok); box-shadow: 0 0 8px hsl(151 55% 45% / .8); animation: pulse 2.4s var(--ease) infinite; }
@@ -171,7 +171,7 @@ header { margin-bottom: var(--sp-3); }
 .conn { display: flex; gap: var(--sp-2); }
 input {
   background: var(--card2); border: 1px solid var(--line); color: var(--text);
-  border-radius: var(--r-md); padding: 11px var(--sp-3); font-size: 15px; outline: none; min-width: 0;
+  border-radius: var(--r-md); padding: 9px var(--sp-3); font-size: 15px; outline: none; min-width: 0;
   transition: border-color var(--dur-fast) var(--ease);
 }
 /* iOS Safari 键盘弹出时字号 <16px 会页面缩放，输入框统一 16px */
@@ -181,7 +181,7 @@ input:focus { border-color: var(--accent); }
 .chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); }
 .chip {
   background: var(--card2); border: 1px solid var(--line); color: var(--muted);
-  border-radius: var(--r-full); padding: 7px var(--sp-3); font-size: 12.5px; cursor: pointer;
+  border-radius: var(--r-full); padding: 5px var(--sp-3); font-size: 12.5px; cursor: pointer;
   min-height: 34px; display: inline-flex; align-items: center;
   transition: color var(--dur-fast), border-color var(--dur-fast), background var(--dur-fast);
 }
@@ -200,7 +200,7 @@ input:focus { border-color: var(--accent); }
 .devtab {
   flex: 1; color: var(--muted); border: 0;
   border-radius: var(--r-full); padding: var(--sp-2) 0; font-size: 14px; cursor: pointer;
-  min-height: 42px; transition: color var(--dur-fast), background var(--dur-fast), border-color var(--dur-fast);
+  min-height: 38px; transition: color var(--dur-fast), background var(--dur-fast), border-color var(--dur-fast);
 }
 .devtab:hover { color: var(--text); }
 .devtab.on {
@@ -215,12 +215,12 @@ input:focus { border-color: var(--accent); }
 .atvrow {
   display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2);
   background: var(--card2); border: 1px solid var(--line); border-radius: var(--r-md);
-  padding: var(--sp-2) var(--sp-3); margin-top: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2); margin-top: var(--sp-1);
 }
 .atvname { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .atvip { color: var(--muted); font-size: 12px; margin-left: 6px; }
 .atvbtns { display: flex; gap: 6px; flex: none; }
-.atvbtns .btn { padding: 7px var(--sp-3); font-size: 13px; }
+.atvbtns .btn { padding: 5px var(--sp-2); font-size: 13px; }
 .pairbox {
   background: var(--accent-soft); border: 1px solid var(--accent-solid); border-radius: var(--r-md);
   padding: var(--sp-3); margin-top: var(--sp-2);
@@ -234,12 +234,12 @@ input:focus { border-color: var(--accent); }
 /* ---------- card ---------- */
 .card {
   background: var(--card); border-radius: var(--r-lg);
-  padding: var(--sp-3) var(--sp-3) var(--sp-4); margin-bottom: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3) var(--sp-3); margin-bottom: var(--sp-2);
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   box-shadow: 0 0 0 1px hsl(220 15% 74% / .85), var(--shadow-card);
 }
-.card h2 { font-size: 13.5px; color: var(--muted); margin: 0 0 var(--sp-2); font-weight: 600; }
+.card h2 { font-size: 13.5px; color: var(--muted); margin: 0 0 var(--sp-1); font-weight: 600; }
 
 /* ---------- 卡片折叠（学 WAI-ARIA Disclosure / Radix Collapsible：状态即属性） ----------
    单一事实源是卡片上的 data-state（open / closed）：CSS 只读这个属性，JS 只翻这个属性，
@@ -309,13 +309,13 @@ input:focus { border-color: var(--accent); }
 
 /* ---------- tabs ---------- */
 .tabs {
-  display: flex; gap: 3px; margin-bottom: var(--sp-3); padding: 3px;
+  display: flex; gap: 3px; margin-bottom: var(--sp-2); padding: 3px;
   background: var(--card2); border: 1px solid var(--line-soft); border-radius: var(--r-full);
 }
 .tab {
   flex: 1; color: var(--muted); border: 0;
   border-radius: var(--r-full); padding: var(--sp-2) 0; font-size: 14px; cursor: pointer;
-  min-height: 40px; transition: color var(--dur-fast), background var(--dur-fast), border-color var(--dur-fast);
+  min-height: 38px; transition: color var(--dur-fast), background var(--dur-fast), border-color var(--dur-fast);
 }
 .tab:hover { color: var(--text); }
 .tab.on {
@@ -329,7 +329,7 @@ input:focus { border-color: var(--accent); }
 /* ---------- dpad ---------- */
 .dpad {
   display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr);
-  gap: var(--sp-2); width: min(246px, 72vw); aspect-ratio: 1; margin: 0 auto;
+  gap: var(--sp-1); width: min(222px, 68vw); aspect-ratio: 1; margin: 0 auto;
 }
 .dk {
   background: var(--card2); border: 1px solid var(--line); color: var(--text);
@@ -364,12 +364,12 @@ input:focus { border-color: var(--accent); }
 .padhint { color: var(--muted); font-size: 12.5px; pointer-events: none; text-align: center; padding: 0 var(--sp-3); }
 
 /* ---------- buttons ---------- */
-.brow { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-2); flex-wrap: wrap; justify-content: center; }
+.brow { display: flex; gap: var(--sp-1); margin-bottom: var(--sp-1); flex-wrap: wrap; justify-content: center; }
 .brow:last-child { margin-bottom: 0; }
 .brow.center { justify-content: center; }
 .btn {
   background: var(--card2); border: 1px solid var(--line); color: var(--text);
-  border-radius: var(--r-md); padding: 11px var(--sp-3); font-size: 14px;
+  border-radius: var(--r-md); padding: 9px var(--sp-3); font-size: 14px;
   text-decoration: none; min-height: 40px;
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
@@ -576,6 +576,32 @@ code {
 .vosdnum { font-size: 12px; color: var(--muted); min-width: 3ch; text-align: right;
   font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: reduce) { .vosdfill { transition: none; } }
+
+/* ---------- 音量精确设置（滑条 + 预设档） ----------
+   滑条自己画：原生 input[type=range] 的轨道/滑块在 Safari 上不吃 system 配色，
+   于是 appearance:none 后用 ::-webkit-slider-* 重造，填充色交给一个绝对定位的
+   .vsliderfill 假进度条（比 background-gradient 好调，暂停动效时也不会跳）。
+   整行 .dead 只降透明度不移除：设备不报级数时它还在，用户知道这事存在。 */
+.vrow { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2); }
+.vrow.dead { opacity: .45; }
+.vsliderwrap { position: relative; flex: 1; min-width: 0; height: 22px; display: flex; align-items: center; }
+.vslider { -webkit-appearance: none; appearance: none; width: 100%; background: transparent; margin: 0; }
+.vslider:focus-visible { outline: 2px solid var(--accent-solid); outline-offset: 3px; border-radius: var(--r-full); }
+.vslider::-webkit-slider-runnable-track { height: 8px; border-radius: var(--r-full); background: var(--card3); }
+.vslider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 20px; height: 20px; margin-top: -6px;
+  border-radius: var(--r-full); background: var(--accent-solid); border: none; box-shadow: var(--shadow-pop, 0 1px 3px rgba(0,0,0,.3)); }
+.vslider::-moz-range-track { height: 8px; border-radius: var(--r-full); background: var(--card3); }
+.vslider::-moz-range-thumb { width: 20px; height: 20px; border: none; border-radius: var(--r-full); background: var(--accent-solid); }
+.vslider:disabled::-webkit-slider-thumb { background: var(--faint); }
+.vslider:disabled::-moz-range-thumb { background: var(--faint); }
+.vsliderfill { position: absolute; left: 0; top: 50%; transform: translateY(-50%); height: 8px; width: 0;
+  border-radius: var(--r-full); background: var(--accent-solid); pointer-events: none; }
+.vrow.dead .vsliderfill { background: var(--faint); }
+.vnum { font-size: 12px; color: var(--muted); min-width: 5ch; text-align: right; font-variant-numeric: tabular-nums; }
+.vpresets { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); }
+.vpresets .btn { min-width: 40px; }
+.vpresets .btn.on { border-color: var(--accent-solid); color: var(--accent-solid); }
+@media (prefers-reduced-motion: reduce) { .vsliderfill { transition: none; } }
 
 /* ---------- 首次使用引导（coach mark，对标 Material feature discovery） ----------
    暗场里只给目标元素留一块光圈（spotlight 的巨型 box-shadow 充当遮罩），
@@ -823,6 +849,22 @@ code {
   color: var(--accent-solid); pointer-events: none; }
 .dk.ok.remapped::after { top: auto; bottom: 4px; right: 9px; }
 
+
+/* ---------- 命令面板命中高亮（第三十二轮；口径见 palmark 段） ----------
+   只用令牌，不写死颜色；深浅两主题各自给一组前景/背景，避免深色下糊成一团。 */
+.palmark {
+  background: var(--accent-soft); color: var(--accent-text);
+  border-radius: 3px; padding: 0 1px; font-weight: 600;
+}
+:root[data-theme="light"] .palmark { background: var(--accent-soft); color: var(--accent-text); }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .palmark { background: var(--accent-soft); color: var(--accent-text); }
+}
+
+/* ---------- 收藏夹调序按钮（第三十二轮） ----------
+   与 ✕ 同级的 tiny 按钮，置灰由 .btn[disabled] 统一处理。 */
+.favrow .favmove { flex: none; min-width: 34px; padding: 6px 0; justify-content: center; }
+
 .hidden { display: none !important; }
 
 /* ---------- 手机安装引导 ---------- */
@@ -969,3 +1011,8 @@ body.disc [data-needs-device] { opacity: .68; filter: saturate(.8); }
 .padsens input[type="range"] { flex: 1; min-width: 0; accent-color: var(--accent-solid); }
 .padsens .padsensval { flex: none; font-variant-numeric: tabular-nums; color: var(--text); font-size: 13px; min-width: 3.5ch; text-align: right; }
 .padsens .btn.tiny { flex: none; }
+
+/* ---------- 手柄（第三十六轮） ---------- */
+.gpstate { flex: 1; min-width: 0; font-size: 12.5px; text-align: right;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.gpstate.on { color: var(--ok-text); }

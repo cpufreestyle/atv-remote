@@ -1623,3 +1623,406 @@ Playwright 程序化审计（双视口 390×844 / 1280×800）的量化证据，
 ### 验证
 - Playwright 390×844 复核深浅两主题首屏与滚动区域，未连接卡片边界、分段控件与文本对比度可读。
 - `./check.sh` 最终通过：系统 Python 与 `.venv` 各 455 个用例 OK，内嵌副本一致，`git diff --check` 干净。
+
+## 第三十一轮：说话即遥控——自然语言意图层（2026-09-29）
+
+### 学习源
+- **Fuse.js 7.1.0**（Apache-2.0）：Bitap 模糊匹配。抄走的是 computeScore() 的口径
+  （accuracy = errors/pattern.length，proximity = |expectedLocation - currentLocation|，
+  score = accuracy + proximity/distance，默认 location=0 / distance=100 / threshold=0.6）
+  与「先 indexOf 精确快路径、再逐级放宽错误预算」的查法。项目里原来只有四档硬匹配，
+  打错一个字母就 0 命中；现在第 5 档按同一口径兜底。
+- **rapidfuzz 3.14.3**（MIT，版权 Max Bachmann）：process.extract + fuzz.ratio /
+  partial_ratio / token_sort_ratio / token_set_ratio 的组合。抄走的是「同一条查询用
+  多个视角各打一次分取最高」，以及 token 视角想解决的问题——词序不该影响命中。
+- **Home Assistant conversation**（概念参照，未重核源码）：同义词/别名优先于模糊匹配，
+  未命中绝不改写用户输入。
+
+### 为什么选它
+- 语音识别结果原来直接 sendText：说「声音小一点」会把这五个字打进电视搜索框。
+  这不是「不够智能」，是意图根本没被理解——功能缺陷。
+- 命令面板 51 条命令，palScore 四档之外没有任何容错，找「yutube」什么都找不到。
+- 两条都只碰 static/*，不动 HTTP 层、不碰 state.json，回归面最小。
+
+### 设计
+- 纯函数段 intent:begin/end：归一化（全角折半角、去标点、去语气词）→ 同义词别名表 →
+  动词+对象 → 整句直中，四级递进，任一级不命中返回 null。
+- intentEditErrors() / intentSubstrErrors()：有界 Levenshtein 与「近似子串匹配」
+  （第 0 行全 0 = 文本前缀可免费跳过，最后一行取最小）。后者对应 Fuse 里 proximity 项。
+- intentSim()：整串 / 片段 / 词序三个视角取最大，照 rapidfuzz 的组合思路。
+- 错误预算按中英分流：纯中文给 1 的底线（中文两字词错一字仍是同一个词），拉丁查询不给。
+- 命令 id 与 palCommands() 的 push id 同源，命中后直接复用面板那套执行体，零新增后端。
+- 设置弹窗加「语音意图识别」开关（默认开），关掉后行为与加功能之前完全一致。
+
+### 踩到的坑（全是跑用例跑出来的，不是设计时想到的）
+1. **任意子串匹配会误伤**：最初别名在句子里任意位置命中就算，结果「打开电视机顶盒」
+   里的「打开电视」触发开机键。改成只认整句相等或后缀命中。
+2. **「看电视」与「关电视」只差一个字**：容错一放开，词序/首字都不管的话，
+   一句闲聊就能把电视关了。改成「只跟句尾等长那一小段整串比 + 首字必须相同」——
+   中文命令的区分信息主要在首字，「开机」与「关机」同理。
+3. **歧义时不猜**：「音量城」距「音量减 / 音量低」与「音量加 / 音量增」都只差一个字，
+   猜任何一边都有五成概率按错键。多个候选分属不同命令时返回空，宁可当文本下发。
+4. **有动词就不能整句直中**：「看电视」整句匹配会命中 conn 命令 terms 里的「连接电视」，
+   把闲聊变成连设备。现在有动词只走对象分支，对象是通用名词（电视/设备/应用）直接放弃。
+5. **中文两字命令永远不能容错**：按长度定错误预算时，两字词floor(2*0.34)=0，
+   「静音」打错一字就完全找不到。但拉丁两字符给 1 的底线又等于什么都匹配（yt 命中 youtube）。
+   最后按是否含 ASCII 分流。
+
+### 验证
+- tests/intent_harness.js：15 组行为用例，ALL_INTENT_CASES_PASSED。
+- tests/test_intent.py：13 项。
+- Playwright（真实服务器 + 线上 51 条命令）：「打开 Netflix」得到 app:com.netflix.ninja、
+  「声音小一点」得到 key:25；「周杰伦」「看电视」「音量城」全部返回 null。
+- ./check.sh：468 用例 OK（较上轮 +13）；./sync-native.sh --check 一致。
+
+### 台账
+- 参考项目、核实方式与下轮候选见 docs/opensource-references.md。
+
+## 第三十二轮：命中可见 + 常用可排（2026-10-01）
+
+### 学习源
+- **rapidfuzz 3.14.3**（MIT，版权 Max Bachmann）的 rapidfuzz.distance 模块。核实到的事实：
+  类型存根里 ScoreAlignment 的字段是 score / src_start / src_end / dest_start /
+  dest_end —— 把最佳对齐区间在两条串上的位置一起返回，而不是只给一个分数。
+- **SortableJS 1.15.6**（MIT）。核实到的事实：拖拽结束事件携带 oldIndex 与 newIndex，
+  库负责重排 DOM，消费者的责任是把自己的数据重排得和 DOM 一致。项目取这个契约，
+  不取它的纯拖拽交互 —— 它没有键盘通道，而这个界面同时跑在 Mac App（键盘可达）上。
+
+### 为什么选它
+- 上一轮给 palScore 加了 tier 5 容错，于是「打开 YouTube」能匹配查询「yutube」，
+  但用户满眼看去找不到 yutube 在哪。容错越强，越需要告诉用户这一行为什么冒出来。
+- 收藏夹的 UI 一直写着「顺序即优先级」，但顺序只能由固定时间决定，攒到五六个之后
+  最常用的那个可能压在第四位，而用户没有任何办法调整。
+
+### 设计
+- palmark 纯函数段：palMarkRanges 返回要高亮的区间，palMarkMerge 合并相邻/重叠区间，
+  palMarkWindow 做近似窗口搜索。
+- favorder 纯函数段：favMove 做「取出再插入」，favCanMove 判边界，favIndexOf 按 pkg 定位。
+- 两处 DOM 胶水都只用 createElement + textContent。收藏夹调序走 undoable 链路。
+
+### 踩到的坑
+1. 窗口优先还是子序列优先：一开始让近似窗口先于散乱子序列，结果 ybe 匹配 YouTube 时
+   高亮的是 ube，把没打过的 u 也算进去了。改成两种候选都算，取覆盖更宽的那个；
+   一样宽时取段数更少的。netflx 到 Netflix 两边跨度都是 7，窗口只有一段，选窗口；
+   ybe 到 YouTube 子序列跨 7 个字符而窗口只有 3 个，选子序列。
+2. 窗口平手时取最短是错的：netflx 在 netflix 里，len 6 与 len 7 两个窗口错误数都是 1，
+   取短的会高亮 netfli 而不是整个词。改成平手时取最靠前且覆盖最宽。
+3. intentMaxErrors 原本只收长度，导致中文两字词 floor(2*0.34)=0 永远不能容错；
+   而拉丁两字符给 1 的底线又等于什么都匹配。改为按是否含 ASCII 分流。
+4. 用例把 favMove 的语义算错了：移动是「从 from 取出、插到 to」，
+   [1,2,3,4,5] 的 4 到 3 是 [1,2,3,5,4] 而不是 [1,2,4,3,5]；
+   from 已在首位、to 又钳到首位时应当不动。是测试算错，不是实现错。
+
+### 验证
+- tests/palmark_harness.js 7 组用例 ALL_PALMARK_CASES_PASSED；
+  tests/favorder_harness.js 8 组用例 ALL_FAVORDER_CASES_PASSED。
+- tests/test_palmark.py 10 项 + tests/test_favorder.py 8 项。
+- Playwright（真实服务器 + 线上 51 条命令）：查 yutube 得到 2 行，每行各有 1 个
+  mark.palmark，文本恰为 YouTube；查 netflx 高亮 Netflix。
+- 收藏夹：3 项种子后 6 个按钮，边界置灰为首行上移与末行下移；点第二行上移后
+  Netflix 上移并写入 localStorage，toast 带撤销；点撤销后顺序还原。
+- ./check.sh 486 用例 OK（较上轮 +18）；./sync-native.sh --check 一致；
+  git diff --check 干净。
+
+## 第三十三轮：重连要等多久，说出来（2026-10-01）
+
+### 学习源
+tenacity 9.1.4 wait_exponential（Apache-2.0，© Julien Danjou）。核实到的事实：
+它的 docstring 明确把两种场景分开——「资源不可用、时长未知」用固定指数（无抖动），
+「多个无协调进程争用同一资源」才用 wait_random_exponential（Full Jitter）。
+本项目是单进程后台循环等一台正在重启的电视，属前者，刻意不加抖动。
+
+### 为什么选它
+原来的自动重连是固定 30 秒冷却。电视重启通常几十秒，于是前两次重试间隔完全一样：
+既可能在电视还没起来时白白打一次 adb connect，也可能在电视早就能连时还在干等。
+30 秒错的原因不是「选得太长」，是恒定。
+
+### 设计
+- server.py：RECONNECT_BASE=6.0 / RECONNECT_MAX_DELAY=60.0，序列 6→12→24；
+  reconnect_delay(fails) 先判再乘（exp >= cap/base 就直接返 cap），
+  与 tenacity 用 except OverflowError 兜底同效，但不在后台线程里捕 OverflowError。
+- /api/status 的 auto_reconnect 增加 next_in（距下次重试秒数）。
+- static/app.js：renderAutoReconn(el, base, ar) + arPaint()，next_in 当校准点、
+  中间按本地秒走。元素由调用方传进来，不段内再查一次选择器。
+
+### 踩到的坑
+1. reconnect_delay 的函数体写到 /tmp 却忘了插进 server.py，import server 报 NameError。
+   常量改名必须连着函数一起落，落完立刻 import 一次。
+2. arPaint 里写成 ("#info")，页面上的元素其实是 #tvInfo。
+   SelectorDriftTest 扫 app.js 里所有 ("#xxx") 字面量、要求 id 存在于 index.html，
+   它抓住了这个错。这类回归 import 和 node --check 都查不出来。
+3. node harness 一开始在 finally 里还原 globalThis.setInterval：被测函数运行时按名字
+   找全局，还原后拿回去就是真定时器，于是「没挂上计时器」。假定时器得挂到用例跑完。
+
+### 验证
+- tests/test_reconnect_backoff.py 7 项 + tests/test_android_discovery.py 新增 3 项。
+- tests/reconnect_ui_harness.js 12 组用例（抽真函数 + 假 DOM + 假 setInterval）；
+  tests/test_reconnect_ui.py 驱动。
+- ./check.sh 499 用例 OK（较上轮 486 +13）；./sync-native.sh --check 一致；
+  git diff --check 干净。
+
+### 台账
+见 docs/opensource-references.md 第 8 节。
+
+## 第三十四轮：连不上时，一份报告说完（2026-10-01）
+
+### 学习源
+Home Assistant helpers/redact.py 2026.9.4（Apache-2.0）。核实到的事实：它把敏感键名
+写成显式集合，异步递归遍历 dict / list，命中就整值替换成 "**REDACTED**"；判定顺序是
+先放行 None / 空串、再判键名。它其实还支持「键名 → callable」做留头去尾的部分掩码，
+且 google_assistant 组件真的在用——我们刻意不用，理由见台账第 9 节。
+
+### 为什么选它
+老流程是用户说「连不上」，然后来回问四轮：版本多少？adb 在哪？输入法切了没？设备什么状态？
+答案全在服务端手里，却要靠人嘴传。这一轮做的是「复制诊断信息」按钮：点一下，十行纯文本
+进剪贴板，直接贴给帮忙的人。红线是**这份东西默认会被贴到公网渠道**，所以配对凭据和
+局域网令牌的值一个都不进报告——这也是为什么选 HA 的脱敏模块当参照：它的立足点同样是
+「日志/报告会流到肉眼可见的地方」。
+
+### 设计
+- server.py：DIAG_SENSITIVE_KEYS / DIAG_REDACTED / redact_diagnostics() / make_diagnostics()。
+  make_diagnostics 不碰 state.json 整体，九个顶层键（version / embedded / platform / adb /
+  appletv / current / ime / auth / mdns）全部白名单现场拼；已配对 Apple TV 只报数量，
+  令牌只报开关与模式。递归脱敏套在返回值外面当纵深防御。
+- 路由：_serve() 里 /api/perf 之后加 /api/diagnostics，走统一 _send，不自己判权限
+  （_check_auth 在 _serve 开头已统一处理，它同时还负责种 cookie）。
+- 前端：static/app.js 的 diagnostics 纯函数段（diagYes / diagImeLine / diagReportText）
+  把白名单 JSON 变成十行人话；设置面板里「复制诊断信息」按钮调它，交给既有的 sheetCopy
+  （clipboard API + execCommand 兜底——局域网是明文 http、属非安全上下文）。
+- 报告里刻意保留的三处判断：adb 零设备时说「（一台都没扫到）」而不是留空行；
+  IME 未查询时说「未查询（当前不是 Android TV 或 adb 不可用）」而不是猜；
+  中文输入把「已装 / 已启用 / 当前」三态逐一报出来——中文打不进去的第一嫌疑是没启用。
+
+### 踩到的坑
+1. redact_diagnostics 第一版只替换字符串值，{"token": 12345} 会漏。改成照 HA 的顺序：
+   先放行 None / 空串，再判键名，命中就换，与值类型无关。
+2. harness 一条用例把 d.adb.shell_alive 留着 true 却断言「常驻 shell 无」。两者正交：
+   找不到 adb 二进制与 shell 活没活没有因果关系，而「adb 在、shell 活着、却扫不到一台设备」
+   （未授权 / 授权弹窗 / 网段不同）才是最该说清楚的场景。拆成两条用例。
+3. 契约测试把 "/api/" 和 "_check_auth" 列进禁用词，误报了纯函数段注释里的接口名和路由段
+   注释里的上游约定说明。收敛为 api( 与 self._check_auth( 的精确匹配——注释该留。
+
+### 验证
+- tests/diagnostics_harness.js 10 组用例；tests/test_diagnostics.py 30 项
+  （脱敏语义 7 + 白名单形状 12 + 路由契约 3 + 前端契约 7 + harness 驱动 1）。
+- ./check.sh 529 用例 OK（较上轮 499 +30）；./sync-native.sh --check 一致；
+  git diff --check 干净。
+
+### 台账
+见 docs/opensource-references.md 第 9 节。
+
+## 第三十五轮：手柄当 D-pad（2026-10-01）
+
+### 学习源
+qjoypad 4.3.1（GPL-2.0）与 xf86-input-joystick 1.6.4（MIT）——两个 Linux 手柄驱动的
+「轴 → 按键」映射；scrcpy 3.3.4 作为候选核实后给出负面结论。全部从 Debian / Ubuntu
+源码包读原文，行号与 sha256 见台账第 10 节。
+
+### 为什么选它
+提案 E4 是「手柄当 D-pad」：浏览器 Gamepad API 给出两根模拟轴，而安卓电视的 D-pad 是四个
+离散键，`adb shell input` 也只有 `keyevent` 没有轴注入——所以轴必须在浏览器侧
+翻成方向键，不能指望设备端。翻的每一档（死区多大、怎么算顶出、没变发不发、跳变怎么办、
+重复多快）都不能拍脑袋：这两个驱动把这些都实现过一遍，而且都留了注释说明为什么。
+
+### 设计
+- static/app.js gamepad 纯函数段（`gpNum` / `gpClampDeadzone` / `gpResidual` /
+  `gpDirOf` / `gpStep` / `gpAxisEvents` / `gpArbitrate` / `gpPwmCycle` /
+  `gpRepeatMs`）：时钟与 DOM 一律不碰，可整段抽出来在 node 里跑用例；
+  它同时是下一轮 UI 接线的唯一入口。
+- 换基先行：Gamepad API 是 `[-1, 1]`，驱动们活在 `±32767`，所以默认死区按
+  5000/32768 = 0.1526 取 0.15（qjoypad 的 3000/32767 = 0.0916 更小，留着当对照）。
+- 死区边界照驱动的「小于」判据（`backend_joystick.c:172` / `axis.cpp:281`）：
+  等于阈值算顶出即发。
+- 边沿触发：方向没变一个键都不发（qjoypad 的 `else return;`）；跳变不经过死区时
+  先抬旧键再按新键（xorg 的 `jumped over. Forcing keys_low up.`）——qjoypad 在
+  这件事上会卡住不松键。
+- 换轴迟滞 `GP_ARBIT_MARGIN = 1.25`：新轴残差要超过当前轴这么多倍才抢得到方向，
+  否则斜推一下就在左右之间抖。
+- 重复间隔单调（60ms..600ms），刻意不用驱动占空比的 U 形速度律：那是给指针移动设计的，
+  列表里移动光标要的是「推到底就最快」。
+
+### 本轮不接线，以及为什么
+规则段跑通、harness 17 组绿，但读 Gamepad API、按 direction 发 `/api/cmd` 的 UI
+接线**刻意留到下一轮**。理由是契约测试的纪律：接线没落地就不该有按钮契约，
+`tests/test_gamepad.py` 专门有一条 `test_no_button_wiring_yet` 钉住 html 里
+不许出现 gamepad 字样。前几轮的教训是「新后端 + 旧前端」式的静默漂移——宁可这轮只有
+规则段加出处，也不先写没人调的 UI。
+
+### 踩到的坑
+1. 段注释最初把 qjoypad 的状态机引成 `axis.cpp:203-236`、把 xorg 的 600ms 截止引成
+   `jstk_axis.c:534/:540`。逐行核对后改成 `205-233` 与 `537/:547`——出处引错行
+   比不引更糟，下轮 grep 过去会以为驱动是那么写的。
+2. 候选清单里「scrcpy 有成熟的轴死区口径」这个假设被源码推翻：它的 `AXIS_RESCALE`
+   只是换基，死区全在设备端。负面结论写进台账第 10 节，免得再挖一遍。
+
+### 验证
+- `tests/gamepad_harness.js` 17 组用例 ALL_GAMEPAD_CASES_PASSED；
+  `tests/test_gamepad.py` 13 项 OK。
+- `./check.sh` 542 用例 OK（较上轮 529 +13，skipped 11）；`./sync-native.sh --check`
+  一致；`git diff --check` 干净。
+
+### 台账
+见 `docs/opensource-references.md` 第 10 节。
+
+## 第三十六轮：手柄接线落地——十字键优先、消斜与连发节拍（2026-10-01）
+
+### 学习源
+xboxdrv 0.8.8（GPL-3.0+，Copyright 2008 / 2010 Ingo Ruhnke）——Linux 用户态手柄驱动，
+它的三个 modifier / filter 正好对应本轮要解决的三个问题。Ubuntu pool 源码包下载后
+逐行读原文，行号与 sha256 见台账第 11 节。
+
+### 为什么选它
+第三十五轮刻意只交规则段、不交 UI，于是「两根轴怎么翻成方向键」答完了，
+**多个输入源同时偏转**该怎么办却还空着：物理十字键与左摇杆给出同一份偏转时谁说话？
+斜按时会不会同时冒出两个方向？按住不放时节拍怎么算？这三件事 xboxdrv 都有现成实现，
+且都是几行的纯逻辑——抄口径比发明口径可靠。
+
+### 设计
+五个新纯函数，仍留在 gamepad 段内，时钟与 DOM 一概不碰：
+
+- `gpNormPad(pad)`：Gamepad API 快照归一成 `{x, y, up, down, left, right, a, back}`，
+  缺轴 / 缺键 / NaN 全兜底成 0 与 false。兜底不是洁癖：部分手柄在浏览器把手柄交出来
+  之前那几帧，前两根轴就是 NaN，直接喂进 `gpResidual` 会把死区判成「已经顶出」，
+  方向键自己飞起来。
+- `gpBtnDir(up, down, left, right)`：十字键四向 -> 单个方向，按着任一竖直方向
+  就判竖直胜（four_way_restrictor 的平手判 Y 胜搬到布尔输入上）。
+- `gpDirKey(dir)`：方向 -> Android keyevent 的唯一一张表（19/20/21/22），
+  别处不许再写这四个数字。
+- `gpFrame(snap, dz, held)`：**一帧一个出口**。十字键按着时摇杆整帧让位
+  （轴作废、val 归零），否则走带迟滞的 `gpArbitrate`。抄的是
+  `uinput_options.cpp:189-198` 的 `dpad_as_button()`：bind 四向成按键的同时，
+  把同两根轴 bind 成 invalid。
+- `gpNextFireMs(elapsed, rate)`：连发节拍。首发那一拍在按下时就发出、不计延时
+  （xboxdrv 首拍直接 `return true`），延时用尽才每 rate 一发；本项目把 delay 换成
+  `GP_REPEAT_FIRST_MS = 300`、rate 换成 `gpRepeatMs()`（残差越大越密）。
+
+接线全在段外：`static/index.html` 的 `#gpCard` 插在按键卡之前，默认关
+（不开手柄就不占 80ms 轮询），开关与死区存 localStorage——可编辑内容不放 state.json。
+胶水段 `GP_TICK_MS = 80` 单独一拍：连发节奏经不起 8s 的状态轮询。手柄 id 一律
+`textContent`：局域网广播可伪造，沿用全项目纪律。状态行四态：wait（等手柄连接）/
+on（已接上，带 id）/ lost（掉线）/ off（关）。
+
+### 分歧（有意）：模拟轴的迟滞没跟着抄
+four_way_restrictor 完全没有迟滞，推着摇杆画圆会一路来回翻方向。本项目只在十字键
+这一路照抄，模拟轴那路保留第三十五轮的 1.25 倍抢轴余量。理由与细节写在台账第 11 节，
+这里只留一句：布尔输入没有临界抖动，连续量有。
+
+### 踩到的坑
+1. 段注释里 autofire 的引用原本写成 `autofire_button_filter.cpp:78-95`，逐行核对发现
+   「首拍直接 true」的 `return true;` 在第 96 行，78-95 根本覆盖不到，改成 :82-97。
+   同一类错误的第二次（第三十五轮校准过 4 处）——下次引行号前先 sed 出原始行再写。
+2. xboxdrv 的连发链路**默认一个都不挂**（`controller_slot_config.cpp:207-212` 的
+   `autofire_map.empty()` 门）。差点被当成「抄它就等于什么都不做」而跳过；读下来
+   它其实是反向约束：本项目默认开连发，所以死区内必须一个键都不发。
+
+### 验证
+- `tests/gamepad_harness.js` 25 组（17 + 8）ALL_GAMEPAD_CASES_PASSED；
+  `tests/test_gamepad.py` 17 项（13 + 4）全绿。
+- `node --check static/app.js` 与
+  `python3 -c 'import server; import atv_backend'` 通过。
+- `./sync-native.sh` 已同步（改了 static/*，副本与根目录逐字节一致）。
+- `./check.sh` 全量通过；`git diff --check` 干净。
+
+### 台账
+见 `docs/opensource-references.md` 第 11 节。
+
+## 第三十七轮：配置搬家——坏档先校验、写入原子替换（2026-10-01）
+
+### 学习源
+chezmoi v2.73.0（MIT，Copyright (c) 2018 Tom Payne，proxy.golang.org 源码 zip，
+sha256 c99c43dd1724f4cea26ecab00bd06bb31bb28b23710b92eb3c1852e3609a14a1）。逐行读三处：
+`internal/cmd/config.go` 的配置读取链、`internal/chezmoi/realsystem_unix.go` 的
+`WriteFile`、`internal/chezmoi/sourcestate.go` 的 ignore 账目。行号与源码引用见
+`docs/opensource-references.md` 第 12 节。
+
+### 设计
+设置弹窗加「配置搬家」卡片：导出 / 导入两个按钮 + 一条 `aria-live` 状态行。规则全在
+`static/app.js` 的 cfgxfer 纯函数段（禁 DOM / localStorage，`tests/backup_harness.js`
+直接抽段执行），胶水管 localStorage / 文件 / UI。三条硬口径：
+
+1. 坏档先校验：`cfgParseBackup` 把 JSON / magic / 版本 / `keys` / 值类型全查一遍，不过
+   就 `ok:false`；胶水只 toast，现有配置一个字节不动（chezmoi `config.go:998-1035`、
+   `1028-1033` 的口径：语义校验排在写之前）。
+2. 完整才落盘：导出是完整 JSON（一个值不是字符串就整体失败）；导入全部校验通过后才
+   批量写，且写成功数必须等于 apply 数，否则报「导入未完整」（chezmoi
+   `realsystem_unix.go:68-104` renameio 原子替换的口径）。
+3. 账目化：导出说清导了哪些、排了哪些敏感的；导入说清写了 / 跳了 / 坏了的数量
+   （chezmoi `sourcestate.go:917-926` 加 `ignoredcmd.go:18/37` 的 ignored 命令口径）。
+
+### 踩到的坑
+1. 段首注释里列举了禁用词（document. / localStorage / fetch…）——那是给人看的说明，
+   不是违规引用。harness 与 `tests/test_export_import.py` 都必须**先剥注释再查**，
+   否则自己绿自己。
+2. 白名单起初想收通知历史（换机后通知中心有历史看着连贯），否了：那是推导数据，换机
+   重放没有意义，还可能夹带隐私文本。键盘历史、引导状态同理，全部排除。
+3. 印象里「chezmoi 是 Apache-2.0」「format.go:172 是严格校验」都是错的，逐行核对后
+   改正（MIT；真正的旋钮是 `format.go:180` 的 `yaml.DisallowUnknownField()`）。
+   引行号前先 sed 出原始行——这是同一类错误的第三次，每次都是印象害的。
+
+### 验证
+- `node tests/backup_harness.js`：21 组 ALL_BACKUP_CASES_PASSED（含 A 机导出 B 机导入
+  逐键复现、坏档不写一字节、导出文本 grep 敏感词为 0）。
+- `python3 -m unittest tests.test_export_import -v` 全绿（段边界 / 白名单 13 键 /
+  副闸正则 / HTML 接线 / 台账出处 / harness 子进程 / 改坏段标记必失败）。
+- `./sync-native.sh` 已同步（改了 static/*，副本与根目录逐字节一致）；
+  `./check.sh` 与 `git diff --check` 通过。
+
+### 台账
+见 `docs/opensource-references.md` 第 12 节。
+
+## 第三十八轮：音量按格设置——滑条 + 预设档（2026-10-01）
+
+### 学习源
+androidtv 0.0.75（MIT，Copyright (c) 2020 Jeff Irion，commit
+343b74ea7bb3d159f8a715190b4b9d8c00c2c0fd）。逐行读三处：
+`androidtv/basetv/basetv_async.py` 的 `set_volume_level()`、`androidtv/constants.py` 的
+两条 set 命令常量、`androidtv/basetv/basetv.py` 的 `_cmd_volume_set()`。行号与源码
+引用见 `docs/opensource-references.md` 第 13 节。
+
+### 为什么选它
+音量此前的形态是「按键 + 只读 OSD」：OSD 只能看，想从 3 格调到 12 格得连按 9 次，
+还容易按过头；老 ROM 连级数都读不到，用户根本不知道现在几格。这是真空白，不是
+「不够智能」。Home Assistant 的 Android TV 协议库把「设到绝对格数」这件事做全了：
+夹取公式、两条命令的版本分支、读不到 max 时的放弃路径，三条都有现成实现。
+
+### 设计
+工具卡片里加一行：静音钮 + 滑条（range，0..max）+ 实时格数，下面一排 0 / 25% /
+50% / 75% / 满格 的预设按钮。规则全在 `static/app.js` 的 volset 纯函数段
+（禁 DOM / localStorage / fetch，`tests/volume_slider_harness.js` 直接抽段执行），
+胶水管渲染与请求。三条硬口径：
+
+1. 先 round 后夹（`basetv_async.py:830` 的 int(min(max(round(x), 0.0), max))）：
+   只夹不舍会把 7.6 卡成 7，只舍不夹会放出 16 / -1，电视侧命令直接报错。
+2. max 按不可信输入处理：来自上一次回读，可能是旧值；空 / 0 / 负数 / 非数字退到
+   兜底 15（STREAM_MUSIC 常见上限）。老设备 dumpsys 报 25 格时按 25 夹。
+3. 读通道全废（supported=false）时滑条整行停用显示「—」，退回音量键 24/25
+   （`basetv_async.py:825-828` 的放弃路径：不猜格数发出去）。
+
+### 分歧（有意）
+- **松手才提交**：滑条 input 只画本地，change（松手）才 POST /api/volume。
+  拖动过程每帧一次 adb 会把输入锁堵死；轮询回读也带 dragging 守卫，不许把滑条
+  弹回旧格数。
+- **两条 set 命令是有序降级而不是按版本号选**：androidtv 按 sw_version 二选一
+  （`basetv.py:261-284`），那要先花一次 build.prop 查询；读通道本来就在跑
+  `media volume`，让它先试，失败再试 `cmd media_session volume`，两条都废才报错。
+
+### 踩到的坑
+1. 服务端最初直接 `int(value)` 截断：7.6 卡成 7，滑条停在 8、电视却是 7。
+   测试 `test_clamps_before_sending` 抓住的——舍入必须发生在 clamp 之前，且是
+   半点向上（Python3 内建 round 是银行家舍入 8.5→8，与前端 Math.round 不同口径）。
+2. 同一个函数里 `top <= 0` 遇到空串解析出的 None 直接 TypeError——不可信输入的
+   判定不能只写 falsy 检查，None 要先拦。
+3. 前端段注释里最初没写两条命令的完整串，`test_two_set_commands_match` 让人发现
+   前后端口径没有一个可 grep 的共同文本。补全后测试即对齐检查，不是装饰。
+4. 假 adb 的 `set_ok` 语义一度写反（first_only 让第一条就成功），fallback 用例
+   于是验证了个寂寞。替身的状态机要和真实降级路径逐条对账。
+
+### 验证
+- `node tests/volume_slider_harness.js`：10 组 ALL_VOLUME_CASES_PASSED。
+- `python3 -m unittest tests.test_volume_set -v` 全绿（33 项：段边界 / 前后端口径
+  对齐 / 降级顺序 / 缓存失效 / DOM 接线 / 台账出处）。
+- `./sync-native.sh` 已同步（改了 server.py 与 static/*，副本与根目录逐字节一致）；
+  `./check.sh` 全量通过；`git diff --check` 干净。
+
+### 台账
+见 `docs/opensource-references.md` 第 13 节。

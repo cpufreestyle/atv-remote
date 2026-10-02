@@ -123,6 +123,27 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
       </div>
     </section>
 
+    <!-- 手柄当 D-pad（第三十六轮接线）：读浏览器 Gamepad API，把左摇杆与物理十字键翻成
+         安卓方向键。规则在 static/app.js 的 gamepad 纯函数段（第三十五轮打底，第三十六轮
+         补「一帧 -> 该发哪些键」的四条纯函数），这里只管开关 / 死区 / 连接状态。 -->
+    <section class="card" id="gpCard" data-needs-device data-collapsible data-state="open" data-collapse-name="手柄">
+      <h2 class="chead">🎮 手柄<button class="ctog" type="button" aria-expanded="true" aria-controls="cbody-gpCard" title="折叠「手柄」"><span class="chev" aria-hidden="true"></span></button></h2>
+      <div class="cbody" id="cbody-gpCard">
+        <div class="cinner">
+        <div class="setrow"><span>手柄遥控</span>
+          <span class="gpstate" id="gpState">已关闭</span>
+          <button id="gpEnableBtn" class="switch" role="switch" aria-checked="false" aria-label="手柄遥控"><span class="knob"></span></button></div>
+        <div class="padsens">
+          <label for="gpDz">摇杆死区</label>
+          <input type="range" id="gpDz" min="0.02" max="0.5" step="0.01" value="0.15" aria-label="摇杆死区">
+          <span class="padsensval" id="gpDzVal">0.15</span>
+          <button class="btn tiny" id="gpDzReset">重置</button>
+        </div>
+        <p class="hint" id="gpHint">左摇杆 / 十字键 = 方向，A = 确定，B = 返回。浏览器要等你在手柄上按过任意键才把手柄交出来（隐私策略），所以打开开关后先按一下手柄。摇杆推得越重，方向键重复越快。</p>
+        </div>
+      </div>
+    </section>
+
     <section class="card">
       <div class="brow">
         <button class="btn" data-key="4">↩ 返回</button>
@@ -241,6 +262,16 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
           <button id="shotBtn" class="btn">📸 电视截屏</button>
           <button id="disconnectBtn" class="btn">断开连接</button>
         </div>
+        <!-- 音量精确设置：此前只有音量键（连按凑格数）+ 只读 OSD（能看不能设）。
+             滑条 min/max 由 JS 按后端回读的级数重设（10 / 15 / 25 格都有），
+             这里写死的是「还没回读时」的占位值。松手才发送，见 app.js volset 段。 -->
+        <div class="vrow" id="volSetRow">
+          <button id="volMuteBtn" class="btn" type="button" disabled>🔈 静音</button>
+          <span class="vsliderwrap"><span class="vsliderfill" id="volSliderFill"></span><input id="volSlider" class="vslider" type="range" min="0" max="15" step="1" value="0" disabled aria-label="媒体音量格数"></span>
+          <span class="vnum" id="volSetNum">—</span>
+        </div>
+        <div class="vpresets" id="volPresets"></div>
+        <p class="hint" id="volSetHint">拖到想要的格数、松手才发送（拖动过程不发命令，否则会堵住输入）。电视不报音量级数时整行停用，用上面的音量键即可 —— 按键在任何设备上都能用。</p>
 
         </div>
       </div>
@@ -442,6 +473,9 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
     <h2 class="settitle">⚙ 设置</h2>
     <div class="setrow"><span>按键震动反馈</span>
       <button id="hapticBtn" class="switch" role="switch" aria-checked="true" aria-label="按键震动反馈"><span class="knob"></span></button></div>
+    <div class="setrow"><span>语音意图识别</span>
+      <button id="intentBtn" class="switch" role="switch" aria-checked="true" aria-label="语音意图识别"><span class="knob"></span></button></div>
+    <p class="hint">开启后，说的话先尝试理解成命令（说「声音小一点」= 音量减，说「打开 Netflix」= 起应用）；听不懂才原样发给电视。听错时右上角会提示听懂成了什么。</p>
     <div class="setrow"><span>常用短语（<span id="phraseCount">0</span> 条）</span>
       <button id="clearPhrasesBtn" class="btn tiny danger">清空</button></div>
     <div class="setrow"><span>自定义宏</span>
@@ -460,6 +494,20 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
     <p class="hint">折叠状态只记在本浏览器，换台设备不跟着走。</p>
     <div class="setrow"><span>使用指引</span>
       <button id="coachBtn" class="btn tiny">重看一遍</button></div>
+    <div class="setrow"><span>一键体检</span>
+      <button id="diagCopyBtn" class="btn tiny">复制诊断信息</button></div>
+    <p class="hint">连不上电视时点它：报告含版本 / adb / 输入法三态 / 设备在线状态，
+      直接贴给帮忙的人；不含配对凭据，也不含局域网令牌的值。</p>
+    <div class="setrow"><span>配置搬家</span>
+      <div class="seg" role="group" aria-label="配置导入导出">
+        <button type="button" id="cfgExportBtn">导出配置</button>
+        <button type="button" id="cfgImportBtn">导入配置</button>
+      </div></div>
+    <p class="hint">换机 / 换浏览器时，把键位图、自定义宏、常用短语、主题、灵敏度、收藏夹一次带走。
+      只读本浏览器的本地设置，<strong>不含</strong>配对凭据与访问令牌（那些本来就不在浏览器里）。
+      导入前会完整校验：坏文件原样报错，不会碰坏现有配置。</p>
+    <p class="hint" id="cfgxferStatus" aria-live="polite"></p>
+    <input type="file" id="cfgFileInput" accept="application/json,.json" hidden>
     <p class="hint" id="verHint"></p>
     <div class="brow center"><button id="settingsCloseBtn" class="btn primary" data-autofocus>完成</button></div>
   </div>

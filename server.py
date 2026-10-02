@@ -17,6 +17,7 @@ import hmac
 import json
 import mimetypes
 import os
+import platform
 import re
 import select
 import secrets
@@ -675,6 +676,88 @@ def volume(serial):
     return val
 
 
+# ---------------- 音量精确设置（按格） ----------------
+# 学习源：androidtv 0.0.75（MIT，Copyright (c) 2020 Jeff Irion，commit 343b74e）——
+# Home Assistant 遥控 Android TV 的协议库。此前本项目音量链路是「按键 + 只读 OSD」，
+# 想一步调到某一格只能连按；按格设置的完整答案 androidtv 已经踩过一遍，三条口径直接搬：
+#   1) constants.py:145/148 两条 set 命令：旧系统
+#      `media volume --show --stream 3 --set N`，Android 11+ 是
+#      `cmd media_session volume --show --stream 3 --set N`。它按 sw_version 二选一
+#      （basetv.py:280-284）；我们不多花一次 build.prop 查询，改成有序降级：读通道
+#      已在用的 `media volume` 先试，抛 AdbError 再试 `cmd media_session volume`。
+#   2) basetv_async.py:830 的夹取公式 int(min(max(round(x), 0.0), max_volume))：
+#      先 round 再夹。只夹不舍会把 7.6 卡成 7 再跳 8，只舍不夹会放出 16 / -1，
+#      电视侧命令直接报错。max 也按不可信输入处理（读通道挂掉时前端兜底 15）。
+#   3) basetv_async.py:825-828：max_volume 拿不到就先去 volume() 读一次，仍拿不到
+#      直接返回 None（放弃）。同思路：读通道全废时 POST 报错，让前端退回音量键——
+#      24/25 在任何 ROM 上都认，这才是老设备上的降级方向，不是猜一个格数发出去。
+VOLUME_MAX_FALLBACK = 15   # 读不到 max 时的兜底格数（STREAM_MUSIC 常见上限）
+
+def _vol_finite_int(value):
+    """把入参 round 成整数；非数字 / NaN / inf 一律返回 None（调用方按「不可信」处理）。
+
+    JSON body 里的 level 理论上只会是数字，但网关/脚本可能塞进任意类型；
+    int(float("inf")) 抛的是 OverflowError 而不是 ValueError，单独兜住。
+    舍入口径是**半点向上**（int(x + 0.5)）：Python3 内建 round 是银行家舍入
+    （8.5→8），前端 Math.round 是 8.5→9，直接用内建 round 会造出「滑条停在 9、
+    电视设成 8」的错位；直接 int() 截断则会把 7.6 卡成 7（先 round 后夹的另一半）。"""
+    try:
+        num = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if num != num or num == float("inf") or num == float("-inf"):
+        return None
+    return int(num + 0.5) if num >= 0 else -int(-num + 0.5)
+
+
+def clamp_volume_level(level, max_level):
+    """把目标格数 round 后夹到 [0, max_level]，返回 (level, max)。
+
+    round 与 clamp 的顺序照抄 androidtv basetv_async.py:830 的
+    int(min(max(round(...), 0.0), max_volume))。max_level 不可信（缺省 / 0 /
+    非数字）时退到 VOLUME_MAX_FALLBACK——滑条的 max 来自上一次回读，可能是旧值。
+    level 不可信时按 0 处理（不抛，让调用方按业务决定）。"""
+    top = _vol_finite_int(max_level)
+    if top is None or top <= 0:
+        top = VOLUME_MAX_FALLBACK
+    lvl = _vol_finite_int(level)
+    if lvl is None:
+        # NaN / inf / 非数字：合法 JSON 到不了这里，但绝不猜一个格数发出去
+        lvl = 0
+    return max(0, min(lvl, top)), top
+
+
+def volume_set_cmd(level: int):
+    """设置音量的两条候选命令（有序降级链）。学 androidtv constants.py:145/148：
+    `media volume` 是读通道已在用的同款命令先试，Android 11+ 的
+    `cmd media_session volume` 兜底。"""
+    return [
+        "media volume --show --stream %d --set %d" % (STREAM_MUSIC, level),
+        "cmd media_session volume --show --stream %d --set %d" % (STREAM_MUSIC, level),
+    ]
+
+
+def volume_set(serial, level):
+    """把 STREAM_MUSIC 音量设到绝对格数 level。返回 {ok, level, max, cmd}。
+
+    流程：volume() 拿当前值与 max（0.8s TTL 内免费）→ 夹取 → 按序试两条 set
+    命令。读通道全废（supported=False）或两条命令都失败时抛 AdbError，前端据此
+    退回按键模式。成功后主动失效 _volume_cache：音量是被我们亲手改掉的真状态，
+    不清缓存下一次读会返回旧格数（AGENTS.md 的缓存失效红线）。"""
+    cur = volume(serial)
+    if not cur.get("supported"):
+        raise AdbError("该设备不支持精确设置音量，请用音量键")
+    lvl, top = clamp_volume_level(level, cur.get("max"))
+    for cmd in volume_set_cmd(lvl):
+        try:
+            adb.shell(serial, cmd, timeout=5)
+        except AdbError:
+            continue                      # 换下一条（Android 11+ 的新命令）
+        _volume_cache.update(ts=0.0)      # 立刻作废，下一次读拿到新格数
+        return {"ok": True, "level": lvl, "max": top, "cmd": cmd}
+    raise AdbError("设置音量失败：设备不支持该命令")
+
+
 # ---------------- ADBKeyboard 中文键盘 ----------------
 def current_android_target() -> str:
     with state_lock:
@@ -801,8 +884,124 @@ def make_status():
             "active": _auto_reconn["active"],
             "stopped": _auto_reconn["stopped"],
             "fails": _auto_reconn["fails"],
+            # 距下次重试还剩几秒（0 = 现在就会试 / 没在等）；前端拿它做倒计时，
+            # 不然页面上只有一个「自动重连中」，用户不知道还要等多久
+            "next_in": (max(0, round(_auto_reconn["next_retry"] - time.time()))
+                        if _auto_reconn["next_retry"] else 0),
         },
     }
+
+
+# ---------------- 一键体检报告（第三十四轮） ----------------
+# 学 Home Assistant：util/redact.py 把「哪些键的值不能外泄」显式列成集合，递归遍历到时
+# 整值替换成 **REDACTED**（常量沿用它的原值），不靠「记得别加这个字段」这种自觉。
+# 我们比 HA 再退一步：报告字段全部白名单现场拼装，state.json 的配对凭据从头就不进门；
+# 递归脱敏是纵深防御——将来谁手滑加了名叫 token / credentials 的键也漏不出去。
+# 分歧（有意）：HA 允许 to_redact 传 key→callable 做「留头去尾」的部分掩码；这里只整值
+# 替换。报告会被用户原样贴进群/issue，「前 4 后 4 位」同样是明文，掩了等于没掩。
+DIAG_SENSITIVE_KEYS = ("token", "credentials", "credential", "pairing", "password",
+                       "secret", "private_key", "authorization")
+DIAG_REDACTED = "**REDACTED**"
+
+
+def redact_diagnostics(data, sensitive=DIAG_SENSITIVE_KEYS):
+    """递归脱敏（对齐 homeassistant/util/redact.async_redact_data，去掉它的 asyncio 装饰器）。
+
+    HA 的语义照抄：dict 逐键处理，命中 sensitive 的字符串值换掉，嵌套 dict / list 递归；
+    None 与空串原样保留（它们不是值，删了反而破坏形状）。输入不被修改——调用方随后要
+    json.dumps，mutate 了会连带污染内存里的 state 视图。
+    """
+    if isinstance(data, dict):
+        out = {}
+        for key, value in data.items():
+            # HA 的顺序：先放行 None / 空串（它们不是值），再判键名；命中就整值替换，
+            # 不限字符串类型——token 类的键哪怕混进数字 / 子结构也不该出去。
+            if value is None or (isinstance(value, str) and not value):
+                out[key] = value
+            elif key in sensitive:
+                out[key] = DIAG_REDACTED
+            else:
+                out[key] = redact_diagnostics(value, sensitive)
+        return out
+    if isinstance(data, list):
+        return [redact_diagnostics(v, sensitive) for v in data]
+    return data
+
+
+def make_diagnostics():
+    """一键体检（提案 E3）：用户报「连不上」时，不用再来回问版本 / adb / IME 三态。
+
+    字段白名单现场拼：版本、平台与 Python、adb（在不在 / 路径 / 版本 / 常驻 shell 存活 /
+    设备列表与状态）、当前设备与 IME 三态、pyatv 可用性与已配对台数（只报数量，条目里
+    有配对凭据）、令牌只报「开没开」不报值、mDNS 可用性。
+    绝不整体序列化 state —— 那里面有 Apple TV 配对凭据（AGENTS.md 安全约束）。
+    """
+    with state_lock:
+        cur = dict(state.get("current") or {})
+        recent = list(state.get("recent_android", []))
+        appletvs = list(state.get("appletvs", []))
+
+    adb_ok = bool(adb and adb.exists())
+    dev_list = []
+    if adb_ok:
+        try:
+            dev_list = adb.devices()
+        except AdbError:
+            dev_list = []
+
+    ime = None
+    # IME 三态只对 Android TV 有意义（ADBKeyboard 是它的输入法）
+    target = cur.get("target") if cur.get("type") == "android" else None
+    if target and adb_ok:
+        try:
+            ime = ime_status(target)
+        except AdbError:
+            ime = None
+
+    report = {
+        "version": app_version(),
+        "embedded": EMBEDDED,
+        "platform": {
+            "system": platform.system(),
+            "release": platform.release(),
+            "machine": platform.machine(),
+            "python": platform.python_version(),
+        },
+        "adb": {
+            "found": adb_ok,
+            "path": adb.path if adb else "",
+            "version": adb.version() if adb_ok else "",
+            "shell_alive": bool(adb and adb._shell is not None
+                                and adb._shell.poll() is None),
+            "devices_cache_ttl": DEVICES_CACHE_TTL,
+            "devices": [{"serial": d.get("serial", ""), "state": d.get("state", "")}
+                        for d in dev_list],
+        },
+        "appletv": {
+            "pyatv_available": bool(ATV_AVAILABLE),
+            "paired_count": len(appletvs),
+            "connected": bool(atv_mgr and atv_mgr.connected),
+        },
+        "current": {
+            "type": cur.get("type"),
+            # 与 make_status 同口径：Android TV 在 state 里叫 target，Apple TV 叫 id，
+            # 合成一个键（前端按 type 渲染「Android TV / Apple TV」前缀）
+            "target": cur.get("target") if cur.get("type") == "android" else cur.get("id"),
+            # 选中的那台此刻的在线态（device / offline / unauthorized…），「连不上」时最先看它
+            "state": (next((d["state"] for d in dev_list
+                            if d.get("serial") == target), None) if target else None),
+            "recent_android_count": len(recent),
+        },
+        "ime": ime,
+        "auth": {
+            # 只报开关与模式，值永远不进报告——报告是要被贴出去的
+            "token_enabled": bool(AUTH_TOKEN),
+            "mode": ("lan" if AUTH_TOKEN else "off"),
+            "loopback_hosts": list(LOOPBACK_HOSTS),
+        },
+        "mdns": {"dns_sd_available": bool(shutil.which("dns-sd"))},
+    }
+    return redact_diagnostics(report)
 
 
 # ---------------- 命令处理 ----------------
@@ -967,7 +1166,35 @@ def _sleep_timer_loop():
 # 在线过又掉了才自动重连（从未连上过的是用户还没连，不去碰）；
 # 连续失败 RECONNECT_MAX 次就停并提示手动，用户手动连上后自动重新武装
 RECONNECT_MAX = 3
-RECONNECT_COOLDOWN = 30.0
+RECONNECT_BASE = 6.0	# 首次重试前等（秒）
+RECONNECT_MAX_DELAY = 60.0	# 退避上限（秒）
+
+
+def reconnect_delay(fails: int, base: float = RECONNECT_BASE,
+                    cap: float = RECONNECT_MAX_DELAY) -> float:
+    """第 fails 次失败之后、下一次重试之前该等多久（秒）。
+
+    学习源：tenacity 9.1.4（Apache-2.0，© Julien Danjou）的 wait_exponential ——
+    result = multiplier * exp_base ** (attempt_number - 1)，再钳进 [min, max]。
+    核实到的事实（读 wheel 里的 tenacity/wait.py）：它的 docstring 明确区分两种场景 ——
+    「资源不可用、时长未知」用固定指数的 wait_exponential（无抖动）；
+    「多个无协调进程争用同一资源」才用 wait_random_exponential（即 AWS 那篇讲的
+    Full Jitter）。本项目是单进程后台循环在等一台正在重启的电视，属于前者，
+    所以刻意不加抖动：这里没有第二个进程竞争，抖动只会让「还要等多久」
+    变得不可预期。
+
+    原来是固定 30 秒冷却：电视重启通常几十秒，前两次重试间隔完全一样，
+    既可能在电视还没起来时白白打一次，也可能在电视早就能连时还在干等。
+    """
+    if fails < 1 or base <= 0:
+        return 0.0
+    exp = 2 ** (fails - 1)
+    # exp 长到一定程度后 base * exp 会 OverflowError，而那时结果必然是 cap：先判再乘
+    if exp >= cap / base:
+        return cap
+    return max(0.0, min(cap, base * exp))
+
+
 _auto_reconn = {"was_online": False, "fails": 0, "next_retry": 0.0,
                 "active": False, "stopped": False}
 
@@ -1002,7 +1229,7 @@ def _auto_reconnect_tick():
         _auto_reconn["fails"] += 1
         if _auto_reconn["fails"] >= RECONNECT_MAX:
             _auto_reconn.update(stopped=True, active=False)
-        _auto_reconn["next_retry"] = time.time() + RECONNECT_COOLDOWN
+        _auto_reconn["next_retry"] = time.time() + reconnect_delay(_auto_reconn["fails"])
 
 
 def _auto_reconnect_loop():
@@ -1875,6 +2102,20 @@ def wol_send(mac, bcast, sock_factory=None):
     return sent
 
 
+def handle_volume_set(body):
+    """POST /api/volume：把媒体音量设到绝对格数（第三十八轮，学 androidtv 0.0.75）。
+
+    读通道（GET /api/volume）早就有了，但只能看不能设，想调到某一格只能连按音量键。
+    这里补写通道：level 由滑条/预设档给出，缺失时 400，设备不对时 400，其余异常走
+    do_POST 统一的异常映射。成功后返回实际格数，前端用它纠正「夹取后和我滑的不一样」。
+    """
+    body = body or {}
+    if "level" not in body:
+        raise AdbError("缺少 level 字段")
+    target = current_android_target()
+    return volume_set(target, body["level"])
+
+
 def handle_wol(body):
     """discover：从本机 ARP 表反查 MAC（省得用户手抄）；send：发魔法包。"""
     body = body or {}
@@ -1913,6 +2154,7 @@ ROUTES = {
     "/api/atv/disconnect": handle_atv_disconnect,
     "/api/atv/forget": handle_atv_forget,
     "/api/atv/apps": handle_atv_apps,
+    "/api/volume": handle_volume_set,
     "/api/wol": handle_wol,
 }
 
@@ -2060,6 +2302,10 @@ class Handler(BaseHTTPRequestHandler):
                     "ttl": DEVICES_CACHE_TTL,
                 }
                 return self._send(200, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+            if path == "/api/diagnostics":
+                # 一键体检（提案 E3）。鉴权已在 _serve 开头的 _check_auth 统一处理，这里
+                # 不自己判权限；字段是 make_diagnostics() 白名单拼的，凭据不外泄。
+                return self._send(200, make_diagnostics())
             if path == "/api/nowplaying":
                 # 只覆盖 Android TV：Apple TV 的播放元数据依赖 pyatv 的 metadata.playing()，
                 # 多数 App 不填，字段稀疏，暂不做（前端对该类型直接隐藏卡片）。

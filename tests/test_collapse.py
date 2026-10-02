@@ -3,7 +3,8 @@
 """卡片折叠（第二十六轮）回归。
 
 动机：Playwright 双视口审计显示移动端文档高 2489px（viewport 844px），8 张次级卡片
-（键盘输入 / 快捷启动 / 应用 / 工具 / 远程开机 / 调用时间线 / 一键宏 / 睡眠定时）
+（键盘输入 / 快捷启动 / 应用 / 工具 / 远程开机 / 调用时间线 / 一键宏 / 睡眠定时 /
+手柄）
 全平铺，每滚一屏才够到下一组功能。本轮学 WAI-ARIA Disclosure 模式与 Radix
 Collapsible / Accordion 的「状态即属性」方法论：data-state 是 CSS 与 JS 之间唯一的
 合同，折叠态存浏览器 localStorage（键 atv.collapsed.v1，与自定义宏同规矩，不进
@@ -14,7 +15,7 @@ Collapsible / Accordion 的「状态即属性」方法论：data-state 是 CSS �
   2) JS 常量与 CSS 令牌数字一致（COLLAPSE_MS <-> --collapse-dur），且规则真的引用令牌；
   3) 折叠三件套：grid-template-rows 1fr->0fr、.cinner overflow hidden、visibility
      带等长延迟隐藏（折叠后不被 Tab 捞到），以及 36px 触控下限；
-  4) 8 张卡片都带齐属性：data-collapsible / data-state / data-collapse-name /
+  4) 9 张卡片都带齐属性：data-collapsible / data-state / data-collapse-name /
      .ctog + aria-controls + cbody-cinner 双层包裹；主遥控卡不许被折叠；
   5) 设置弹窗有「全部展开 / 全部折叠」入口；
   6) DOM 胶水在段外：restore 先于 bind，持久化只走 COLLAPSE_KEY + serialize/parse。
@@ -34,7 +35,7 @@ SEG_END = "/* ===== collapse:end"
 CARDS = [
     ("kbCard", "键盘输入"), ("favCard", "快捷启动"), ("appsCard", "应用"),
     ("toolsCard", "工具"), ("wolCard", "远程开机"), ("perfCard", "调用时间线"),
-    ("macrosCard", "一键宏"), ("sleepCard", "睡眠定时"),
+    ("macrosCard", "一键宏"), ("sleepCard", "睡眠定时"), ("gpCard", "手柄"),
 ]
 
 
@@ -149,7 +150,7 @@ class CssBehaviorTest(unittest.TestCase):
 
 
 class HtmlCoverageTest(unittest.TestCase):
-    """8 张次级卡片带齐属性；主遥控卡 / 按键卡不许被折叠。"""
+    """9 张次级卡片带齐属性；主遥控卡 / 按键卡不许被折叠。"""
 
     @classmethod
     def setUpClass(cls):

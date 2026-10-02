@@ -47,6 +47,11 @@ const TOKEN_HDR = ATV_TOKEN ? { "X-ATV-Token": ATV_TOKEN } : {};
    默认开，设置弹窗里可关（偏好存 localStorage）。 */
 const HAPTIC_KEY = "atv.haptics";
 function hapticEnabled() { return localStorage.getItem(HAPTIC_KEY) !== "0"; }
+/* 语音意图识别：说的话先尝试理解成命令，听不懂才原样发给电视。
+   默认开（原来语音只能当字面文本，说「声音小一点」会打进搜索框）；
+   误识别烦人可关，关掉后行为与加这个功能之前完全一致。偏好存 localStorage。 */
+const INTENT_KEY = "atv.intent";
+function intentEnabled() { return localStorage.getItem(INTENT_KEY) !== "0"; }
 function buzz(ms = 8) {
   if (!hapticEnabled()) return;
   try { navigator.vibrate && navigator.vibrate(ms); } catch (e) { /* 桌面/无硬件忽略 */ }
@@ -979,21 +984,74 @@ $("#micBtn").addEventListener("click", () => {
   r.maxAlternatives = 1;
   r.onresult = (e) => {
     const text = e.results[0][0] ? e.results[0][0].transcript : "";
-    if (text) sendText(text, false);
-    else toast("没听清，再说一次");
+    if (!text) return toast("没听清，再说一次");
+    intentSpeak(text);
   };
   r.onerror = (e) => { toast("语音识别失败：" + (e.error || "unknown")); micListening(false); micRec = null; };
   r.onend = () => { micListening(false); micRec = null; };
+
   micRec = r;
   micListening(true);
   log("🎤 请说话（说完自动发送）…");
   r.start();
 });
+/* ---- 说话即遥控的胶水层：规则在 intent 段，这里只负责执行与反馈 ----
+   两个刻意的选择：
+   1. 听不懂就原样 sendText——搜索词（「周杰伦」）绝不能被误判成命令；
+   2. 执行前先 log + toast 说出「听懂成了什么」，误识别时用户立刻知道按了什么，
+      而不是看着电视莫名其妙换台。 */
+function intentSpeak(text) {
+  if (!intentEnabled()) return sendText(text, false);   // 用户在设置里关掉了意图层
+  let hit = null;
+  try { hit = intentParse(text, palCommands()); } catch (err) { hit = null; }
+  if (!hit) return sendText(text, false);
+  log("🎤 听懂为：" + hit.cmd.label + "（" + hit.via + "）");
+  toast("🎤 " + hit.cmd.label);
+  palRemember(hit.cmd.id);
+  try { hit.cmd.run(); } catch (err) { toast("⚠ " + err.message); }
+}
 
 /* ---------------- 睡眠定时 ---------------- */
 // until 用 epoch 秒由服务端给，倒计时本地走秒：不靠 8s 轮询刷新，按钮秒级响应
 let sleepUntil = 0;
 let sleepTick = null;
+
+/* ---------------- Android 掉线自动重连进度 ---------------- */
+// 服务端退避是 6->12->24s（server.py reconnect_delay）。next_in 只在 8s 轮询到达时刷新，
+// 若只显示它，「3s 后重试」会原地停 8 秒；所以终点由服务端校准、中间按本地秒走。
+let arEl = null;       // #tvInfo，由 renderStatus 传进来（别在这里再 $() 找一遍）
+let arBase = "";       // 不带重连后缀的设备状态文案
+let arActive = false;
+let arStopped = false;
+let arNextIn = 0;
+let arTick = null;
+
+function arPaint() {
+  if (!arEl) return;
+  let suffix = "";
+  if (arStopped) suffix = " · 重连失败，点连接重试";
+  else if (arActive && arNextIn > 0) suffix = " · 自动重连中（" + arNextIn + "s 后重试）";
+  else if (arActive) suffix = " · 自动重连中";
+  arEl.textContent = arBase + suffix;
+}
+
+function renderAutoReconn(el, base, ar) {
+  arEl = el || null;
+  arBase = base || "";
+  arActive = !!(ar && ar.active);
+  arStopped = !!(ar && ar.stopped);
+  arNextIn = ar && ar.next_in > 0 ? ar.next_in : 0;   // 服务端值是校准点，不是唯一真相
+  clearInterval(arTick);
+  arTick = null;
+  arPaint();
+  if (arActive && !arStopped && arNextIn > 0) {
+    arTick = setInterval(function () {
+      arNextIn -= 1;
+      if (arNextIn <= 0) { clearInterval(arTick); arTick = null; }
+      arPaint();
+    }, 1000);
+  }
+}
 
 function fmtLeft(sec) {
   return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
@@ -1981,6 +2039,150 @@ function volBump(code) {
     Vol.syncTimer = setTimeout(volSync, Vol.level < 0 ? 60 : VOL_SYNC_DEBOUNCE);
   }
 }
+/* ===== volset:begin
+   音量精确设置（滑条 + 预设档）的纯规则段。第三十八轮，学 androidtv 0.0.75
+   （MIT，Copyright (c) 2020 Jeff Irion，commit 343b74e）的 set_volume_level()：
+   把音量设到「绝对格数」，而不是连按音量键去凑。此前本项目只有按键 + 只读 OSD，
+   能看不能设——从 3 格调到 12 格要按 9 次，还容易按过头。
+
+   三条口径与服务端 server.volume_set() 逐字对齐（tests/test_volume_set.py 钉住）：
+   1) 先 round 后夹：basetv_async.py:830 的 int(min(max(round(x), 0.0), max_volume))。
+      只夹不舍会把 7.6 卡成 7、只舍不夹会放出 16 / -1，电视侧命令直接报错。
+      JS 的 Math.round 是半点向上（8.5→9），Python3 内建 round 是银行家舍入
+      （8.5→8），服务端因此写成 int(raw + 0.5)；本段直接用 Math.round，天然同口径。
+   2) max 一律按不可信输入处理：它来自上一次回读，可能是旧值；<=0 / 空 / 非数字
+      退到 VOLSET_MAX_FALLBACK（15，STREAM_MUSIC 的常见上限）。老设备报 25 格。
+   3) level >= 0 才叫「知道格数」。读通道全废（两个查询命令都不认）时 level 是 -1，
+      此时整行停用、退回音量键 24/25——任何 ROM 都认按键，这才是降级方向。
+
+   发出的命令有两条候选（学 constants.py:145/148，服务端 volume_set_cmd() 有序降级链）：
+     media volume --show --stream 3 --set N      —— 读通道同款，先试；
+     cmd media_session volume --show --stream 3 --set N —— Android 11+ 兜底。 */
+VOLSET_MAX_FALLBACK = 15;
+
+function volSetClamp(level, max) {
+  let top = Number(max);
+  if (!isFinite(top) || top <= 0) top = VOLSET_MAX_FALLBACK;
+  top = Math.floor(top);
+  const raw = Number(level);
+  const lvl = isFinite(raw) ? Math.round(raw) : 0;
+  return [Math.max(0, Math.min(lvl, top)), top];
+}
+
+function volSetPct(level, max) {
+  const c = volSetClamp(level, max);
+  return Math.round(c[0] / c[1] * 100);
+}
+
+function volSetPresets(max) {
+  const c = volSetClamp(0, max);
+  const top = c[1];
+  const raw = [0, Math.round(top * 0.25), Math.round(top * 0.5), Math.round(top * 0.75), top];
+  const out = [];
+  for (const n of raw) {
+    const v = Math.max(0, Math.min(n, top));
+    if (out.indexOf(v) < 0) out.push(v);
+  }
+  return out;
+}
+
+function volSetReconcile(cur, fresh, dragging) {
+  const out = { level: cur.level, max: cur.max, muted: cur.muted };
+  if (!fresh || typeof fresh !== "object") return out;
+  if (Number(fresh.max) > 0) out.max = Math.floor(Number(fresh.max));
+  if (typeof fresh.muted === "boolean") out.muted = fresh.muted;
+  if (!dragging && Number(fresh.level) >= 0) out.level = Math.floor(Number(fresh.level));
+  return out;
+}
+
+function volSetUsable(v) {
+  return !!(v && v.connected && v.supported && Number(v.level) >= 0);
+}
+/* ===== volset:end */
+
+/* 上面是纯规则段；下面是 DOM 胶水。分工的理由见 tests/volume_slider_harness.js 首注释：
+   规则要能搬进 node 跑，胶水才允许摸 document / fetch / setTimeout。 */
+const VolSet = { level: -1, max: 15, muted: false, dragging: false, dead: false };
+
+function volSetPaint() {
+  const row = $("#volSetRow"), slider = $("#volSlider");
+  if (!row || !slider) return;
+  const usable = !VolSet.dead && VolSet.level >= 0;
+  row.classList.toggle("dead", !usable);
+  slider.disabled = !usable;
+  slider.max = String(Math.max(1, VolSet.max));
+  if (!VolSet.dragging) slider.value = String(usable ? VolSet.level : 0);
+  $("#volSliderFill").style.width = usable ? volSetPct(VolSet.level, VolSet.max) + "%" : "0%";
+  $("#volSetNum").textContent = usable ? (VolSet.muted ? "静音" : VolSet.level + "/" + VolSet.max) : "—";
+  const mute = $("#volMuteBtn");
+  if (mute) {
+    mute.disabled = !usable;
+    mute.textContent = VolSet.muted ? "🔇 已静音" : "🔈 静音";
+  }
+  document.querySelectorAll("#volPresets .btn").forEach((b) => {
+    b.disabled = !usable;
+    b.classList.toggle("on", usable && Number(b.dataset.level) === VolSet.level);
+  });
+}
+
+function volSetRenderPresets() {
+  const box = $("#volPresets");
+  if (!box) return;
+  box.textContent = "";
+  volSetPresets(VolSet.max).forEach((n) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn";
+    b.dataset.level = String(n);
+    b.textContent = n === 0 ? "0" : String(n);
+    b.title = "把音量设到第 " + n + " 格";
+    b.setAttribute("aria-label", b.title);
+    b.addEventListener("click", () => {
+      if (!status.connected) { toast("先连上电视"); return; }
+      volSetCommit(n);
+    });
+    box.appendChild(b);
+  });
+}
+
+async function volSetSync() {
+  try {
+    const v = await api("/api/volume");
+    if (!v) return;
+    VolSet.dead = !v.connected;
+    if (VolSet.dead) { volSetPaint(); return; }
+    const m = volSetReconcile(VolSet, v, VolSet.dragging);
+    VolSet.level = m.level; VolSet.max = m.max; VolSet.muted = m.muted;
+    if (!v.supported && !VolSet.dragging) VolSet.level = -1;   // 读通道不报格数 → 整行停用
+    volSetPaint();
+  } catch (e) { /* 网络抖动：保留现值，下一次轮询再纠 */ }
+}
+
+async function volSetCommit(level) {
+  const c = volSetClamp(level, VolSet.max);
+  VolSet.level = c[0]; VolSet.max = c[1];
+  volSetPaint();
+  try {
+    const r = await api("/api/volume", { level: c[0] });
+    if (r && r.ok) {
+      VolSet.level = Number(r.level);
+      if (Number(r.max) > 0) VolSet.max = Math.floor(Number(r.max));
+      volSetPaint();
+    }
+  } catch (e) {
+    toast(e.message || "设置音量失败");
+    volSetSync();      // 回读真值，别让滑条停在一个假格数上
+  }
+}
+
+function volSetRetarget() {
+  // 换设备必须重置：Apple TV 侧没有这条链路，Android 电视之间级数也差得远
+  // （10 格 vs 25 格），拿 A 的级数显示 B 的音量会越调越错
+  VolSet.level = -1; VolSet.max = 15; VolSet.muted = false;
+  VolSet.dragging = false; VolSet.dead = false;
+  volSetRenderPresets();
+  volSetPaint();
+}
 
 /* ---------------- 状态与连接 ---------------- */
 let statusBusy = null;  // 上一次 /api/status 没回来就不叠加下一次（慢响应会排在按键锁后面）
@@ -1997,6 +2199,10 @@ async function refreshStatus() {
       // 音量 OSD 的种子按「当前设备」走：换了设备要重新探级数（不主动查，
       // 下一次按音量时 volBump → volSync 顺手取真值）
       volRetarget((s.cur_type || "") + "|" + (s.current || ""));
+      // 滑条同一时机换目标；Android 已连接才顺手回读一次格数（和服务端 0.8s TTL
+      // 缓存合用，重复查询不花钱；换设备后第一次进页面就有值，不用先按音量键）
+      volSetRetarget();
+      if (status.curType === "android" && status.connected) volSetSync();
     } catch (e) {
       // 原来是静默 ignore：服务端挂了状态栏却还留着上一次的「已连接」，
       // 用户对着一个已经死掉的遥控器按半天。
@@ -2050,9 +2256,8 @@ function renderStatus(s) {
   document.body.classList.toggle("disc", !status.connected);
 
   // Android 掉线自动重连的进度（服务后台线程在试，失败 3 次会停并提示手动）
-  const ar = s.auto_reconnect;
-  if (!isApple && ar && ar.active) info.textContent += " · 自动重连中";
-  else if (!isApple && ar && ar.stopped) info.textContent += " · 重连失败，点连接重试";
+  // Apple TV 没有这套 adb 重连，ar 传 null 让后缀为空（arBase 复位）
+  renderAutoReconn(info, isApple ? "" : info.textContent, isApple ? null : s.auto_reconnect);
 
   // Apple TV 输入框聚焦徽标
   const badge = $("#kbFocus");
@@ -2558,6 +2763,43 @@ function sheetOpen(dev, trigger) {
   openModal("#sheet", trigger || document.activeElement);
 }
 
+/* ===== diagnostics:begin =====
+   一键体检报告（第三十四轮）：把 /api/diagnostics 的白名单 JSON 变成人能读的文本，交给
+   既有的 sheetCopy（clipboard API + execCommand 兜底——局域网是明文 http、属非安全上下文，
+   剪贴板 API 不一定存在）贴进群 / issue。
+   纯函数段：不碰 DOM / 网络 / 本地存储，由 tests/diagnostics_harness.js 原样抽走执行。 */
+function diagYes(v) { return v ? "是" : "否"; }
+function diagImeLine(ime) {
+  if (!ime) return "中文输入: 未查询（当前不是 Android TV 或 adb 不可用）";
+  return "中文输入: 已装 " + diagYes(ime.installed) + " / 已启用 " + diagYes(ime.enabled)
+    + " / 当前 " + diagYes(ime.current) + "（" + (ime.default_ime || "未知") + "）";
+}
+function diagReportText(d) {
+  d = d || {};
+  const pf = d.platform || {}, adb = d.adb || {}, cur = d.current || {};
+  const atv = d.appletv || {}, auth = d.auth || {}, mdns = d.mdns || {};
+  const devs = adb.devices || [];
+  const lines = [];
+  // filter(Boolean)：release / machine 缺失时不留下连续空格（空 payload 也要能看）
+  const plat = [pf.system || "?", pf.release, pf.machine].filter(Boolean).join(" ");
+  lines.push("ATV Remote 诊断报告 v" + (d.version || "未知") + " · " + plat + " · Python "
+    + (pf.python || "?") + " · 内嵌引擎 " + diagYes(d.embedded));
+  lines.push("adb: " + (adb.found ? "已找到 " + (adb.path || "") : "未找到")
+    + " · " + (adb.version || "版本未知") + " · 常驻 shell "
+    + (adb.shell_alive ? "存活" : "无") + " · 设备缓存 " + (adb.devices_cache_ttl || 0) + "s");
+  lines.push("设备: " + devs.length + " 台" + (devs.length ? "" : "（一台都没扫到）"));
+  devs.forEach((dv) => lines.push("  - " + dv.serial + " [" + dv.state + "]"));
+  lines.push("当前: " + (cur.target ? (cur.type === "appletv" ? "Apple TV " : "Android TV ")
+    + cur.target + " [" + (cur.state || "未知") + "]" : "未连接")
+    + " · 最近 Android 设备 " + (cur.recent_android_count || 0) + " 台");
+  lines.push(diagImeLine(d.ime));
+  lines.push("Apple TV: pyatv " + (atv.pyatv_available ? "可用" : "不可用")
+    + " · 已配对 " + (atv.paired_count || 0) + " 台 · 已连接 " + diagYes(atv.connected));
+  lines.push("局域网令牌: " + (auth.token_enabled ? "已开启（" + auth.mode + "）" : "未开启"));
+  lines.push("mDNS: dns-sd " + (mdns.dns_sd_available ? "可用" : "不可用"));
+  return lines.join("\n");
+}
+/* ===== diagnostics:end ===== */
 // 明文 http 的局域网上 navigator.clipboard 不存在（非安全上下文），必须留 execCommand 兜底
 function sheetCopy(text) {
   try {
@@ -2925,15 +3167,44 @@ $("#disconnectBtn").addEventListener("click", async () => {
   refreshStatus();
 });
 
+/* 音量精确设置（滑条 + 预设档）。与音量 OSD 的分工：OSD 只管按键的本地反馈，
+   这条链路负责「一步调到第 N 格」。滑条 input 只画本地、change（松手）才发命令 ——
+   拖动过程每帧一次 adb 会把输入锁堵死；静音仍走 sendKey(164)，因为静音位只在
+   dumpsys audio 里读得到，不值得为它单开一条命令。 */
+{
+  const slider = document.querySelector("#volSlider"), mute = document.querySelector("#volMuteBtn");
+  if (slider) {
+    slider.addEventListener("input", () => {
+      VolSet.dragging = true;
+      VolSet.level = Number(slider.value);
+      volSetPaint();               // 只画本地：回读有 adb 延迟，会把滑条弹回旧格数
+    });
+    slider.addEventListener("change", () => {
+      VolSet.dragging = false;
+      volSetCommit(Number(slider.value));
+    });
+    slider.addEventListener("pointerup", () => { VolSet.dragging = false; });
+  }
+  if (mute) {
+    mute.addEventListener("click", () => {
+      if (!status.connected) { toast("先连上电视"); return; }
+      VolSet.muted = !VolSet.muted;
+      volSetPaint();
+      sendKey(164);
+      setTimeout(volSetSync, 400);   // 静音位只在 dumpsys 里读得到，回读一次校准
+    });
+  }
+}
+
 /* Apple TV 控件 */
-$("#scanBtn").addEventListener("click", atvScan);
-$("#pairFinishBtn").addEventListener("click", atvPairFinish);
-$("#pairCancelBtn").addEventListener("click", atvPairCancel);
-$("#pinInput").addEventListener("keydown", (e) => {
+$("#scanBtn")?.addEventListener("click", atvScan);
+$("#pairFinishBtn")?.addEventListener("click", atvPairFinish);
+$("#pairCancelBtn")?.addEventListener("click", atvPairCancel);
+$("#pinInput")?.addEventListener("keydown", (e) => {
   if (e.key === "Enter") atvPairFinish();
   if (e.key === "Escape") atvPairCancel();
 });
-$("#loadAppsBtn").addEventListener("click", loadAtvApps);
+$("#loadAppsBtn")?.addEventListener("click", loadAtvApps);
 
 /* 设备类型页签 */
 $$(".devtab").forEach((t) => {
@@ -2946,10 +3217,17 @@ $$(".devtab").forEach((t) => {
     if (t.dataset.dev === "appletv") {
       const box = $("#atvList");
       if (!box.dataset.scanned) {
+        const cached = window.__atvLastStatus;
+        if (cached && (cached.appletv.devices || []).length) {
+          box.dataset.scanned = "1";
+          renderAtvKnown(cached);
+        }
         api("/api/status").then((s) => {
           if ((s.appletv.devices || []).length) {
             box.dataset.scanned = "1";
             renderAtvFound(s.appletv.devices.map((d) => ({ ...d, paired: true, stored: true })), s);
+          } else if (box.dataset.scanned === "1") {
+            renderAtvKnown(s);
           }
         });
       }
@@ -3034,6 +3312,35 @@ function favTogglePin(name, pkg) {
   toast(on ? "★ 已收藏 " + name : "已取消收藏 " + name);
   return on;
 }
+
+/* ---- 收藏夹调序的 DOM 胶水：移动规则在 favorder 段 ----
+   走 undoable 链路（与删除宏 / 清短语同一套）：移错了能一步退回，
+   而不是逼用户凭记忆把顺序按回去。 */
+function favOrderBtn(a, dir) {
+  const b = document.createElement("button");
+  b.className = "btn tiny favmove";
+  b.type = "button";
+  b.dataset.dir = dir;
+  b.dataset.pkg = a.pkg;
+  b.textContent = dir === "up" ? "↑" : "↓";
+  b.title = dir === "up" ? "上移一位" : "下移一位";
+  b.setAttribute("aria-label", b.title);
+  b.onclick = () => {
+    const pins = favLoad();
+    const from = favIndexOf(pins, a.pkg);
+    if (from < 0 || !favCanMove(pins, from, dir)) return;
+    const next = favMove(pins, from, from + (dir === "up" ? -1 : 1));
+    const prev = pins.slice();
+    undoable((dir === "up" ? "上移" : "下移") + "「" + a.name + "」", () => {
+      favSave(next);
+      favRender();
+    }, () => {
+      favSave(prev);
+      favRender();
+    });
+  };
+  return b;
+}
 function favRender() {
   const box = $("#favList");
   const pins = favLoad();
@@ -3041,7 +3348,7 @@ function favRender() {
   box.textContent = "";
   $("#favEmpty").classList.toggle("hidden", !!list.length);
   $("#favCount").textContent = list.length ? String(list.length) : "—";
-  list.forEach((a) => {
+  list.forEach((a, idx) => {
     const row = document.createElement("div");
     row.className = "atvrow favrow";
     const b = document.createElement("button");
@@ -3054,7 +3361,12 @@ function favRender() {
     x.title = "取消收藏";
     x.textContent = "✕";
     x.onclick = () => favTogglePin(a.name, a.pkg);
-    row.append(b, x);
+    const up = favOrderBtn(a, "up");
+    const dn = favOrderBtn(a, "down");
+    row.append(b, up, dn, x);
+    // 首行不能上移、末行不能下移：置灰但不消失，位置跳动比置灰更难用
+    up.disabled = !favCanMove(list, idx, "up");
+    dn.disabled = !favCanMove(list, idx, "down");
     box.appendChild(row);
   });
   // 预设区 / Apple TV 列表里的星标都是收藏夹的视图：一个数据源，这里统一刷新
@@ -3184,6 +3496,316 @@ function undoTake(entries, id, now) {
 }
 /* ===== undo:end ===== */
  
+/* ===== gamepad:begin ===== */
+/* 手柄当 D-pad（第三十五轮）规则段：把 Gamepad API 的两根模拟轴翻成 Android TV 的离散
+   D-pad 按键。浏览器 Gamepad.axes 给的是 [-1, 1]，而三个参照项目全都在 ±32767 的原始轴上
+   干活，所以第一件事是换基：默认死区 0.15 ≈ xorg 手柄驱动的 5000/32768 = 0.1526
+   （qjoypad 默认更小，3000/32767 = 0.0916）。每条规则都能 grep 到出处，
+   见 docs/opensource-references.md 第 10 节：
+     · 死区与重标度 (|v|-dz)/(1-dz)：xf86-input-joystick src/jstk_axis.c:83 与 :411-416
+     · 死区判据是「小于才算死区」，等于阈值算已经顶出：src/backend_joystick.c:172、
+       qjoypad src/axis.cpp:281（abs(value) < dZone 才在死区内）
+     · 只在方向真的变了时才发键，其余直接 return 不重发：qjoypad src/axis.cpp:205-233
+     · 轴跳变不经过死区时，先抬旧键再按新键：xorg src/jstk_axis.c:494-505
+       （原注释就叫 PWM Axis %d jumped over. Forcing keys_low up.，qjoypad 在这里会卡住不松键）
+     · 占空比两相 50ms 下限与 600ms 截止：xorg src/jstk_axis.c:518-551
+   纯函数：时钟与 DOM 一律不碰，可整段搬进 node 跑用例。
+   段末另有一帧 -> 该发哪些键的五个函数（gpNormPad / gpBtnDir / gpDirKey /
+   gpFrame / gpNextFireMs），口径抄 xboxdrv 0.8.8，出处见同一份台账第 11 节。 */
+const GP_DEADZONE_DEFAULT = 0.15;
+const GP_DEADZONE_MIN = 0.02, GP_DEADZONE_MAX = 0.5;
+const GP_REPEAT_MIN_MS = 60;    /* 自己定：再快就是连发，列表会飞过去 */
+const GP_REPEAT_MAX_MS = 600;   /* = GP_PWM_HOLD_MS：驱动里一相超过 600ms 就判不用重复 */
+const GP_REPEAT_FIRST_MS = 300; /* 首按与首次重复之间的延时，自己的取值 */
+const GP_ARBIT_MARGIN = 1.25;   /* 换轴迟滞：新轴残差要超过当前轴这么多倍才抢得到 */
+const GP_PWM_MIN_PHASE_MS = 50; /* jstk_axis.c:527-531 —— 较小的那一相永远缩放到 50ms */
+const GP_PWM_HOLD_MS = 600;     /* jstk_axis.c:537/:547 —— 超过它就当一直按着/松着 */
+
+function gpNum(v) {
+  const n = (typeof v === 'number') ? v : 0;
+  return isFinite(n) ? n : 0;
+}
+/* 死区只收调皮皮和 NaN，不收 0：关成 0 会让摇杆的静止噪声一直触发方向键。 */
+function gpClampDeadzone(dz) {
+  const n = gpNum(dz);
+  if (!(n > 0)) return GP_DEADZONE_DEFAULT;
+  return Math.min(GP_DEADZONE_MAX, Math.max(GP_DEADZONE_MIN, Math.round(n * 100) / 100));
+}
+/* 死区内归零；死区外按 (|v|-dz)/(1-dz) 重标度回 0..1。少了重标度这一步，死区一放大，
+   半推和满推就分不开了。 */
+function gpResidual(v, dz) {
+  const a = Math.abs(gpNum(v));
+  const d = gpClampDeadzone(dz);
+  if (a < d) return 0;
+  return Math.min(1, (a - d) / Math.max(1e-6, 1 - d));
+}
+/* 这根轴现在算哪个方向：死区内 0，死区外取符号。阈值上算顶出——驱动判死区用小于号。 */
+function gpDirOf(v, dz) {
+  const x = gpNum(v), d = gpClampDeadzone(dz);
+  if (x >= d) return 1;
+  if (x <= -d) return -1;
+  return 0;
+}
+/* 单步：给 DOM 胶水用的最小接口，changed 为真才值得发一次键。 */
+function gpStep(v, dz, held) {
+  const cur = gpDirOf(v, dz);
+  const prev = (held === 1 || held === -1) ? held : 0;
+  return { dir: cur, prev: prev, changed: cur !== prev };
+}
+/* 一串采样翻成按键事件：方向没变就一行都不出。
+   qjoypad 的 jsevent 留了个坑——轴从 +0.5 直接跳到 -0.5（不经过死区）时正向键会一直
+   按着不松；这里照 xorg 驱动 jstk_axis.c:494-505 的口径先抬旧的再按新的。 */
+function gpAxisEvents(samples, dz) {
+  const out = [];
+  const d = gpClampDeadzone(dz);
+  const seq = Array.isArray(samples) ? samples : [];
+  let held = 0;
+  for (let i = 0; i < seq.length; i++) {
+    const cur = gpDirOf(seq[i], d);
+    if (cur === held) continue;
+    if (held !== 0) out.push({ i: i, dir: held, press: false });
+    if (cur !== 0) out.push({ i: i, dir: cur, press: true });
+    held = cur;
+  }
+  return out;
+}
+/* 两根轴抢一个 D-pad：Android 的 D-pad 没有斜向，同一时刻只能有一个方向。
+   抢法带迟滞——已在按的轴，对手残差要高出 GP_ARBIT_MARGIN 倍才抢得走，否则推到头
+   再往回带那一下会在两个方向之间抖。当前轴回中了就主动让位，不要求余量，否则键卡住。 */
+function gpArbitrate(x, y, dz, held) {
+  const d = gpClampDeadzone(dz);
+  const rx = gpResidual(x, d), ry = gpResidual(y, d);
+  const cur = (held === 'x' || held === 'y') ? held : null;
+  const pick = function (axis) {
+    const v = (axis === 'x') ? gpNum(x) : gpNum(y);
+    return { axis: axis, dir: gpDirOf(v, d) };
+  };
+  if (cur === null) {
+    if (rx <= 0 && ry <= 0) return { axis: null, dir: 0 };
+    return pick((rx >= ry) ? 'x' : 'y');
+  }
+  const rr = (cur === 'x') ? rx : ry;
+  const or = (cur === 'x') ? ry : rx;
+  if (rr <= 0) {
+    if (or <= 0) return { axis: null, dir: 0 };
+    return pick((cur === 'x') ? 'y' : 'x');
+  }
+  if (or > rr * GP_ARBIT_MARGIN) return pick((cur === 'x') ? 'y' : 'x');
+  return pick(cur);
+}
+/* 占空比周期，逐字照 xorg 驱动 src/jstk_axis.c:518-551：残差即通电占比，两相各 +0.01
+   防除零，较小那相缩放到 50ms，超过 600ms 就当一直按着 / 一直松着。
+   注意这是给「指针移动」设计的速度律，敷到离散 D-pad 上呈 U 形（中间最快、两头最慢），
+   所以产品侧另有一份单调的 gpRepeatMs；这里留着，是为了让那 50ms 与 600ms 有据可查。 */
+function gpPwmCycle(v, dz) {
+  const u = gpResidual(v, dz);
+  const on = u + 0.01, off = (1 - u) + 0.01;
+  const scale = GP_PWM_MIN_PHASE_MS / Math.min(on, off);
+  const onMs = on * scale, offMs = off * scale;
+  let hold = null;
+  if (offMs > GP_PWM_HOLD_MS) hold = 'up';
+  else if (onMs > GP_PWM_HOLD_MS) hold = 'down';
+  return { onMs: onMs, offMs: offMs, hold: hold };
+}
+/* 产品侧的重复间隔：残差越大按得越密（轻推慢步、重推快滚）。上界取驱动的 600ms 截止，
+   下界 60ms 是自己的取值——驱动那边是全 tilt 交给 X 自动重复，我们没有这层。 */
+function gpRepeatMs(v, dz) {
+  const u = gpResidual(v, dz);
+  if (u <= 0) return null;
+  const t = Math.min(1, u);
+  return Math.round(GP_REPEAT_MAX_MS - (GP_REPEAT_MAX_MS - GP_REPEAT_MIN_MS) * t);
+}
+/* 一帧 -> 该发哪些键。轮询到的快照原样传进来，时钟与 DOM 仍然一概不碰。
+   三条口径抄 xboxdrv 0.8.8（Ubuntu pool 源码包，GPL-3.0+），行号见台账第 11 节：
+     · 一份输入只留一个出口：uinput_options.cpp:189-198 的 dpad_as_button() 把 DPAD
+       四向 bind 成按键的同时，把同两根轴 bind 成 AxisEvent::invalid()。同一个偏转
+       从轴和按键两条路各出一份，用户看到的就是双倍速度。这里的两个输入源（物理十字键
+       与左摇杆）抢同一个 D-pad，同样只许一个赢。
+     · 斜按裁掉一根轴：modifier/four_way_restrictor_modifier.cpp:44-59，abs 大的那根
+       留下，相等时清零 X——平手判 Y 胜，且完全没有迟滞。模拟轴那条路的换轴迟滞
+       另见 gpArbitrate（有意分歧，写在第 11 节里，不是漏抄）。
+     · 连发先发一拍再按速率重发：buttonfilter/autofire_button_filter.cpp:82-97，
+       默认 rate=50 / delay=0（from_string 的初值，:27-28）；
+       delay 用尽之后是 m_counter > m_delay 才置位 m_autofire，再每 m_rate 一拍。
+       另有一条克制：controller_slot_config.cpp:207-212 只有 autofire_map 非空才挂
+       这条滤波链——默认什么都不挂。本项目默认就开连发（列表里移动光标离不开它），
+       所以死区内必须一个键都不发，否则摇杆静止噪声会变成自动翻页。 */
+const GP_DIR_KEYS = { up: 19, down: 20, left: 21, right: 22 };  /* Android keyevent */
+/* 归一：标准映射 0 = A、1 = B、12..15 = 十字键上下左右。缺轴 / 缺键 / NaN 一律兜底成
+   0 与 false——部分手柄在浏览器把手柄交出来之前那几帧，前两根轴就是 NaN，
+   直接喂给 gpResidual 会把死区判成「已经顶出」，方向键自己飞起来。 */
+function gpNormPad(pad) {
+  const src = pad || {};
+  const ax = Array.isArray(src.axes) ? src.axes : [];
+  const bt = Array.isArray(src.buttons) ? src.buttons : [];
+  const b = function (i) { return !!(bt[i] && bt[i].pressed); };
+  return {
+    x: gpNum(ax[0]), y: gpNum(ax[1]),
+    up: b(12), down: b(13), left: b(14), right: b(15),
+    a: b(0), back: b(1)
+  };
+}
+/* 十字键 -> 单个方向。只要按着任一竖直方向就判竖直胜：这正是 four_way_restrictor 的
+   else 分支（相等时清零 X）搬到布尔输入上的样子，斜按不会同时出两个方向。 */
+function gpBtnDir(up, down, left, right) {
+  const u = !!up, d = !!down, l = !!left, r = !!right;
+  if (!u && !d && !l && !r) return null;
+  if (u || d) return u ? "up" : "down";
+  return l ? "left" : "right";
+}
+/* 方向 -> 键码的唯一一张对照表，别处不要再写 19 / 20 / 21 / 22。 */
+function gpDirKey(dir) {
+  const k = GP_DIR_KEYS[dir];
+  return (typeof k === "number") ? k : 0;
+}
+/* 物理十字键按着时摇杆整帧让位（单一出口）；否则走带迟滞的 gpArbitrate。
+   val 是胜出那一轴的原始值，连发速率要用它算推得多重。 */
+function gpFrame(snap, dz, held) {
+  const s = snap || {};
+  const btn = gpBtnDir(s.up, s.down, s.left, s.right);
+  if (btn !== null) return { dir: btn, axis: null, val: 0 };
+  const a = gpArbitrate(s.x, s.y, dz, held);
+  if (a.axis === null || a.dir === 0) return { dir: null, axis: null, val: 0 };
+  const vert = (a.axis === "y");
+  return {
+    dir: vert ? (a.dir > 0 ? "down" : "up") : (a.dir > 0 ? "right" : "left"),
+    axis: a.axis,
+    val: vert ? gpNum(s.y) : gpNum(s.x)
+  };
+}
+/* 连发节拍：返回「距下一拍还有多少 ms」。首发那一拍在按下时就发出、不计入延时——
+   xboxdrv 的 filter(true) 首拍直接返回 true；delay 用尽才置位 m_autofire，再每 rate
+   一拍。本项目把 delay 换成 GP_REPEAT_FIRST_MS、rate 换成 gpRepeatMs（残差越大越密）。
+   xboxdrv 判 delay 用严格大于，差不到一个轮询周期，不值得为它歪一份实现。 */
+function gpNextFireMs(elapsed, rate) {
+  let r = gpNum(rate);
+  if (!(r > 0)) r = GP_REPEAT_MIN_MS;
+  const e = Math.max(0, gpNum(elapsed));
+  if (e < GP_REPEAT_FIRST_MS) return GP_REPEAT_FIRST_MS - e;
+  return r;
+}
+/* ===== gamepad:end ===== */
+/* ---- 手柄 DOM 胶水（第三十六轮接线）：规则在上面纯函数段，这里只管轮询 / 发键 / 持久化 ---- */
+const GP_KEY = "atv.gamepad";        /* 开关，默认关——不开就不占 80ms 轮询 */
+const GP_DZ_KEY = "atv.gamepadDz";   /* 摇杆死区，可编辑内容只进 localStorage */
+const GP_TICK_MS = 80;               /* 轮询周期：8s 的状态轮询太慢，连发会一顿一顿 */
+/* 标准映射：0 = A（确定）、1 = B（返回）、12..15 = 十字键上下左右 */
+const gp = { id: "", dir: null, axis: null, rate: 0, since: 0, timer: 0, face: { a: false, back: false } };
+let gpOn = false, gpDz = GP_DEADZONE_DEFAULT;
+try {
+  gpOn = localStorage.getItem(GP_KEY) === "1";
+  const dz = JSON.parse(localStorage.getItem(GP_DZ_KEY));
+  if (dz !== null && dz !== undefined) gpDz = gpClampDeadzone(dz);
+} catch (e) { /* 存储被禁（隐私模式 / 无痕）：用默认值，功能照常 */ }
+function gpDzSave() { try { localStorage.setItem(GP_DZ_KEY, String(gpDz)); } catch (e) {} }
+function gpShortId(id) { const s = String(id || ""); return s.length > 30 ? s.slice(0, 30) + "…" : s; }
+/* 状态一律 textContent：手柄 id 是设备自述，和局域网广播一样不可信 */
+function gpSetState(kind, id) {
+  const el = $("#gpState");
+  if (!el) return;
+  let t = "已关闭";
+  if (kind === "on") t = "已连接：" + gpShortId(id);
+  else if (kind === "wait") t = "未检测到手柄";
+  else if (kind === "lost") t = "手柄已断开";
+  el.textContent = t;
+  el.className = "gpstate" + (kind === "on" ? " on" : "");
+}
+function gpEnableApply() {
+  const b = $("#gpEnableBtn");
+  if (b) b.setAttribute("aria-checked", gpOn ? "true" : "false");
+}
+function gpDzApply() {
+  const el = $("#gpDz");
+  if (el) el.value = String(gpDz);
+  const v = $("#gpDzVal");
+  if (v) v.textContent = (Math.round(gpDz * 100) / 100).toFixed(2);
+}
+function gpStop() { if (gp.timer) { clearTimeout(gp.timer); gp.timer = 0; } }
+function gpFire(code) { buzz(8); sendKey(code); }
+function gpArm(ms) { gpStop(); gp.timer = setTimeout(gpRepeat, ms); }
+function gpRepeat() {
+  gp.timer = 0;
+  if (!gpOn || !gp.dir) return;
+  gpFire(gpDirKey(gp.dir));
+  /* 注意 sendKey 自带 90ms 同键节流，所以 GP_REPEAT_MIN_MS = 60 那一档实际发成 ~90ms：
+     下限是规则段的口径，真正的速率地板在共用的发键函数里，这里不另起一套。 */
+  gpArm(gpNextFireMs(performance.now() - gp.since, gp.rate));
+}
+function gpPress(f) {
+  gpStop();   /* 松开即清零：xboxdrv 的 filter(false) 把 m_counter 与 m_autofire 一起归零 */
+  gp.dir = f.dir;
+  gp.axis = f.axis;
+  if (!f.dir) return;   /* 回中：keyevent 是一次性的，没有 keyup 可发，停发就是松键 */
+  gp.rate = gpRepeatMs(f.val, gpDz) || GP_REPEAT_MIN_MS;
+  gp.since = performance.now();
+  gpFire(gpDirKey(f.dir));
+  gpArm(gpNextFireMs(0, gp.rate));
+}
+function gpFindPad() {
+  if (!navigator.getGamepads) return null;
+  const list = navigator.getGamepads();
+  for (let i = 0; i < list.length; i++) {
+    const p = list[i];
+    if (p && p.connected && p.axes && p.axes.length >= 2) return p;
+  }
+  return null;
+}
+function gpTick() {
+  if (!gpOn || !pageVisible) return;
+  const pad = gpFindPad();
+  if (!pad) {
+    /* 拔了手柄：先把连发掐掉。方向键是点发，没有 keyup 会卡住，但连发定时器会。 */
+    if (gp.id || gp.dir) { gpStop(); gp.dir = null; gp.axis = null; gp.id = ""; }
+    gpSetState("wait");
+    return;
+  }
+  if (gp.id !== pad.id) { gpStop(); gp.dir = null; gp.axis = null; gp.id = pad.id; }
+  gpSetState("on", pad.id);
+  const snap = gpNormPad(pad);
+  /* 功能键边沿：A = 确定、B = 返回。点一下发一下，不连发——连发只属于方向键。 */
+  const face = { a: snap.a, back: snap.back };
+  if (face.a && !gp.face.a) gpFire(23);
+  if (face.back && !gp.face.back) gpFire(4);
+  gp.face = face;
+  const f = gpFrame(snap, gpDz, gp.axis);
+  if (f.dir !== gp.dir) gpPress(f);
+}
+function gpBind() {
+  const en = $("#gpEnableBtn");
+  if (en) en.addEventListener("click", () => {
+    gpOn = !gpOn;
+    try { localStorage.setItem(GP_KEY, gpOn ? "1" : "0"); } catch (e) {}
+    gpEnableApply();
+    if (gpOn) {
+      gpSetState("wait");
+      log("→ 手柄遥控已开：先在手柄上按任意键，浏览器这才把手柄交出来");
+    } else {
+      gpStop(); gp.dir = null; gp.axis = null; gp.id = "";
+      gp.face = { a: false, back: false };
+      gpSetState("off");
+    }
+  });
+  const dz = $("#gpDz");
+  if (dz) dz.addEventListener("input", () => { gpDz = gpClampDeadzone(Number(dz.value)); gpDzApply(); gpDzSave(); });
+  const r = $("#gpDzReset");
+  if (r) r.addEventListener("click", () => {
+    gpDz = GP_DEADZONE_DEFAULT; gpDzApply(); gpDzSave();
+    toast("摇杆死区已重置为 0.15");
+  });
+  /* 插拔即时反映，不等下一拍轮询 */
+  window.addEventListener("gamepadconnected", (e) => { if (gpOn) gpSetState("on", e && e.gamepad && e.gamepad.id); });
+  window.addEventListener("gamepaddisconnected", () => {
+    if (!gpOn) return;
+    gpStop(); gp.dir = null; gp.axis = null; gp.id = "";
+    gp.face = { a: false, back: false };
+    gpSetState("lost");
+  });
+}
+gpEnableApply();
+gpDzApply();
+gpSetState(gpOn ? "wait" : "off");
+gpBind();
+
 /* ===== empty:begin ===== */
 /* 空状态（第二十八轮）规则段：学 Shopify Polaris Empty State / Material empty state
    的契约——列表空着不是无话可说，而该给「一句解释 + 一个下一步动作」。
@@ -4083,6 +4705,26 @@ function renderHapticBtn() {
   // switch 的视觉完全由 aria-checked 驱动（CSS [aria-checked="true"]），不写文字状态
   $("#hapticBtn").setAttribute("aria-checked", hapticEnabled() ? "true" : "false");
 }
+function renderIntentBtn() {
+  $("#intentBtn").setAttribute("aria-checked", intentEnabled() ? "true" : "false");
+}
+$("#intentBtn").addEventListener("click", () => {
+  localStorage.setItem(INTENT_KEY, intentEnabled() ? "0" : "1");
+  renderIntentBtn();
+  toast(intentEnabled() ? "语音意图识别已开" : "语音意图识别已关：说的话将原样发给电视");
+});
+// 一键体检（第三十四轮）：连不上时把整份报告递给帮忙的人，省去来回问版本 / adb / IME
+$("#diagCopyBtn").addEventListener("click", async () => {
+  let d;
+  try {
+    d = await api("/api/diagnostics");
+  } catch (e) {
+    toast("获取诊断信息失败：" + (e && e.message ? e.message : e), false);
+    return;
+  }
+  const ok = await sheetCopy(diagReportText(d));
+  toast(ok ? "诊断报告已复制，直接贴给帮忙的人" : "复制失败，请长按手动选择", !!ok);
+});
 $("#hapticBtn").addEventListener("click", () => {
   localStorage.setItem(HAPTIC_KEY, hapticEnabled() ? "0" : "1");
   renderHapticBtn();
@@ -4143,6 +4785,7 @@ applyTheme(localStorage.getItem(THEME_KEY));
 $("#appSettingsBtn").addEventListener("click", () => {
   $("#phraseCount").textContent = phrases.length;
   renderHapticBtn();
+  renderIntentBtn();
   openModal("#settingsModal");
 });
 $("#settingsCloseBtn").addEventListener("click", () => closeModal("#settingsModal"));
@@ -4161,6 +4804,623 @@ $("#settingsModal").addEventListener("click", (e) => {
    - 全局热键用 capture 注册：别的弹窗的按键兜底会 stopPropagation，但同节点同阶段
      的后续监听仍会执行，所以 Cmd+K 在任何界面都能唤起/收起，且 K 绝不下发到电视。 */
 const PAL_KEY = "atv.palRecent";
+/* ===== cfgxfer:begin =====
+   配置搬家（换机 / 换浏览器时把本机设置一次带走）纯函数段：禁 DOM / localStorage /
+   fetch / innerHTML / $(（tests/backup_harness.js 直接抽这段执行），DOM 胶水在段外。
+   学习源 chezmoi v2.73.0（MIT，Copyright (c) 2018 Tom Payne，proxy.golang.org 源码包
+   逐行核对），三条口径：
+   1) 坏档在写任何东西之前就失败 —— internal/cmd/config.go:998-1035：
+      decodeConfigFile 先 ReadFile 再 decodeConfigContents，最后才做 1028-1033 的
+      语义互斥校验（git.commitMessageTemplate 与 git.commitMessageTemplateFile
+      不能同时给）。三步任一失败都直接 return，configFile 一个字都没被写。
+      落到本项目：导入先 cfgParseBackup 完整解析校验，坏 JSON 只报错，
+      现有 localStorage 一个字节都不动。
+   2) 写入只认「完整的一份」—— internal/chezmoi/realsystem_unix.go:68-104：
+      WriteFile 在 safe 模式下经 renameio 写同目录临时文件（89 tempDir =
+      renameio.TempDir(dir.String())），Chmod 后 Write，96 行 defer
+      chezmoierrors.CombineFunc(&err, t.Cleanup) 保证失败也清理，103 行 return
+      t.CloseAtomicallyReplace() 让读者只见到旧或新的完整文件。
+      落到本项目：导出是一次性生成的完整 JSON；导入是「全部校验通过后才批量
+      落盘」，绝不做「能写几个写几个」的半截状态（半份配置比导入失败更难查）。
+   3) 账目化 —— internal/chezmoi/sourcestate.go:917-926 把每个 ignore 命中的路径记进
+      s.ignoredRelPaths，ignoredcmd.go:18/37 的 ignored 命令能原样打印出来。
+      落到本项目：导出要说清「导了哪些键、因敏感排了哪些键」，导入要说清
+      「写了哪些、跳了哪些、坏在哪」，全程可见，不做黑箱。
+   敏感纪律：白名单只收非敏感键，另有敏感词副闸。state.json（配对凭据 + 访问令牌）
+   后端从来不下发给前端，前端想导也导不出来；但白名单之外万一有别的工具往
+   localStorage 塞了 token 类键，副闸一律排掉（AGENTS.md：凭据禁出本机）。 */
+const CFG_MAGIC = "atv-remote-backup";   /* 导入时认这个暗号，防别的 JSON 乱认亲 */
+const CFG_VER = 1;
+/* 白名单 = 可安全搬家的全部配置。不含通知历史 / 键盘历史 / 引导状态：那些是推导数据
+   或一次性状态，换机重放没有意义，还可能夹带隐私文本。 */
+const CFG_EXPORTABLE = [
+  "atv.theme", "atv.haptics", "atv.intent", "atv.gamepad", "atv.gamepadDz",
+  "atv.padSens", "atv.favApps", "atv.phrases", "atv.collapsed.v1",
+  "atv.palRecent", "atv.recentApps", "atv.keymap_v1", "atv_macros_v1",
+];
+const CFG_LABELS = {
+  "atv.theme": "主题", "atv.haptics": "按键震动", "atv.intent": "语音意图",
+  "atv.gamepad": "手柄开关", "atv.gamepadDz": "摇杆死区", "atv.padSens": "触摸板灵敏度",
+  "atv.favApps": "收藏夹", "atv.phrases": "常用短语", "atv.collapsed.v1": "卡片折叠态",
+  "atv.palRecent": "命令面板最近", "atv.recentApps": "最近应用",
+  "atv.keymap_v1": "键位图", "atv_macros_v1": "自定义宏",
+};
+/* 敏感词副闸：白名单是主闸，这是防「白名单里误加键」与「别的工具塞键」的第二道。
+   键名命中即排，值再像配置也不导、不写。 */
+const CFG_SENSITIVE_RE = /token|cred|pairing|secret|password|cookie/i;
+
+function cfgLabelOf(key) { return CFG_LABELS[key] || key; }
+function cfgIsExportable(key) {
+  return CFG_EXPORTABLE.indexOf(key) >= 0 && !CFG_SENSITIVE_RE.test(key);
+}
+/* 把一串键分成「导」与「因敏感排除」两堆（chezmoi ignored 的账目化口径）。 */
+function cfgPlanExport(keys) {
+  const include = [], excluded = [];
+  for (let i = 0; i < keys.length; i++) {
+    if (cfgIsExportable(keys[i])) include.push(keys[i]);
+    else if (CFG_SENSITIVE_RE.test(keys[i])) excluded.push(keys[i]);
+  }
+  return { include: include, excluded: excluded };
+}
+/* entries: [{key, value}]（胶水刚从 localStorage 读的原始值）→ 完整备份对象。
+   任何一个值不是字符串都整体失败：半份备份比没有备份更坏。 */
+function cfgBuildBackup(entries) {
+  if (!Array.isArray(entries)) return { ok: false, error: "entries 不是数组" };
+  const plan = cfgPlanExport(entries.map((e) => (e && typeof e.key === "string" ? e.key : "")));
+  const keys = {};
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    if (!e || typeof e !== "object" || typeof e.key !== "string") continue;
+    if (plan.include.indexOf(e.key) < 0) continue;
+    if (typeof e.value !== "string") return { ok: false, error: "键 " + e.key + " 的值不是字符串" };
+    keys[e.key] = e.value;
+  }
+  if (Object.keys(keys).length === 0) return { ok: false, error: "没有可导出的配置" };
+  return { ok: true, backup: { magic: CFG_MAGIC, version: CFG_VER, keys: keys } };
+}
+/* 导入第一关：完整解析校验。坏 JSON / magic 不符 / 版本不符 / keys 不对 → ok:false
+   带人话 error；调用方据此报错，且不许动现有配置（chezmoi 口径 1）。 */
+function cfgParseBackup(text) {
+  if (typeof text !== "string") return { ok: false, error: "导入内容不是文本" };
+  let obj;
+  try { obj = JSON.parse(text); } catch (e) { return { ok: false, error: "不是合法的 JSON 文件" }; }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return { ok: false, error: "备份顶层不是对象" };
+  if (obj.magic !== CFG_MAGIC) return { ok: false, error: "不是本工具导出的备份（magic 不符）" };
+  if (obj.version !== CFG_VER) return { ok: false, error: "备份版本不支持（需 v" + CFG_VER + "，收到 v" + obj.version + "）" };
+  if (!obj.keys || typeof obj.keys !== "object" || Array.isArray(obj.keys)) return { ok: false, error: "备份缺少 keys 字段" };
+  const names = Object.keys(obj.keys);
+  if (names.length === 0) return { ok: false, error: "备份里没有任何配置" };
+  const plan = cfgPlanExport(names);
+  for (let i = 0; i < plan.include.length; i++) {
+    if (typeof obj.keys[plan.include[i]] !== "string") {
+      return { ok: false, error: "键 " + plan.include[i] + " 的值不是字符串" };
+    }
+  }
+  if (plan.include.length === 0) return { ok: false, error: "备份里没有可识别的配置键" };
+  return { ok: true, backup: obj };
+}
+/* 导入第二关（cfgParseBackup 已过）：逐键决定写不写。apply=可写、skipped=白名单外或
+   敏感、invalid=白名单内但值不对。调用方只准写 apply 的，且必须全部写（口径 2）。 */
+function cfgApplyBackup(backup) {
+  const apply = [], skipped = [], invalid = [];
+  const names = Object.keys((backup && backup.keys) || {});
+  for (let i = 0; i < names.length; i++) {
+    const k = names[i];
+    if (CFG_SENSITIVE_RE.test(k)) { skipped.push({ key: k, reason: "敏感" }); continue; }
+    if (CFG_EXPORTABLE.indexOf(k) < 0) { skipped.push({ key: k, reason: "不是已知配置键" }); continue; }
+    const v = backup.keys[k];
+    if (typeof v !== "string") { invalid.push({ key: k, reason: "值不是字符串" }); continue; }
+    apply.push({ key: k, value: v });
+  }
+  return { apply: apply, skipped: skipped, invalid: invalid };
+}
+/* ===== cfgxfer:end ===== */
+/* ---- 配置搬家 DOM 胶水：规则在上方 cfgxfer 纯函数段，这里只管 localStorage / 文件 / UI ----
+   导出只读白名单键（再过敏感词副闸），绝不读 state.json（后端不下发，前端拿不到）。
+   导入先 cfgParseBackup 校验，成功了才批量写；失败只 toast，现有配置一个字节不动。 */
+function cfgStatus(msg) {
+  const el = $("#cfgxferStatus");
+  if (el) el.textContent = msg;   /* 一律 textContent，禁 innerHTML */
+}
+function cfgExport() {
+  let allKeys = CFG_EXPORTABLE.slice();
+  try { allKeys = Object.keys(localStorage); }   /* 顺便让副闸看见别的工具塞的键 */
+  catch (e) { /* 存储被禁（隐私模式）：退回白名单 */ }
+  const plan = cfgPlanExport(allKeys);
+  const live = plan.include.filter((k) => localStorage.getItem(k) !== null);
+  const built = cfgBuildBackup(live.map((k) => ({ key: k, value: localStorage.getItem(k) })));
+  if (!built.ok) { cfgStatus("导出失败：" + built.error); toast("导出失败：" + built.error); return; }
+  const blob = new Blob([JSON.stringify(built.backup, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "atv-remote-config.json";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  cfgStatus("已导出 " + live.length + " 项（" + live.map(cfgLabelOf).join("、") + "）" +
+    (plan.excluded.length ? "；已排除 " + plan.excluded.length + " 项敏感配置" : ""));
+  toast("配置已导出（" + live.length + " 项，不含配对凭据与令牌）");
+}
+/* 导入后同步：主题 / 灵敏度 / 折叠 / 手柄是即时手感，必须当场刷新；短语、收藏、
+   最近、宏、键位在各自面板打开时也会重读，这里一并刷新让用户立刻看到结果。 */
+function cfgReloadUI() {
+  applyTheme(localStorage.getItem(THEME_KEY));
+  try { padGain = padSensClamp(JSON.parse(localStorage.getItem(PADSENS_KEY))); } catch (e) {}
+  padSensApply();
+  try {
+    const v = JSON.parse(localStorage.getItem(PHRASE_KEY));
+    phrases = Array.isArray(v) ? v.filter((s) => typeof s === "string").slice(0, 12) : DEFAULT_PHRASES.slice();
+  } catch (e) {}
+  renderPhrases();
+  try { gpOn = localStorage.getItem(GP_KEY) === "1"; } catch (e) {}
+  try {
+    const dz = JSON.parse(localStorage.getItem(GP_DZ_KEY));
+    if (dz !== null && dz !== undefined) gpDz = gpClampDeadzone(dz);
+  } catch (e) {}
+  gpEnableApply();
+  gpDzApply();
+  collapseRestore();
+  favRender();
+  renderRecentApps();
+  kmMap = loadKeymap();
+  loadMacros();
+}
+function cfgImportText(text) {
+  const parsed = cfgParseBackup(text);
+  if (!parsed.ok) {
+    cfgStatus("导入失败：" + parsed.error + "（现有配置未改动）");
+    toast("导入失败：" + parsed.error);
+    return;
+  }
+  const res = cfgApplyBackup(parsed.backup);
+  let wrote = 0;
+  for (let i = 0; i < res.apply.length; i++) {
+    try { localStorage.setItem(res.apply[i].key, res.apply[i].value); wrote++; } catch (e) {}
+  }
+  if (wrote !== res.apply.length) {
+    cfgStatus("导入未完整：写成功 " + wrote + " / " + res.apply.length + " 项（存储空间不足或被禁）");
+    toast("导入未完整，详见设置页状态行");
+    return;
+  }
+  cfgReloadUI();
+  cfgStatus("已导入 " + wrote + " 项（" + res.apply.map((x) => cfgLabelOf(x.key)).join("、") +
+    "）；跳过 " + res.skipped.length + " 项" +
+    (res.invalid.length ? "，无效 " + res.invalid.length + " 项" : ""));
+  toast("配置已导入（" + wrote + " 项）");
+}
+$("#cfgExportBtn").addEventListener("click", () => { cfgExport(); buzz(12); });
+$("#cfgImportBtn").addEventListener("click", () => { const f = $("#cfgFileInput"); if (f) f.click(); });
+$("#cfgFileInput").addEventListener("change", (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => { cfgImportText(String(rd.result || "")); };
+  rd.onerror = () => { cfgStatus("导入失败：读不了这个文件（现有配置未改动）"); };
+  rd.readAsText(f);
+  e.target.value = "";   /* 清掉选择，同一个文件才能再导入一次 */
+});
+/* ===== intent:begin ===== */
+/* 说话即遥控 / 命令容错：说的话和敲的命令都先过一层「意图理解」，命中才执行，
+   不命中一律原样下发。修的是两个真问题：
+   1. 语音识别结果原来直接 sendText——说「声音小一点」会把这五个字打进电视搜索框；
+   2. palScore 只有「词首 > 子串 > 别名词首 > 子序列」四档，打错一个字母就 0 命中。
+
+   学习源（都读过真实源码，口径照抄不凭印象）：
+   - Fuse.js 7.1.0（Apache-2.0，npm fuse.js，dist/fuse.mjs）：Bitap 模糊匹配。
+     可复用的口径是 computeScore()：accuracy = errors / pattern.length，
+     proximity = |expectedLocation - currentLocation|，score = accuracy + proximity/distance，
+     默认 location=0 / distance=100 / threshold=0.6；查法是先 indexOf 精确快路径，
+     再从 0 到 patternLen-1 逐级放宽允许的错误数。本项目取两条：
+     (a) intentSubstrErrors() 是「近似子串匹配」的 DP——第 0 行初始化为 0，
+         表示文本前缀可免费跳过，取最后一行最小值得 errors，这就是 Bitap 里
+         proximity 的来源（匹配可以不在位置 0），比整串 Levenshtein 更贴面板场景；
+     (b) 允许的错误数 = floor(长度 * 阈值)。
+   - rapidfuzz 3.14.3（MIT，版权 Max Bachmann，PyPI rapidfuzz）：fuzz.ratio /
+     partial_ratio / token_sort_ratio / token_set_ratio 组合成 process.extract 的打分，
+     后两者按 token 拆句再比，天生吃词序差异（「开一下 Netflix」约等于「Netflix 打开」）。
+     intentSim() 照这个组合思路取多视角最大值。
+   - Home Assistant conversation（概念参照，本项目前几轮已多次引用）：同义词/别名
+     优先于模糊匹配，未命中绝不改写用户输入。
+
+   取舍（都是被测试逼出来的，不是想当然）：
+   - **别名只认「整句相等」或「后缀命中」**，不认任意子串。曾经用任意子串，
+     结果「打开电视机顶盒」里的「打开电视」触发开机键——用户说的是装什么，不是开电视。
+   - **容错只在句尾窗口里找**：说错字的多半在结尾（「说错字的音量城」），
+     且句尾比对不会把前缀短语误判成命令。
+   - **不命中必须原样当文本**——「周杰伦」这类搜索词不能被误判成命令。
+   - 段内禁 DOM / localStorage / fetch / setTimeout，纯函数可整段搬进 node 跑 harness。 */
+
+/* 归一化：语音识别常把英文词转成全角，中文里也混着标点和空格，先拉平再比。
+   空格也去掉——中文没有词间空格，去掉后「打开 Netflix」与「打开Netflix」同形。 */
+const INTENT_FILLERS = ["请", "帮我", "帮忙", "给我", "把", "一下子", "一下", "快点", "赶紧", "现在"];
+function intentNorm(s) {
+  let t = String(s == null ? "" : s).toLowerCase().trim();
+  t = t.replace(/[\uff01-\uff5e]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
+  t = t.replace(/[\u3000\s]+/g, "");
+  t = t.replace(/[\u3001\u3002\uff0c\uff1b\uff1a\uff01\uff1f\u2026\u2014\uff08\uff09()<>[\]{}"'\`~!@#$%^&*_+\-=|\\/;,.:?]+/g, "");
+  for (const f of INTENT_FILLERS) t = t.split(f).join("");
+  return t;
+}
+
+/* 同义词别名表：[归一化后的说法, 命令 id]。id 与 palCommands() 的 push id 一致，
+   命中后直接复用面板那套执行体，零新增后端。
+   表里只放「自足的命令」——不放「打开 XX」这类动宾短语（那是 object 阶段的活）。 */
+const INTENT_ALIASES = [
+  ["声音小一点", "key:25"], ["声音调小一点", "key:25"], ["小声", "key:25"], ["声音小", "key:25"],
+  ["音量减", "key:25"], ["音量低", "key:25"], ["轻一点", "key:25"], ["太吵了", "key:25"],
+  ["吵死了", "key:25"],
+  ["声音大一点", "key:24"], ["声音调大一点", "key:24"], ["大声", "key:24"], ["声音大", "key:24"],
+  ["音量加", "key:24"], ["音量增", "key:24"], ["响一点", "key:24"], ["听不清", "key:24"],
+  ["大声一点", "key:24"], ["小声一点", "key:25"],
+  ["静音", "key:164"], ["消音", "key:164"], ["别吵", "key:164"], ["别吵了", "key:164"], ["关闭声音", "key:164"],
+  ["暂停", "key:85"], ["停一下", "key:85"], ["先停", "key:85"], ["别放了", "key:85"],
+  ["放着别动", "key:85"],
+  ["继续", "key:85"], ["接着放", "key:85"], ["继续放", "key:85"], ["播放", "key:85"],
+  ["下一集", "key:87"], ["跳过", "key:87"], ["换一集", "key:87"], ["看下一集", "key:87"],
+  ["上一集", "key:88"], ["往回看", "key:88"], ["前一集", "key:88"],
+  ["返回", "key:4"], ["回去", "key:4"], ["退出", "key:4"], ["关掉这个", "key:4"],
+  ["主页", "key:3"], ["首页", "key:3"], ["桌面", "key:3"], ["回主页", "key:3"],
+  ["菜单", "key:82"],
+  ["关机", "key:26"], ["关电视", "key:26"], ["睡觉", "key:26"], ["休息了", "key:26"],
+  ["唤醒", "key:224"], ["开机", "key:224"], ["打开电视", "key:224"],
+  ["截图", "shot"], ["截个屏", "shot"], ["电视截屏", "shot"],
+];
+
+/* 动词表：长动词排前面，避免「打开」先把「开」吃掉剩下「电视」。 */
+const INTENT_VERBS = ["我想看", "我要看", "请打开", "帮我打开", "打开", "开启", "开一下",
+  "启动", "运行", "切换", "跳到", "去看", "播放", "开", "看"];
+/* 取对象：动词在后面也认（「Netflix 打开」），此时取动词前面的部分。 */
+function intentObject(norm) {
+  for (const v of INTENT_VERBS) {
+    const at = norm.indexOf(v);
+    if (at < 0) continue;
+    const rest = norm.slice(at + v.length);
+    if (rest) return rest;
+    return norm.slice(0, at);
+  }
+  return "";
+}
+
+/* 有界 Levenshtein：整行下界都超预算就提前退。返回实际距离；超预算返回 maxErrors + 1。 */
+function intentEditErrors(a, b, maxErrors) {
+  const m = a.length, n = b.length;
+  if (m === 0) return 0;
+  if (maxErrors < 0) return 1;
+  let prev = new Array(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
+  for (let i = 1; i <= m; i++) {
+    const cur = new Array(n + 1);
+    cur[0] = i;
+    let rowMin = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+      const v = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      cur[j] = v;
+      if (v < rowMin) rowMin = v;
+    }
+    if (rowMin > maxErrors) return maxErrors + 1;
+    prev = cur;
+  }
+  return prev[n];
+}
+
+/* 近似子串匹配（Bitap 的实质）：第 0 行全 0 表示「文本前缀可免费跳过」，
+   最后一行取最小值 = 把 text 的某一段改成 pat 所需的最少编辑数。
+   Fuse.js 里对应「匹配可以不在 location=0」——proximity 项就是干这个的。 */
+function intentSubstrErrors(pat, text, maxErrors) {
+  const m = pat.length, n = text.length;
+  if (m === 0) return 0;
+  if (maxErrors < 0) return 1;
+  let prev = new Array(n + 1).fill(0);
+  for (let i = 1; i <= m; i++) {
+    const cur = new Array(n + 1);
+    cur[0] = i;
+    let rowMin = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = pat.charCodeAt(i - 1) === text.charCodeAt(j - 1) ? 0 : 1;
+      const v = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      cur[j] = v;
+      if (v < rowMin) rowMin = v;
+    }
+    if (rowMin > maxErrors) return maxErrors + 1;
+    prev = cur;
+  }
+  let best = prev[0];
+  for (let j = 1; j <= n; j++) if (prev[j] < best) best = prev[j];
+  return best;
+}
+
+/* Fuse.js 口径：允许的错误数 = floor(长度 * 阈值)。阈值取 0.34 而不是 Fuse 默认的
+   0.6：两字符查询若容忍 1 错，一半的短标签都会命中，噪音太大。
+   但中文两字词（静音 / 菜单 / 返回）错一个字仍是同一个词，且中文标签本身就只有两三个字，
+   不容错等于「中文命令永远不能容错」。所以按是否含 ASCII 分流：纯中文给 1 的底线，
+   拉丁查询不给——两字母容一个错等于什么都匹配（yt 会命中 youtube）。 */
+const INTENT_ERR_RATE = 0.34;
+function intentMaxErrors(s) {
+  const len = String(s == null ? "" : s).length;
+  if (len < 2) return 0;
+  const floor = /[a-z0-9]/.test(String(s)) ? 0 : 1;
+  return Math.max(floor, Math.floor(len * INTENT_ERR_RATE));
+}
+
+function intentRatio(q, s) {
+  if (!q || !s) return 0;
+  const max = Math.max(q.length, s.length);
+  if (max === 0) return 1;
+  return 1 - intentEditErrors(q, s, max) / max;
+}
+
+/* partial_ratio（rapidfuzz 同名）：短串在长串里任意位置对齐取最优。
+   应用名埋在 terms 里（"打开 启动 app open launch netflix com.netflix..."），
+   必须靠它才能把「打开 netflx」里的错字吃进去。 */
+function intentPartialRatio(q, s) {
+  if (!q || !s) return 0;
+  const short = q.length <= s.length ? q : s;
+  const long = q.length <= s.length ? s : q;
+  if (short.length === 0) return 0;
+  let best = 0;
+  for (let i = 0; i + short.length <= long.length; i++) {
+    const r = intentRatio(short, long.slice(i, i + short.length));
+    if (r > best) { best = r; if (best >= 0.999) break; }
+  }
+  return best;
+}
+
+/* token_sort/token_set 的合并退化形态：按空白切 token 排序后整串比。
+   intentNorm 已把空格删掉，这里的中文输入恒定退化成败于 intentRatio；
+   保留它是为了中英混排（"netflix打开" vs terms 里的 "netflix"）时词序不影响命中。 */
+function intentTokenRatio(q, s) {
+  const tok = (x) => x.split(/\s+/).filter(Boolean).sort();
+  return Math.max(intentRatio(tok(q).join(" "), tok(s).join(" ")), intentRatio(q, s));
+}
+
+function intentSim(q, s) {
+  const a = intentRatio(q, s);
+  if (a >= 0.999) return a;
+  return Math.max(a, intentPartialRatio(q, s), intentTokenRatio(q, s));
+}
+
+/* 别名命中：整句相等，或别名是句子的后缀（「太吵了能不能静音」）。
+   刻意不认「任意位置子串」——「打开电视机顶盒」里含「打开电视」，按子串匹配会触发
+   开机键，而用户说的是装什么。后缀规则把这类前缀延伸全挡住。 */
+function intentAliasHit(norm) {
+  if (!norm) return "";
+  for (const [phrase] of INTENT_ALIASES) if (norm === phrase) return phrase;
+  let best = "";
+  for (const [phrase] of INTENT_ALIASES) {
+    if (norm.length > phrase.length && norm.endsWith(phrase)) {
+      if (!best || phrase.length > best.length) best = phrase;   // 取最长后缀
+    }
+  }
+  return best;
+}
+
+/* 别名的容错命中：说错一两个字也认（「音量城」约等于「音量减」）。
+   只在句尾窗口里找：说错字的多半在结尾，且句尾比对不会误伤前缀短语。
+   多个同样近、却指向不同命令的候选一律不猜；指向同一命令不算歧义。 */
+function intentFuzzyAlias(norm) {
+  if (!norm || norm.length < 2) return "";
+  const cmdOf = (phrase) => {
+    for (const [p, id] of INTENT_ALIASES) if (p === phrase) return id;
+    return "";
+  };
+  let best = "", bestErr = 99, bestLen = 0, tie = false;
+  for (const [phrase] of INTENT_ALIASES) {
+    const budget = intentMaxErrors(phrase);
+    if (budget < 1) continue;
+    /* 三条收紧规则，都是被误判逼出来的： */
+    // 1) 只跟「句尾等长那一小段」整串比，不做子串搜索。说错字的多半在结尾；
+    //    子串搜索会让「打开电视」这种前缀短语在长句里被捞到。
+    if (norm.length < phrase.length) continue;
+    const tail = norm.slice(norm.length - phrase.length);
+    // 2) 首字必须相同：「看电视」与「关电视」只差一个字，放开首字就会把看电视判成关机，
+    //    「开机」与「关机」同理——中文命令的区分信息主要在首字。
+    if (phrase.charAt(0) !== tail.charAt(0)) continue;
+    const err = intentEditErrors(phrase, tail, budget);
+    if (err > budget) continue;
+    if (err < bestErr || (err === bestErr && phrase.length > bestLen)) {
+      if (err === bestErr && phrase !== best && cmdOf(phrase) !== cmdOf(best)) tie = true;
+      bestErr = err; best = phrase; bestLen = phrase.length; tie = false;
+    } else if (err === bestErr && phrase !== best && cmdOf(phrase) !== cmdOf(best)) tie = true;
+  }
+  return tie ? "" : best;
+}
+
+/* 一条查询对一串候选（rapidfuzz process.extract 的最小形态）：返回最优命令与分数。
+   只比 terms（应用名 / IP / 按键名都在这儿），不比 label——label 带「打开 / 按键」
+   这类前缀，会把「电视」误判成「电视截屏」。 */
+function intentPick(q, cmds, cutoff) {
+  if (!q || !Array.isArray(cmds) || !cmds.length) return null;
+  let best = null;
+  for (const c of cmds) {
+    const terms = String((c && c.terms) || "").toLowerCase();
+    if (!terms) continue;
+    const score = intentSim(q, terms);
+    if (score < cutoff) continue;
+    if (!best || score > best.score) best = { cmd: c, score: score };
+  }
+  return best;
+}
+
+/* 对象停用词：动词后面的通用名词不参与路由。没有这一条，「看电视」的对象
+   「电视」会命中 conn 命令 terms 里的「连接电视」，把「我想看电视」变成连设备。 */
+const INTENT_OBJ_STOP = ["电视", "电视机", "电视盒子", "机顶盒", "设备", "应用",
+  "东西", "什么", "一下", "页面", "设置", "遥控器"];
+const INTENT_OBJ_CUTOFF = 0.82;
+const INTENT_WHOLE_CUTOFF = 0.9;
+
+/* 对外入口：文本转命令。返回 null 表示「这不是命令，原样当文本下发」。
+   via 记录命中路径，日志里能看出是别名还是模糊匹配，方便排查误判。
+   顺序即优先级：整句/后缀别名 > 容错别名 > 动词+对象 > 整句直中。 */
+function intentParse(text, cmds) {
+  const norm = intentNorm(text);
+  if (!norm) return null;
+  const find = (id) => { for (const c of cmds || []) if (c.id === id) return c; return null; };
+  const cmdOfAlias = (phrase) => {
+    for (const [p, id] of INTENT_ALIASES) if (p === phrase) return find(id);
+    return null;
+  };
+
+  const exact = intentAliasHit(norm);
+  if (exact) {
+    const c = cmdOfAlias(exact);
+    if (c) return { cmd: c, via: "alias", said: exact };
+  }
+  const fuzzy = intentFuzzyAlias(norm);
+  if (fuzzy) {
+    const c = cmdOfAlias(fuzzy);
+    if (c) return { cmd: c, via: "alias~", said: fuzzy };
+  }
+
+  const obj = intentObject(norm);
+  /* 有动词就只走对象分支，不再做整句直中：「看电视」若允许整句匹配，会命中 conn 命令
+     terms 里的「连接电视」，把一句闲聊变成连设备。没有动词的短句（「截图」）才直中。 */
+  if (obj) {
+    if (obj.length >= 2 && INTENT_OBJ_STOP.indexOf(obj) < 0) {
+      const hit = intentPick(obj, cmds, INTENT_OBJ_CUTOFF);
+      if (hit) return { cmd: hit.cmd, via: "object", score: Math.round(hit.score * 100) / 100 };
+    }
+    return null;
+  }
+
+  if (norm.length >= 2) {
+    const hit = intentPick(norm, cmds, INTENT_WHOLE_CUTOFF);
+    if (hit) return { cmd: hit.cmd, via: "whole", score: Math.round(hit.score * 100) / 100 };
+  }
+  return null;
+}
+
+/* 命令面板的第 5 档计分：前四档（词首 / 标签子串 / 别名词首 / 子序列）全落空时，
+   按 Fuse.js 的「允许 errors 个错 + 匹配可不在开头」兜底。压在最末档，
+   绝不抢精确命中的优先序——加了容错也不该打乱既有排序。 */
+function palIntentScore(q, c) {
+  if (q.length < 2) return 0;
+  const label = String((c && c.label) || "").toLowerCase();
+  const terms = String((c && c.terms) || "").toLowerCase();
+  const budget = intentMaxErrors(q);
+  if (budget < 1) return 0;
+  const err = intentSubstrErrors(q, label, budget);
+  if (err <= budget) return 100 - err * 10 - Math.min(50, label.length);
+  const errT = intentSubstrErrors(q, terms, budget);
+  if (errT <= budget) return 80 - errT * 10;
+  return 0;
+}
+/* ===== intent:end ===== */
+/* ===== palmark:begin ===== */
+/* 命令面板：高亮「到底哪一段命中了」。
+   学习源：rapidfuzz 3.14.3（MIT，© Max Bachmann）的 rapidfuzz.distance 模块。
+   核实到的事实：它的相似度接口之外还有一组 *_alignment 接口，返回 ScoreAlignment——
+   字段为 score / src_start / src_end / dest_start / dest_end，也就是**把最佳对齐区间
+   在两条串上的位置一起返回**，而不是只给一个分数。这正是模糊匹配界面缺的东西：
+   有了 tier 5 容错之后，「打开 YouTube」能匹配查询「yutube」，但用户满眼看去
+   找不到 yutube 在哪——不知道这一行为什么冒出来。
+   本段把同一思想落到 palScore 的五档上：**每一档都回答「命中在标签的哪一段」**。
+   边界（刻意保守）：区间对不上就返回空数组——错的高亮比没有高亮更糟，
+   用户会以为「高亮的地方就是我要找的」，反而更慢。 */
+function palMarkRanges(label, q) {
+  const s = String(label == null ? "" : label);
+  const query = String(q == null ? "" : q).toLowerCase();
+  if (!query || !s) return [];
+  const low = s.toLowerCase();
+  /* 第 1、2 档：词首 / 子串，整段高亮 */
+  const at = low.indexOf(query);
+  if (at >= 0) return [[at, at + query.length]];
+  /* 两种候选都算出来再挑，挑法就一条：**覆盖更宽者胜；一样宽时取段数更少的**
+     （一整段永远比零碎几段好认）。
+     例子：netflx → Netflix，窗口 [0,7) 与子序列跨度都是 7，窗口只有一段，选窗口；
+     ybe → YouTube，子序列跨 y…e 共 7 个字符而窗口只有 ube 3 个，选子序列——
+     高亮 ube 会把没打过的 u 也算进去，反而是错的。
+     预算为 0（拉丁短查询，如 "yt"）时没有窗口，直接走逐字高亮。 */
+  const marks = [];
+  let i = 0;
+  for (let k = 0; k < s.length && i < query.length; k++) {
+    if (low.charAt(k) === query.charAt(i)) { marks.push([k, k + 1]); i++; }
+  }
+  const seqRanges = i >= query.length ? palMarkMerge(marks) : [];
+  let win = null;
+  const budget = intentMaxErrors(query);
+  if (budget >= 1) win = palMarkWindow(query, low, budget);
+  if (!win) return seqRanges;
+  if (!seqRanges.length) return [[win.start, win.end]];
+  const seqSpan = seqRanges[seqRanges.length - 1][1] - seqRanges[0][0];
+  const winSpan = win.end - win.start;
+  if (winSpan > seqSpan) return [[win.start, win.end]];
+  if (winSpan < seqSpan) return seqRanges;
+  return seqRanges.length > 1 ? [[win.start, win.end]] : seqRanges;
+}
+
+/* 相邻/重叠的字元区间合并：子序列逐字高亮会产出一堆 [k,k+1]，合起来才像一句 */
+function palMarkMerge(ranges) {
+  const out = [];
+  for (const r of ranges) {
+    const last = out[out.length - 1];
+    if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]);
+    else out.push([r[0], r[1]]);
+  }
+  return out;
+}
+
+/* 在 text 里找 pat 的近似窗口：窗口长度从 pat.length 放到 pat.length+budget，
+   取错误最少、又最短的那个。窗口长度有上界， crossword 式乱撞不会发生。 */
+function palMarkWindow(pat, text, budget) {
+  const m = pat.length, n = text.length;
+  if (!m || !n || budget < 1) return null;
+  let best = null;
+  for (let len = m; len <= m + budget && len <= n; len++) {
+    for (let i = 0; i + len <= n; i++) {
+      const err = intentEditErrors(pat, text.slice(i, i + len), budget);
+      if (err > budget) continue;
+      if (!best || err < best.err ||
+          (err === best.err && (i < best.start ||
+           (i === best.start && len > best.end - best.start)))) {
+        best = { start: i, end: i + len, err: err };
+      }
+    }
+  }
+  return best;
+}
+/* ===== palmark:end ===== */
+
+/* ===== favorder:begin ===== */
+/* 收藏夹可调序：上移 / 下移。
+   学习源：SortableJS 1.15.6（MIT）。核实到的事实：它的拖拽结束事件携带 oldIndex 与
+   newIndex，库负责重排 DOM，**消费者的责任是把自己的数据重排成和 DOM 一致**。
+   本项目取其契约（「移动 = 从 oldIndex 取出、插到 newIndex」），不取其交互形态：
+   SortableJS 只提供拖拽，没有键盘通道；而这个项目的界面同时跑在手机触屏和
+   Mac App（键盘可达）上，纯拖拽会把键盘用户挡在外面。所以这里是显式的 ↑/↓ 按钮，
+   数组移动的语义照抄。 */
+/* 把 list 里 from 位置的一项移到 to。返回新数组，**不入参原地改**——调用方要能拿到
+   旧值做撤销（项目里所有可编辑内容都走 undoable 链路）。to 越界时钳到端点。 */
+function favMove(list, from, to) {
+  if (!Array.isArray(list)) return [];
+  const n = list.length;
+  if (from < 0 || from >= n) return list.slice();
+  const dest = Math.max(0, Math.min(n - 1, to));
+  if (dest === from) return list.slice();
+  const out = list.slice();
+  const item = out.splice(from, 1)[0];
+  out.splice(dest, 0, item);
+  return out;
+}
+
+/* 首行不能上移、末行不能下移——按钮要置灰，但不能消失（位置跳动比置灰更难用）。 */
+function favCanMove(list, i, dir) {
+  if (!Array.isArray(list) || i < 0 || i >= list.length) return false;
+  if (dir === "up") return i > 0;
+  if (dir === "down") return i < list.length - 1;
+  return false;
+}
+
+/* 收藏夹的数据形态是 [{name, pkg}]，按 pkg 找下标——视图里只有 pkg 是稳定标识。 */
+function favIndexOf(list, pkg) {
+  if (!Array.isArray(list)) return -1;
+  for (let i = 0; i < list.length; i++) if (list[i] && list[i].pkg === pkg) return i;
+  return -1;
+}
+/* ===== favorder:end ===== */
+
+
 let palRows = [], palSel = 0;   // palRows 含分组头；选中、执行都以行下标为准
 
 const palRecent = () => {
@@ -4172,8 +5432,10 @@ const palRemember = (id) => {
   localStorage.setItem(PAL_KEY, JSON.stringify(left.slice(0, 8)));
 };
 
-/* 匹配计分（VS Code 的行为约定）：标签词首 > 标签内子串 > 别名词首 > 散乱子序列；
-   命中越靠前、标签越短分越高。返回 0 = 不匹配。 */
+/* 匹配计分：前四档是 VS Code Command Palette 的行为约定（标签词首 > 标签内子串 >
+   别名词首 > 散乱子序列，命中越靠前、标签越短分越高）；第五档是容错兜底，口径来自
+   Fuse.js 的「允许 errors 个错」（见 intent 段），压在最末——精确匹配永远赢过模糊
+   匹配，不会因为加了容错就打乱既有排序。返回 0 = 不匹配。 */
 function palScore(q, c) {
   const label = c.label.toLowerCase();
   const terms = (c.terms || "").toLowerCase();
@@ -4184,7 +5446,8 @@ function palScore(q, c) {
   if (ta >= 0) return 600 - ta - Math.min(400, label.length);
   let i = 0;                                   // 子序列兜底："yt" → YouTube
   for (const ch of label) { if (ch === q[i]) i++; if (i >= q.length) break; }
-  return i >= q.length ? 200 : 0;
+  if (i >= q.length) return 200;
+  return palIntentScore(q, c);
 }
 
 function palCommands() {
@@ -4251,10 +5514,35 @@ function palCommands() {
   return cmds;
 }
 
+
+/* ---- 命中高亮的 DOM 胶水：区间规则在 palmark 段，这里只负责拼元素 ----
+   全程 createElement + textContent，不碰 innerHTML（AGENTS.md 的设备名/IP 禁令）。
+   没查询或区间对不上时整行就是一个文本节点，与加上高亮之前完全一致。 */
+let palQuery = "";
+function palMarkSpan(label, query) {
+  const span = document.createElement("span");
+  span.className = "pallabel";
+  const text = String(label == null ? "" : label);
+  const ranges = query ? palMarkRanges(text, query) : [];
+  if (!ranges.length) { span.textContent = text; return span; }
+  let at = 0;
+  for (const [s, e] of ranges) {
+    if (s > at) span.appendChild(document.createTextNode(text.slice(at, s)));
+    const mark = document.createElement("mark");
+    mark.className = "palmark";
+    mark.textContent = text.slice(s, e);
+    span.appendChild(mark);
+    at = e;
+  }
+  if (at < text.length) span.appendChild(document.createTextNode(text.slice(at)));
+  return span;
+}
+
 function palRender(q) {
   const list = $("#palList");
   list.textContent = "";
   const query = (q || "").trim().toLowerCase();
+  palQuery = query;   // palMarkSpan 要用：高亮跟着当前查询走
   let rows = [];
   if (query) {
     rows = palCommands()
@@ -4302,10 +5590,7 @@ function palRender(q) {
       const ic = document.createElement("span");
       ic.className = "palico";
       ic.textContent = c.icon || "•";
-      const lb = document.createElement("span");
-      lb.className = "pallabel";
-      lb.textContent = c.label;
-      li.append(ic, lb);
+      li.append(ic, palMarkSpan(c.label, palQuery));
       if (c.hint || c.group) {
         const hn = document.createElement("span");
         hn.className = "palhint";
@@ -4422,3 +5707,6 @@ setTimeout(() => {
   else if (!coachSeen("pre")) startCoach("pre");
 }, 600);
 setInterval(() => { if (pageVisible) refreshStatus(); }, 8000);
+// 手柄轮询（第三十六轮）：80ms 一拍，与 8s 状态轮询分开——连发节奏经不起 8s。
+// 回调里只读不写，放在文件末尾保证执行到时 pageVisible 已初始化。
+setInterval(gpTick, GP_TICK_MS);

@@ -9,7 +9,11 @@
    - 升级前端若要强制刷新离线副本：递增下面的 CACHE 版本号 */
 // v5：修「点了下载无法下载」——下载类请求（*.apk 等）不再进 SW 缓存分支，
 // 且缓存写入失败不再吞掉网络响应。版本号必须递增，否则老客户端还跑旧逻辑。
-const CACHE = "atv-shell-v5";
+// v6：布局紧凑化（style.css 大面积调间距）+ Apple TV 页签即时渲染；
+// 不改版本号的话，装过桌面的老客户端会一直用 stale-while-revalidate 的旧外壳。
+// v7：图标重做（屏内加品牌蓝信号弧）——icon.svg 与四张 PNG 都在预缓存清单里，
+// 不递增的话老客户端的 favicon / 桌面图标还是旧图。
+const CACHE = "atv-shell-v7";
 const SHELL = [
   "/",
   "/static/app.js",

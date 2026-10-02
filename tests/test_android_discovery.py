@@ -9,6 +9,7 @@
 """
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -92,9 +93,16 @@ class _ReconnFakeAdb:
         self.states = list(states)
         self.connect_exc = connect_exc
         self.connect_calls = 0
+        self.path = "adb"      # make_status() 会读，没有就 AttributeError
 
     def devices(self, fresh=False):
         return [{"serial": "tv", "state": self.states.pop(0)}]
+
+    def exists(self):
+        return True
+
+    def version(self):
+        return "1.0.41 (fake)"
 
     def reset_shell(self):
         pass
@@ -154,6 +162,44 @@ class AutoReconnectTest(unittest.TestCase):
         self.assertFalse(server._auto_reconn["active"])
         server._auto_reconnect_tick()
         self.assertEqual(fake.connect_calls, 3)       # 停了就不再试
+
+    def test_next_retry_stretches_with_backoff(self):
+        """排队下次重试要用指数退避；老行为是固定 30s，头两次间隔完全一样"""
+        fake = _ReconnFakeAdb(["offline"] * 8, connect_exc=server.AdbError("boom"))
+        server.adb = fake
+        server._auto_reconn["was_online"] = True
+        waits = []
+        for _ in range(3):
+            server._auto_reconn["next_retry"] = 0.0   # 绕过退避，专注排程
+            before = time.time()
+            server._auto_reconnect_tick()
+            waits.append(server._auto_reconn["next_retry"] - before)
+        self.assertEqual(fake.connect_calls, 3)
+        for got, want in zip(waits, (server.RECONNECT_BASE,
+                                     server.RECONNECT_BASE * 2,
+                                     server.RECONNECT_BASE * 4)):
+            self.assertAlmostEqual(got, want, delta=1.0,
+                                   msg="第 " + str(len(waits)) + " 次退避不对")
+        self.assertLess(waits[0], waits[1])
+        self.assertLess(waits[1], waits[2])
+
+    def test_status_exposes_countdown(self):
+        """前端靠 next_in 显示还要等多久，不能只给一个 active 布尔值"""
+        server.adb = _ReconnFakeAdb(["offline"] * 4)
+        server._auto_reconn.update(was_online=True, fails=1, stopped=False,
+                                   active=True, next_retry=time.time() + 12)
+        st = server.make_status()
+        ar = st["auto_reconnect"]
+        self.assertTrue(ar["active"])
+        self.assertIn("next_in", ar)
+        self.assertGreaterEqual(ar["next_in"], 11)
+        self.assertLessEqual(ar["next_in"], 12)
+
+    def test_status_next_in_is_zero_when_idle(self):
+        server.adb = _ReconnFakeAdb(["offline"] * 4)
+        server._auto_reconn.update(was_online=False, fails=0, stopped=False,
+                                   active=False, next_retry=0.0)
+        self.assertEqual(server.make_status()["auto_reconnect"]["next_in"], 0)
 
     def test_non_android_current_is_ignored(self):
         fake = _ReconnFakeAdb(["offline"] * 4)
