@@ -60,9 +60,39 @@ rm -rf "$APP"
 osacompile -o "$APP" "$SRC"
 
 # 用仓库里的应用图标，别让它顶着一张白纸的 AppleScript 默认图标
+# （注意：光拷 icns 不够，见下面 Assets.car 那步）
 cp "$REPO/mac/AppIcon.icns" "$APP/Contents/Resources/applet.icns"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile applet" "$APP/Contents/Info.plist" 2>/dev/null \
 	|| /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string applet" "$APP/Contents/Info.plist"
+# osacompile 自带的 Assets.car 里有一副 AppleScript 默认「羊皮纸」图标栈，名字恰好也叫
+# applet。Finder 优先读 Assets.car（Info.plist 的 CFBundleIconName=applet），上面拷进去的
+# applet.icns 会被它整副盖掉——桌面看到的是羊皮纸，不是遥控器。所以用 AppIcon.icns
+# 重编译一副同名（applet）的图标栈把默认 car 盖回去。
+ICON_WORK="$(mktemp -d)"
+iconutil -c iconset "$REPO/mac/AppIcon.icns" -o "$ICON_WORK/applet.iconset"
+mkdir -p "$ICON_WORK/applet.xcassets"
+mv "$ICON_WORK/applet.iconset" "$ICON_WORK/applet.xcassets/applet.appiconset"
+cat > "$ICON_WORK/applet.xcassets/applet.appiconset/Contents.json" <<'JSON'
+{
+  "images" : [
+    { "filename" : "icon_16x16.png",      "idiom" : "mac", "scale" : "1x", "size" : "16x16" },
+    { "filename" : "icon_16x16@2x.png",   "idiom" : "mac", "scale" : "2x", "size" : "16x16" },
+    { "filename" : "icon_32x32.png",      "idiom" : "mac", "scale" : "1x", "size" : "32x32" },
+    { "filename" : "icon_32x32@2x.png",   "idiom" : "mac", "scale" : "2x", "size" : "32x32" },
+    { "filename" : "icon_128x128.png",    "idiom" : "mac", "scale" : "1x", "size" : "128x128" },
+    { "filename" : "icon_128x128@2x.png", "idiom" : "mac", "scale" : "2x", "size" : "128x128" },
+    { "filename" : "icon_256x256.png",    "idiom" : "mac", "scale" : "1x", "size" : "256x256" },
+    { "filename" : "icon_256x256@2x.png", "idiom" : "mac", "scale" : "2x", "size" : "256x256" },
+    { "filename" : "icon_512x512.png",    "idiom" : "mac", "scale" : "1x", "size" : "512x512" },
+    { "filename" : "icon_512x512@2x.png", "idiom" : "mac", "scale" : "2x", "size" : "512x512" }
+  ],
+  "info" : { "author" : "xcode", "version" : 1 }
+}
+JSON
+/usr/bin/actool --compile "$APP/Contents/Resources" \
+	--output-partial-info-plist "$ICON_WORK/partial.plist" \
+	--app-icon applet --platform macosx --minimum-deployment-target 14.0 \
+	"$ICON_WORK/applet.xcassets"
 # osacompile 生成的 applet 自带 ad-hoc 签名，而上面两步改的都是被封存的资源
 # （applet.icns / Info.plist），不改回来 CodeResources 就对不上，Finder 双击时
 # 会被 Gatekeeper 判定为「已损坏，无法打开」。所以最后必须重新签一次（ad-hoc 即可）。
@@ -72,4 +102,3 @@ touch "$APP"   # Finder 缓存图标，touch 一下让它重读
 echo "✅ 已生成：${APP}"
 echo "   - 图标：mac/AppIcon.icns"
 echo "   - 服务地址：${URL}（没在跑时会自动拉起 ${LABEL}）"
-

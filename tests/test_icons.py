@@ -161,10 +161,25 @@ class GeneratorTest(unittest.TestCase):
             self.assertIn(d, src, "生成脚本要覆盖 " + d)
 
 
+class DesktopShortcutIconTest(unittest.TestCase):
+    """桌面 .app 别顶着一张 AppleScript 默认羊皮纸。"""
+
+    def test_script_recompiles_assets_car(self):
+        """osacompile 自带一副「羊皮纸」Assets.car（图标栈名也叫 applet），Finder 优先读
+        它、盖掉 applet.icns；生成脚本必须用 AppIcon.icns 重编译同名 car 盖回去。"""
+        s = (ROOT / "mac/make-desktop-shortcut.sh").read_text(encoding="utf-8")
+        self.assertIn("iconutil -c iconset", s, "脚本要把 AppIcon.icns 转回 iconset")
+        self.assertIn("--app-icon applet", s,
+                      "重编译的图标栈必须叫 applet（对上 CFBundleIconName）")
+        self.assertIn("Contents/Resources", s, "car 要编译进 app 的 Resources")
+        self.assertIn("actool", s)
+
+
 class RepoLogoTest(unittest.TestCase):
     """仓库图标 assets/ 与 README 引用别分家。"""
 
     ASSETS = ROOT / "assets"
+
     PNG_SIZES = (("icon-256.png", 256), ("icon-512.png", 512),
                  ("icon-1024.png", 1024), ("icon-1024-circle.png", 1024))
 
