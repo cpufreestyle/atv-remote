@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/icon-1024.png" width="132" alt="ATV Remote" />
+</p>
+
 # 📺 ATV Remote — Android TV / Apple TV 遥控器（支持键盘输入）
 
 仿 atvremote 的本地遥控器：网页 UI（Mac/手机浏览器都能用），同时支持 **Android TV（adb）** 和 **Apple TV（pyatv / MediaRemote 协议，与 iOS「遥控器」App 同款）**。
@@ -189,7 +193,7 @@ cd ~/atv-remote
 重新构建（chaquo.com 不通就加降级参数）：
 ### 🧪 在模拟器上验 APK（macOS + 本机 SDK）
 
-### 🎨 图标（四处同源，改一处要全跑）
+### 🎨 图标（多处同源，改一处要全跑）
 
 `mac/make_icon.swift` 是主图（1024 全出血 + 自适应前景 432），其余都是它的派生：
 
@@ -199,8 +203,16 @@ swift make_icon.swift                  # mac/AppIcon_1024.png + ic_launcher_fg_4
 mac/make-icns.sh                       # iconset -> mac/AppIcon.icns
 python3 tools/make_icons.py            # static/ 4 张 PWA / iOS 图标
 python3 tools/make-android-icons.py    # Android 五档前景（带对比度自查）
+python3 tools/make_logo.py             # assets/ 仓库图标（深空 + 透视网格 + 霓虹辉光）
 ./mac/make-desktop-shortcut.sh         # 刷新桌面 app 的图标
 ```
+
+**仓库图标是另一套舞台**：`tools/make_logo.py` → `assets/`（`icon.svg` +
+`icon-{256,512,1024}.png` + `icon-1024-circle.png`）。字形坐标与应用图标完全共用
+（脚本头部的 `SCR` / `TRI` / `NECK` / `FOOT`），只把底板从 Apple 风格品牌蓝渐变换成
+深空 + 透视网格 + 霓虹辉光——仓库页深色背景下更亮更抓眼，又保留「电视屏 + 播放键 +
+信号弧」的识别度。Gitee 仓库头像传 `icon-512.png`（圆角 squircle），GitHub / 圆形
+头像容器传 `icon-1024-circle.png`。
 
 **为什么是四个脚本**：每处格式不同（icns / PWA PNG / Android 密度档），但都从同一张
 1024 主图派生。历史上漏跑过两次，各有测试兜底（`tests/test_icons.py`）：

@@ -146,6 +146,13 @@ ICONS = [
     ("apple-touch-icon.png", dict(size=180, apple=True)),
 ]
 
-for name, kw in ICONS:
-    render(**kw).save(STATIC / name)
-    print("wrote static/" + name)
+def main():
+    for name, kw in ICONS:
+        render(**kw).save(STATIC / name)
+        print("wrote static/" + name)
+
+
+# 只在直接运行时产出图片。被 make_logo.py / 测试 import 时不能顺手重写 static/
+# —— 那会让「看一眼常量」变成一次静默的全量重新生成。
+if __name__ == "__main__":
+    main()

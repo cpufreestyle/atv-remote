@@ -161,5 +161,49 @@ class GeneratorTest(unittest.TestCase):
             self.assertIn(d, src, "生成脚本要覆盖 " + d)
 
 
+class RepoLogoTest(unittest.TestCase):
+    """仓库图标 assets/ 与 README 引用别分家。"""
+
+    ASSETS = ROOT / "assets"
+    PNG_SIZES = (("icon-256.png", 256), ("icon-512.png", 512),
+                 ("icon-1024.png", 1024), ("icon-1024-circle.png", 1024))
+
+    def test_files_exist(self):
+        svg = self.ASSETS / "icon.svg"
+        self.assertTrue(svg.is_file(), "缺 assets/icon.svg")
+        self.assertIn("<svg", svg.read_text(encoding="utf-8"))
+        for name, _ in self.PNG_SIZES:
+            p = self.ASSETS / name
+            self.assertTrue(p.is_file(), "缺 " + str(p))
+            self.assertGreater(p.stat().st_size, 2000,
+                               str(p) + " 太小，不像真图")
+
+    @unittest.skipIf(Image is None, "没装 Pillow")
+    def test_png_dimensions(self):
+        for name, size in self.PNG_SIZES:
+            with Image.open(self.ASSETS / name) as im:
+                self.assertEqual(im.size, (size, size),
+                                 name + " 应是 %d×%d" % (size, size))
+
+    def test_readme_references_logo(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("assets/icon-1024.png", readme,
+                      "README 要引用 assets/icon-1024.png，否则仓库页没有 logo")
+
+    def test_logo_generator_reuses_glyph_layout(self):
+        src = (ROOT / "tools/make_logo.py").read_text(encoding="utf-8")
+        self.assertIn("import make_icons", src,
+                      "字形布局必须 import make_icons，别另抄一份常量")
+        for name in ("icon.svg", "icon-1024-circle.png"):
+            self.assertIn(name, src, "生成脚本要产出 " + name)
+
+    def test_make_icons_no_import_side_effect(self):
+        src = (ROOT / "tools/make_icons.py").read_text(encoding="utf-8")
+        self.assertIn("def main():", src)
+        self.assertIn('if __name__ == "__main__":', src,
+                      "make_icons.py 必须收进 main() 保护，"
+                      "否则被 import 时会静默重写 static/")
+
+
 if __name__ == "__main__":
     unittest.main()
