@@ -437,5 +437,16 @@ atv-remote/
 ├── start.command      # macOS 双击启动（优先用 .venv）
 ├── .venv/             # 虚拟环境（pyatv）
 ├── state.json         # 设备与配对凭据（自动生成）
+├── docs/              # 契约与台账：spec.md（端点/不变式）、harness.md（验证）
 └── README.md
 ```
+
+## 开发契约
+
+改动行为前先读这两份（事实优先级：源码 > `tests/` > `docs/spec.md` > 本文件）：
+
+- [docs/spec.md](docs/spec.md) —— HTTP 端点表、**12 条不变式**（每条都指向兜住它的测试）、已知缺口
+- [docs/harness.md](docs/harness.md) —— 一键验证命令、38 个测试文件与 20 个 node harness 的映射、最近核验结论
+
+改动端点或新增约束时同步更新 `docs/spec.md`，并把验证结论记进 `docs/harness.md`；
+没有测试兜底的不变式不算不变式。

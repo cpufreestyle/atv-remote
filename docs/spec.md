@@ -154,7 +154,7 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 check.sh 依序执行：import server 与 atv_backend、node --check static/app.js、
 node --check static/sw.js、python3 -m unittest discover -s tests、
 ./sync-native.sh --check，有 .venv 时在 pyatv 分支复跑后两项。
-当前基线：602 项单测通过，skipped 11 项。
+当前基线：603 项单测通过，skipped 11 项。
 
 ## 6. 已知缺口（尚未由测试覆盖，后续 spec 候选）
 

@@ -19,10 +19,15 @@
 """
 
 import unittest
+import sys
+import unittest
 from html.parser import HTMLParser
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+import server  # noqa: E402  —— spec 契约要与真实路由表对账
 STATIC = ROOT / "static"
 INDEX = STATIC / "index.html"
 RES = ROOT / "android-native/app/src/main/res"
@@ -218,6 +223,25 @@ class RepoLogoTest(unittest.TestCase):
         self.assertIn('if __name__ == "__main__":', src,
                       "make_icons.py 必须收进 main() 保护，"
                       "否则被 import 时会静默重写 static/")
+
+
+class SpecContractTest(unittest.TestCase):
+    """docs/spec.md 是「应当」的契约，但契约会撒谎 —— 必须和真路由表对账。"""
+
+    def test_spec_documents_all_post_routes(self):
+        """spec.md 的写端点表必须和 server.ROUTES 一致，否则契约会骗人。"""
+        spec = (ROOT / "docs/spec.md").read_text(encoding="utf-8")
+        start = spec.index("### 3.2 写端点")
+        end = spec.index("### 3.3")
+        body = spec[start:end]
+        documented = set(re.findall(r"\| (/api/[a-z0-9/]+) \|", body))
+        actual = set(server.ROUTES)
+        missing = actual - documented
+        extra = documented - actual
+        self.assertFalse(missing,
+                         "spec.md 漏了这些写端点：%s" % ", ".join(sorted(missing)))
+        self.assertFalse(extra,
+                         "spec.md 写了不存在的端点：%s" % ", ".join(sorted(extra)))
 
 
 if __name__ == "__main__":

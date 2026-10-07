@@ -64,6 +64,18 @@ python3 server.py        # 主入口，启动 Web 服务（默认 0.0.0.0:8300�
 
 修改代码后，必须运行以下验证命令并确认全部通过（退出码 0）：
 
+### 契约文档（改行为前先改这里）
+
+```bash
+docs/spec.md     # 「应当具备的契约」：端点表、12 条不变式、验证矩阵、已知缺口
+docs/harness.md  # 「如何验证」：一键命令、测试与 harness 映射、最近核验结论、drift 台账
+```
+
+- 事实优先级：`server.py` / `atv_backend.py` / `static/` 源码 > `tests/` > `docs/spec.md` > `README.md`。
+- **改行为必须同步改 `docs/spec.md`**：新增或变更端点 → 更新端点表；新增强制约束 → 加进
+  不变式并指向兜住它的测试（没有测试兜底的不变式不算不变式）；验证轮次变化 → 更新
+  `docs/harness.md` 的「最近核验结论」。
+
 ### Python 后端语法检查
 
 ```bash

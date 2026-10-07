@@ -12,7 +12,7 @@
 python3 -c 'import server, atv_backend'   # 后端导入自检
 node --check static/app.js          # 前端语法
 node --check static/sw.js           # Service Worker 语法
-python3 -m unittest discover -s tests    # 行为回归（602 项，skipped 11）
+python3 -m unittest discover -s tests    # 行为回归（603 项，skipped 11）
 ./sync-native.sh --check            # 内嵌副本逐字节比对
 ./sync-native.sh                    # 漂移时同步，并顺带跑一遍 check.sh
 .venv/bin/python -m unittest discover -s tests   # pyatv 分支复跑
@@ -25,9 +25,12 @@ python3 -m unittest discover -s tests    # 行为回归（602 项，skipped 11�
 | 类别 | 数量 | 说明 |
 |------|------|------|
 | Python 单测文件 | 38 | tests/test_*.py |
-| Python 用例总数 | 602 | 其中 skipped 11（依赖 pyatv 或 Pillow） |
+| Python 用例总数 | 603 | 其中 skipped 11（依赖 pyatv 或 Pillow） |
 | node harness | 20 | tests/*_harness.js，与宿主测试一一对应 |
 | 图标/规格守护 | 1 | tests/test_icons.py 另守护 assets/ 与桌面脚本 |
+
+契约防漂移：`tests/test_icons.py::SpecContractTest` 把 `docs/spec.md` 第 3.2 节的写端点表
+与 `server.ROUTES` 逐条对账，漏记或虚报都会让单测变红。新增写端点时必须同步更新 spec.md。
 
 harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：harness 从 static/app.js 
 按标记或函数名原样切出代码，配假 DOM 与假 api() 执行，所以有真行为证据，
@@ -75,8 +78,7 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | 项 | 结论 |
 |----|------|
 | HEAD | 69dca04 桌面图标修复 |
-| 全量单测 | python3 -m unittest discover -s tests 得 602 passed、skipped 11 |
-| pyatv 分支 | .venv/bin/python 复跑得 602 passed、skipped 7 |
+| 全量单测 | python3 -m unittest discover -s tests 得 603 passed、skipped 11 |
 | 内嵌副本 | ./sync-native.sh --check 得「内嵌副本与根目录一致」 |
 | 桌面图标 | NSWorkspace 实渲染修前为 AppleScript 羊皮纸、修后为遥控器图标；codesign 验证通过 |
 | 清理 | 删除 android-native 构建缓存、.gradle、__pycache__ 与 .DS_Store，释放 330 MB，未触碰任何入库文件 |
@@ -90,7 +92,7 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | id | 严重度 | 状态 | 证据或说明 |
 |----|--------|------|-------------|
 | no-agent-routing-instructions | High | 已解决 | AGENTS.md 覆盖启动命令、源码结构、构建路径、安全约束 |
-| no-automated-validation | Medium | 已解决 | check.sh 与 602 项单测；本文件与 spec.md 固化为契约 |
+| no-automated-validation | Medium | 已解决 | check.sh 与 603 项单测；本文件与 spec.md 固化为契约，并有 SpecContractTest 防漂移 |
 | untracked-native-module | Low | 已解决 | android-native/ 已入库，README 有独立章节 |
 
 ## 6. Drift 台账（spec 与代码的偏差）
