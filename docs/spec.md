@@ -172,8 +172,12 @@ node --check static/sw.js、python3 -m unittest discover -s tests、
   但**错误文案层已不再依赖 pyatv**：`atv_backend.friendly_error()` 是模块级纯函数，
   由 I15 锁定，系统 python3 下也照样跑
   （`tests/test_atv_fastfail.py::FriendlyErrorTest`）。
-- static/app.js 体量 5712 行，交互大量靠 20 个 node harness 覆盖，
-   harness 之间没有共享受测代码的单一来源。
-- Playwright 或 CDP 真机验收需要真实环境，未纳入 check.sh，靠人工执行。
+- static/app.js 体量 5712 行，交互大量靠 20 个 node harness 覆盖。
+  取证（2026-10-13）：各 harness 的 BEGIN/END 切片标记各不相同（本就该各不相同），
+  副本化的巧偏重只有 1 份（reconnect_ui 的 sliceFn）；假 DOM 实现各容各语，
+  仅 1 份用 querySelector。共享基建的可共享面小而重构风险高（2938 行），
+  收益/风险不成比例，暂不动。若日后真要动，从“截取 app.js 片段”这一小步拆出入才是。
+- Playwright / CDP 真机验收需要真实电视设备，无法进 CI（环境约束，非疏忽）。
+  可移入 check.sh 的部分已移入：CI 在 push / PR 上跑 ./check.sh（不起 adb / pyatv / 真端口）。
 
 第 6 节应由后续轮次逐条收敛，收敛时在 docs/harness.md 的第 4 节记一笔。
