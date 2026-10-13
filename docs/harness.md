@@ -3,8 +3,7 @@
 > 配套 docs/spec.md：spec.md 定义「应当具备的契约」，本文件记录「如何验证、覆盖到哪、
 > 最近一次核验结论」。
 > harness 产物根目录 .qoder/better-harness/ 与 .mimosa/ 已 gitignore，不在本台账内。
-> 最近核验：2026-10-13（工作树在 fd79857 之上：媒体解析外提到 atv_media.py、
-> 交付清单改为跟着 server.py 的 import 闭包，见第 4.1 节）
+> 最近核验：2026-10-13（HEAD 2dc3ca3；最新一轮 I15 已收敛，见第 4.3 节）
 
 ## 1. 一键验证命令
 
@@ -13,7 +12,7 @@
 python3 -c 'import server, atv_backend'   # 后端导入自检
 node --check static/app.js          # 前端语法
 node --check static/sw.js           # Service Worker 语法
-python3 -m unittest discover -s tests    # 行为回归（624 项，skipped 11）
+python3 -m unittest discover -s tests    # 行为回归（629 项，skipped 11）
 ./sync-native.sh --check            # 内嵌副本逐字节比对
 ./sync-native.sh                    # 漂移时同步，并顺带跑一遍 check.sh
 .venv/bin/python -m unittest discover -s tests   # pyatv 分支复跑
@@ -26,7 +25,7 @@ python3 -m unittest discover -s tests    # 行为回归（624 项，skipped 11�
 | 类别 | 数量 | 说明 |
 |------|------|------|
 | Python 单测文件 | 40 | tests/test_*.py |
-| Python 用例总数 | 624 | 其中 skipped 11（依赖 pyatv 或 Pillow）；.venv 下 7 |
+| Python 用例总数 | 629 | 其中 skipped 11（依赖 pyatv 或 Pillow）；.venv 下 7 |
 | node harness | 20 | tests/*_harness.js，与宿主测试一一对应 |
 | 图标/规格守护 | 1 | tests/test_icons.py 另守护 assets/ 与桌面脚本 |
 | 结构守护 | 2 | tests/test_route_contract.py（I14 派发面冻结）、tests/test_delivery_manifest.py（I13 三处交付清单对账） |
@@ -82,7 +81,7 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 
 | 项 | 结论 |
 |----|------|
-| 工作树 | fd79857 之上：新增 atv_media.py 与两个结构守护，尚未提交 |
+| 工作树 | fd79857 之上：新增 atv_media.py 与两个结构守护（当时未提交，后由 2dc3ca3 落盘） |
 | 全量单测 | python3 -m unittest discover -s tests → 624 passed、skipped 11；.venv 分支同样 624、skipped 7 |
 | 一键基线 | ./check.sh 全绿（含 ./sync-native.sh --check「内嵌副本与根目录一致」） |
 | 派发面 | test_route_contract 与 32 条冻结三元组逐条相等；改动抽取器后做过红绿：删掉 /api/macros 分支会挂 2 例 |
@@ -90,6 +89,21 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | 运行实例 | 10-13 07:36 `launchctl kickstart -k` 重启（PID 1165）；`GET /bundle.tgz` 成员 14 个、含 `atv_media.py`、不含 `state.json`，包内 server.py 与磁盘 sha256 相同
 | 真机复探针 | 拆分前 22 个只读端点复跑：status / Content-Type / JSON 字段集 / 本轮 Content-Length 与 body 一致性全部通过；唯一字段级差异是 `/api/status` 多出 `version`（HEAD 的 `app_version()`，旧进程起于 10-08 所以基线里没有，与外提无关）；字节数变化 4 处均为设备实时状态或包内容变化。`/api/volume`、`/api/nowplaying` 因当前设备是 Apple TV 仍回 `{"connected": false}`，与基线一致
 | 体量 | server.py 2648 → 2558 行（外提 −188、清单闭包 +54）；atv_media.py 167 行纯函数，server.py 再导出所以既有引用点（含 tests/）不用改 |
+
+
+### 4.3 2026-10-13（I15 已收敛：pyatv 错误文案不再依赖 pyatv）
+
+| 项 | 结论 |
+|----|------|
+| 动机 | spec 第 6 节第一条缺口：实测系统 python3 下 `dir(AppleTvManager)` 里没有 `_friendly`，
+  而它是所有 pyatv 异常的唯一出口，故“错误信息好不好懂”在无 pyatv 环境里零覆盖 |
+| 改动 | `_friendly` 静态方法外提为模块级纯函数 `friendly_error()`，原方法保留为薄委托
+  （既有调用点不动）；顺带修掉 `None` 入参会抛 AttributeError 的隐患 |
+| 新测试 | `tests/test_atv_fastfail.py::FriendlyErrorTest` 5 例（不跳过）：auth/credentials 两类词都要映射、
+  keyboard 映射到动作提示、认不出的原样透出、空/空串不崩、静态方法委托一致 |
+| 双环境结论 | 系统 python3：9 tests OK（4 项 pyatv 用例跳过，FriendlyErrorTest 5 项全跑）；
+  .venv：9 tests OK（全跑）。即无 pyatv 时这五条也有真覆盖 |
+| 全量回归 | 系统 python3 629 passed / skipped 11；.venv 629 passed / skipped 7（均比收敛前 +5） |
 
 ### 4.2 2026-10-07
 
@@ -110,7 +124,7 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | id | 严重度 | 状态 | 证据或说明 |
 |----|--------|------|-------------|
 | no-agent-routing-instructions | High | 已解决 | AGENTS.md 覆盖启动命令、源码结构、构建路径、安全约束 |
-| no-automated-validation | Medium | 已解决 | check.sh 与 624 项单测；本文件与 spec.md 固化为契约，并有 SpecContractTest 防漂移 |
+| no-automated-validation | Medium | 已解决 | check.sh 与 629 项单测；本文件与 spec.md 固化为契约，并有 SpecContractTest 防漂移 |
 | untracked-native-module | Low | 已解决 | android-native/ 已入库，README 有独立章节 |
 
 ## 6. Drift 台账（spec 与代码的偏差）

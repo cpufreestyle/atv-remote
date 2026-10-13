@@ -4,7 +4,7 @@
 > 事实优先级：server.py / atv_backend.py / static/ 源码 > tests/ > 本文件 > README.md（仅作介绍）。
 > 任何行为变更必须同步更新本文件与 docs/harness.md；docs/harness.md 记录最近一次核验结论。
 >
-> 最近核验：2026-10-13（工作树在 fd79857 之上：新增 atv_media.py 与 I13/I14 两条不变式）
+> 最近核验：2026-10-13（HEAD 2dc3ca3；I15 已收敛，见 harness.md 第 4.1 节）
 
 ## 1. 目标与范围
 
@@ -138,6 +138,7 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 | I12 | 前端渲染用 textContent：设备名与 IP 不得经 innerHTML 渲染 | tests/test_command_palette.py |
 | I13 | 交付清单跟着 import 走：server.BUNDLE_PY（server.py 的本地 import 闭包）必须逐条出现在 /bundle.tgz、build.gradle 的 syncPythonSrc、sync-native.sh 三处；新增 atv_*.py 漏任何一处即 ImportError | tests/test_delivery_manifest.py |
 | I14 | 派发面冻结：32 条 (path, method, status, 视图函数指纹) 与冻结基线逐条相等，GET/HEAD 共用一条派发链，两条链都保留 404 兜底 | tests/test_route_contract.py |
+| I15 | pyatv 异常文案必须本地化：auth/credentials → 「需要配对」，keyboard → 「聚焦输入框」，认不出的原样透出；该映射不依赖 pyatv 安装（无 pyatv 时 `AppleTvManager._friendly` 整体不可达，故真身在模块级 `friendly_error()`） | tests/test_atv_fastfail.py::FriendlyErrorTest |
 
 ## 5. 验证矩阵（spec 与 harness 对应）
 
@@ -155,6 +156,7 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 | I11、I12 | python3 -m unittest discover -s tests | tests/test_icons.py、tests/test_command_palette.py |
 | I13 | 同上 | tests/test_delivery_manifest.py |
 | I14 | 同上 | tests/test_route_contract.py |
+| I15 | 同上 | tests/test_atv_fastfail.py::FriendlyErrorTest |
 | 前端行为 | node harness，由 Python 测试经 subprocess 驱动 | 20 个 tests/*_harness.js |
 
 ### 5.1 一键验证基线
@@ -162,11 +164,14 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 check.sh 依序执行：import server 与 atv_backend、node --check static/app.js、
 node --check static/sw.js、python3 -m unittest discover -s tests、
 ./sync-native.sh --check，有 .venv 时在 pyatv 分支复跑后两项。
-当前基线：624 项单测通过，系统 python3 下 skipped 11 项（.venv 下 7 项）。
+当前基线：629 项单测通过，系统 python3 下 skipped 11 项（.venv 下 7 项）。
 
 ## 6. 已知缺口（尚未由测试覆盖，后续 spec 候选）
 
-- pyatv 缺失时 Apple TV 的协议层覆盖不足，主要靠 .venv 跑偏移。
+- Apple TV 的**协议层**仍只在 .venv 下覆盖（扫描 / 配对 / 按键要真 pyatv）；
+  但**错误文案层已不再依赖 pyatv**：`atv_backend.friendly_error()` 是模块级纯函数，
+  由 I15 锁定，系统 python3 下也照样跑
+  （`tests/test_atv_fastfail.py::FriendlyErrorTest`）。
 - static/app.js 体量 5712 行，交互大量靠 20 个 node harness 覆盖，
    harness 之间没有共享受测代码的单一来源。
 - Playwright 或 CDP 真机验收需要真实环境，未纳入 check.sh，靠人工执行。

@@ -11,6 +11,8 @@ import asyncio
 import time
 import unittest
 
+from atv_backend import friendly_error
+
 pyatv = None
 try:
     import pyatv  # noqa: F401
@@ -70,6 +72,45 @@ class FastFailTest(unittest.TestCase):
         self.assertGreater(self.mgr._last_timeout, 0.0)
         with self.assertRaises(self.err):   # 紧接着第二键快速失败
             self.mgr.send_keys([19])
+
+
+class FriendlyErrorTest(unittest.TestCase):
+    """pyatv 异常文案的本地化映射（不依赖 pyatv，两种环境都跑）。"""
+
+    def test_auth_and_credentials_both_map_to_pairing_hint(self):
+        # 这两个词在 pyatv 各版本里都出现过（AuthenticationError / NoCredentialsError /
+        # InvalidCredentialsError），漏一个用户就会看到一句英文 traceback 而不是「去配对」
+        for msg in ("AuthenticationError: nope", "NoCredentialsError",
+                    "InvalidCredentialsError", "auth failed"):
+            out = friendly_error(msg)
+            self.assertTrue(out.startswith("需要配对或配对已失效"), msg)
+            self.assertIn(msg, out, "原始文案要留着，报障时贴给别人看")
+
+    def test_keyboard_focus_maps_to_actionable_hint(self):
+        out = friendly_error("KeyboardError: no focused field")
+        self.assertIn("聚焦", out)
+        self.assertIn("方向键", out)
+
+    def test_unknown_error_passes_through_unchanged(self):
+        # 认不出的必须原样透出：包一层不知所云的话反而更难查
+        self.assertEqual(friendly_error("CommandError: boom"), "CommandError: boom")
+
+    def test_empty_and_none_do_not_crash(self):
+        # 这条路径的输入来自 format(type(e).__name__, e)，空串理论上来不了，
+        # 但 None / "" 不能把 _call 的异常包装本身变成新的异常
+        self.assertEqual(friendly_error(""), "")
+        self.assertEqual(friendly_error(None), "")
+
+    def test_static_method_delegates_to_module_function(self):
+        # 类上的静态方法只是薄壳，真正的口径在模块级（那边才测得到）。
+        # pyatv 缺失时 Apple TV 功能整体禁用、_friendly 不在类上——这正是把它
+        # 外提成模块级函数的原因，见 atv_backend.friendly_error 的 docstring
+        from atv_backend import AppleTvManager, PYATV_AVAILABLE
+        if not PYATV_AVAILABLE:
+            self.assertFalse(hasattr(AppleTvManager, "_friendly"),
+                             "无 pyatv 时 _friendly 应不可达，否则这条测试等于没跑")
+            return
+        self.assertEqual(AppleTvManager._friendly("auth x"), friendly_error("auth x"))
 
 
 if __name__ == "__main__":

@@ -98,6 +98,24 @@ def set_perf_recorder(fn):
     _RECORDER = fn
 
 
+def friendly_error(msg: str) -> str:
+    """把 pyatv 的原始异常文案翻成用户能动手的那句话。
+
+    外提成模块级纯函数是为了可测：它原本是 AppleTvManager 的静态方法，而整个类
+    定义在 `if PYATV_AVAILABLE` 之外、`_friendly` 却在类体里被 pyatv 缺失的早退路径
+    一起吞掉（实测系统 python3 下 `dir(AppleTvManager)` 里没有 `_friendly`），于是
+    「错误信息好不好懂」这条在无 pyatv 的环境里零覆盖。搬出来后不 import pyatv 也能测。
+    """
+    if not msg:
+        return msg or ""
+    low = msg.lower()
+    if "credentials" in low or "auth" in low:
+        return "需要配对或配对已失效：{}".format(msg)
+    if "keyboard" in low:
+        return "电视端没有聚焦的输入框：请先用方向键打开输入框，再发送文字"
+    return msg
+
+
 def _perf(label, ms, err=""):
     fn = _RECORDER
     if fn:
@@ -153,11 +171,8 @@ class AppleTvManager:
 
     @staticmethod
     def _friendly(msg: str) -> str:
-        if "credentials" in msg.lower() or "auth" in msg.lower():
-            return "需要配对或配对已失效：{}".format(msg)
-        if "keyboard" in msg.lower():
-            return "电视端没有聚焦的输入框：请先用方向键打开输入框，再发送文字"
-        return msg
+        # 薄委托：真身在模块级 friendly_error()（那里可脱离 pyatv 测试）
+        return friendly_error(msg)
 
     # ---------------- 扫描 ----------------
     async def _scan_coro(self, hosts):
