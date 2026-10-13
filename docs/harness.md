@@ -3,7 +3,8 @@
 > 配套 docs/spec.md：spec.md 定义「应当具备的契约」，本文件记录「如何验证、覆盖到哪、
 > 最近一次核验结论」。
 > harness 产物根目录 .qoder/better-harness/ 与 .mimosa/ 已 gitignore，不在本台账内。
-> 最近核验：2026-10-07（HEAD 69dca04，另新建 spec.md 与 harness.md）
+> 最近核验：2026-10-13（工作树在 fd79857 之上：媒体解析外提到 atv_media.py、
+> 交付清单改为跟着 server.py 的 import 闭包，见第 4.1 节）
 
 ## 1. 一键验证命令
 
@@ -12,7 +13,7 @@
 python3 -c 'import server, atv_backend'   # 后端导入自检
 node --check static/app.js          # 前端语法
 node --check static/sw.js           # Service Worker 语法
-python3 -m unittest discover -s tests    # 行为回归（603 项，skipped 11）
+python3 -m unittest discover -s tests    # 行为回归（624 项，skipped 11）
 ./sync-native.sh --check            # 内嵌副本逐字节比对
 ./sync-native.sh                    # 漂移时同步，并顺带跑一遍 check.sh
 .venv/bin/python -m unittest discover -s tests   # pyatv 分支复跑
@@ -24,10 +25,11 @@ python3 -m unittest discover -s tests    # 行为回归（603 项，skipped 11�
 
 | 类别 | 数量 | 说明 |
 |------|------|------|
-| Python 单测文件 | 38 | tests/test_*.py |
-| Python 用例总数 | 603 | 其中 skipped 11（依赖 pyatv 或 Pillow） |
+| Python 单测文件 | 40 | tests/test_*.py |
+| Python 用例总数 | 624 | 其中 skipped 11（依赖 pyatv 或 Pillow）；.venv 下 7 |
 | node harness | 20 | tests/*_harness.js，与宿主测试一一对应 |
 | 图标/规格守护 | 1 | tests/test_icons.py 另守护 assets/ 与桌面脚本 |
+| 结构守护 | 2 | tests/test_route_contract.py（I14 派发面冻结）、tests/test_delivery_manifest.py（I13 三处交付清单对账） |
 
 契约防漂移：`tests/test_icons.py::SpecContractTest` 把 `docs/spec.md` 第 3.2 节的写端点表
 与 `server.ROUTES` 逐条对账，漏记或虚报都会让单测变红。新增写端点时必须同步更新 spec.md。
@@ -65,15 +67,31 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 
 | 目标 | 规模 | 覆盖情况 |
 |------|------|----------|
-| server.py | 119 KB | HTTP 层、路由、令牌、宏、输入校验、诊断、导入导出均有行为测试 |
-| atv_backend.py | 18.6 KB | 降级与快速失败有测试；协议细节靠 .venv 分支 |
+| server.py | 111 KB | HTTP 层、路由、令牌、宏、输入校验、诊断、导入导出均有行为测试 |
+| atv_backend.py | 18.2 KB | 降级与快速失败有测试；协议细节靠 .venv 分支 |
+| atv_media.py | 8.7 KB | 纯解析函数：媒体会话、两条音量读通道、按格夹取与命令降级链；由 test_media_session / test_volume / test_volume_set 通过 server 再导出的同名符号覆盖 |
 | static/app.js | 大 | 20 个 harness 覆盖主要交互；无通用 JS 覆盖率统计 |
 | static/index.html、style.css | 中 | 结构、ARIA、图标顺序、选择器一致性有静态断言 |
 | android/、android-native/、mac/ | 多语言 | 构建与内嵌一致性用 sync-native.sh 把守 |
 
 盲区见 spec.md 第 6 节。
 
-## 4. 最近验证结论（2026-10-07）
+## 4. 最近验证结论
+
+### 4.1 2026-10-13（媒体解析外提 + 交付清单跟着 import 走）
+
+| 项 | 结论 |
+|----|------|
+| 工作树 | fd79857 之上：新增 atv_media.py 与两个结构守护，尚未提交 |
+| 全量单测 | python3 -m unittest discover -s tests → 624 passed、skipped 11；.venv 分支同样 624、skipped 7 |
+| 一键基线 | ./check.sh 全绿（含 ./sync-native.sh --check「内嵌副本与根目录一致」） |
+| 派发面 | test_route_contract 与 32 条冻结三元组逐条相等；改动抽取器后做过红绿：删掉 /api/macros 分支会挂 2 例 |
+| 交付清单 | test_delivery_manifest 15 例把 /bundle.tgz、build.gradle 的 syncPythonSrc、sync-native.sh 三处与 server.BUNDLE_PY 对账；副本里根目录已删的 icon-maskable.svg 由同步清掉 |
+| 运行实例 | 10-13 07:36 `launchctl kickstart -k` 重启（PID 1165）；`GET /bundle.tgz` 成员 14 个、含 `atv_media.py`、不含 `state.json`，包内 server.py 与磁盘 sha256 相同
+| 真机复探针 | 拆分前 22 个只读端点复跑：status / Content-Type / JSON 字段集 / 本轮 Content-Length 与 body 一致性全部通过；唯一字段级差异是 `/api/status` 多出 `version`（HEAD 的 `app_version()`，旧进程起于 10-08 所以基线里没有，与外提无关）；字节数变化 4 处均为设备实时状态或包内容变化。`/api/volume`、`/api/nowplaying` 因当前设备是 Apple TV 仍回 `{"connected": false}`，与基线一致
+| 体量 | server.py 2648 → 2558 行（外提 −188、清单闭包 +54）；atv_media.py 167 行纯函数，server.py 再导出所以既有引用点（含 tests/）不用改 |
+
+### 4.2 2026-10-07
 
 | 项 | 结论 |
 |----|------|
@@ -92,7 +110,7 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | id | 严重度 | 状态 | 证据或说明 |
 |----|--------|------|-------------|
 | no-agent-routing-instructions | High | 已解决 | AGENTS.md 覆盖启动命令、源码结构、构建路径、安全约束 |
-| no-automated-validation | Medium | 已解决 | check.sh 与 603 项单测；本文件与 spec.md 固化为契约，并有 SpecContractTest 防漂移 |
+| no-automated-validation | Medium | 已解决 | check.sh 与 624 项单测；本文件与 spec.md 固化为契约，并有 SpecContractTest 防漂移 |
 | untracked-native-module | Low | 已解决 | android-native/ 已入库，README 有独立章节 |
 
 ## 6. Drift 台账（spec 与代码的偏差）

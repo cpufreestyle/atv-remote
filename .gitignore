@@ -29,8 +29,10 @@ android/ATVRemote.apk.idsig
 android/debug.keystore
 
 # Android Native 内嵌副本：由 android-native 构建从根目录生成（单一事实来源是根目录）
-/android-native/app/src/main/python/server.py
-/android-native/app/src/main/python/atv_backend.py
+# 用通配而不是逐个文件名：新增 atv_*.py 时手工列表必然漏，漏了的副本就会以
+# 「未跟踪文件」的身份被顺手 commit 回去，重新变成第 5 份事实来源。
+/android-native/app/src/main/python/*.py
+!/android-native/app/src/main/python/boot.py
 /android-native/app/src/main/python/static/
 
 # Android Native 构建产物

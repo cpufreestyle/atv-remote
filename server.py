@@ -12,6 +12,7 @@ ATV Remote — Android TV 遥控器（本地 Web UI + adb）
 """
 
 import argparse
+import ast
 import base64
 import hmac
 import json
@@ -35,6 +36,13 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
+
+# 本地模块与 server.py 同级：三种交付形态（根目录直跑 / Termux 的 /bundle.tgz /
+# Chaquopy 内嵌）都把 atv_*.py 摆在 server.py 旁边，所以裸模块名导入就行。
+# 新增模块不要手工往打包清单里补文件名——bundle_files() 跟着这些 import 自己求。
+from atv_media import (MEDIA_STATE_NAMES, STREAM_MUSIC, VOLUME_MAX_FALLBACK,
+                       clamp_volume_level, parse_dumpsys_audio,
+                       parse_media_session, parse_media_volume, volume_set_cmd)
 
 ROOT = Path(__file__).resolve().parent
 STATIC = Path(os.environ.get("ATV_STATIC", str(ROOT / "static")))
@@ -534,55 +542,10 @@ def fetch_device_info(serial):
 
 
 # ---------------- 正在播放（Now Playing） ----------------
-# 学习源：Google TV 官方遥控 / Kodi Remote —— 遥控器顶部常驻「正在播放」信息条，
-# 用户不用切回电视画面就知道片名和进度。数据源是 dumpsys media_session：唯一
-# 不依赖 App 主动配合的系统级接口。
-# 各家 ROM 的 dump 格式有差异（state=PLAYING / state=3 / PlaybackState {state=2…}、
-# pos= 与 position= 混用、duration 单位为 ms），所以解析器刻意宽松：认不出的字段
-# 就缺省，前端据此隐藏卡片，绝不因为格式变化把整个遥控器搞挂。
-MEDIA_STATE_NAMES = {
-    0: "none", 1: "stopped", 2: "paused", 3: "playing",
-    4: "fast_forwarding", 5: "rewinding", 6: "buffering",
-    7: "error", 8: "connecting", 9: "skipping_prev", 10: "skipping_next",
-}
-
+# 数据源与各家 ROM 的格式差异说明在 atv_media.py（parse_media_session）。
+# 这里只留缓存与 adb 调用——缓存必须和「谁改了状态」待在同一层。
 NOWPLAYING_TTL = 3.5     # dumpsys media_session 不便宜，3.5s 内复用同一结果
 _nowplaying_cache = {"ts": 0.0, "serial": None, "val": None}
-
-
-def parse_media_session(text):
-    """从 dumpsys media_session 输出抠「正在播放」。字段取不到就缺省（≠ 出错）：
-    app / title / artist / duration(ms) / position(ms) / playing / empty"""
-    t = text or ""
-    r = {"playing": False, "title": "", "artist": "", "app": "",
-         "duration": 0, "position": 0, "empty": True}
-
-    def first(pat):
-        m = re.search(pat, t, re.IGNORECASE | re.MULTILINE)
-        return m.group(1).strip() if m else ""
-
-    # 会话栈是按活跃度排序的，取首个记录 = 当前前台会话；每个字段也只取首个命中
-    r["app"] = (first(r"^\s*packageName\s*=\s*(\S+)")
-                or first(r"^\s*pkg\s*=\s*(\S+)"))
-    r["title"] = (first(r"^\s*title\s*=\s*(.+)$")
-                  or first(r"^\s*displayTitle\s*=\s*(.+)$"))
-    r["artist"] = first(r"^\s*artist\s*=\s*(.+)$")
-    dur = first(r"(?<![A-Za-z])duration\s*=\s*(\d+)")
-    pos = first(r"\b(?:pos|position)\s*=\s*(\d+)")
-    state = (first(r"\bstate\s*=\s*([A-Za-z0-9_]+)")
-             or first(r"\bmState\s*=\s*(\d+)"))
-    if dur.isdigit():
-        r["duration"] = int(dur)
-    if pos.isdigit():
-        r["position"] = int(pos)
-    if state:
-        if state.isdigit():
-            r["playing"] = MEDIA_STATE_NAMES.get(int(state)) == "playing"
-        else:
-            r["playing"] = state.upper() == "PLAYING"
-    if r["title"] or r["app"] or r["playing"]:
-        r["empty"] = False
-    return r
 
 
 def now_playing(serial):
@@ -605,49 +568,11 @@ def now_playing(serial):
 
 
 # ---------------- 音量 ----------------
-# 按音量键后手机端要立刻有反馈（学 Google TV 官方遥控的本地 OSD）：电视自己也会弹
-# 系统音量条，但 adb 发键是「发完就走」，手机端一片安静——用户不知道键送到没有。
-# 两条读通道，都不保证存在，认不出就安静降级（supported: False），绝不抛：
-#   1. `media volume --stream 3 --get`（新系统：volume is 7 in range [0..15]）
-#   2. `dumpsys audio` 的 STREAM_MUSIC 段（Current: 7，老 ROM 兜底）
-#   `muted` 三态：True/False 只有 dumpsys audio 读得出来；`media volume --get`
-#   不带静音位，走这条通道时 muted=None（「不知道」）。前端据此保留本地乐观值——
-#   否则按静音后 220ms 的真值校正会把「静音」抹成格数，反馈等于没有。
+# 两条读通道（`media volume --stream 3 --get` / `dumpsys audio`）的格式差异、
+# muted 三态口径与 STREAM_MUSIC 常量都在 atv_media.py，这里只留缓存和 adb 调用。
 # 音量只有我们的按键和电视遥控会改，0.8s TTL 扛得住连按（同一次查询多人共享）。
 VOLUME_TTL = 0.8
-STREAM_MUSIC = 3                      # Android 媒体流固定 3（音乐/视频/游戏都走它）
 _volume_cache = {"ts": 0.0, "serial": None, "val": None}
-
-
-def parse_media_volume(text) -> dict:
-    """`media volume --get` 输出 → {"level", "max"}；认不出返回 {}。"""
-    m = re.search(r"volume\s+is\s+(\d+)\s+in\s+range\s*\[0\.\.(\d+)\]",
-                  text or "", re.IGNORECASE)
-    return {"level": int(m.group(1)), "max": int(m.group(2))} if m else {}
-
-
-def parse_dumpsys_audio(text) -> dict:
-    """dumpsys audio 的 STREAM_MUSIC 段 → {"level", "max"?, "muted"?}。
-
-    段头 `- STREAM_MUSIC:`（各 ROM 缩进不一），块内 `Current: 7, Latest: 7`；
-    部分 ROM 还带 `Max: 15` / `Muted: true`（或 `Mute count: 1`）。字段缺省就缺，
-    别抛——这条通道本身就是给新系统 `media` 命令兜底的。"""
-    m = re.search(r"-\s*STREAM_MUSIC\s*:(.*?)(?=\n\s*-\s*STREAM_[A-Z]|\Z)",
-                  text or "", re.DOTALL | re.IGNORECASE)
-    if not m:
-        return {}
-    seg = m.group(1)
-    cur = re.search(r"\bCurrent\s*:\s*(\d+)", seg)
-    if not cur:
-        return {}
-    r = {"level": int(cur.group(1))}
-    mx = re.search(r"\bMax\s*:\s*(\d+)", seg)
-    if mx:
-        r["max"] = int(mx.group(1))
-    if re.search(r"\bMuted\s*[:=]\s*true\b", seg, re.IGNORECASE) or \
-            re.search(r"\bMute\s+count\s*:\s*[1-9]", seg):
-        r["muted"] = True
-    return r
 
 
 def volume(serial):
@@ -677,64 +602,9 @@ def volume(serial):
 
 
 # ---------------- 音量精确设置（按格） ----------------
-# 学习源：androidtv 0.0.75（MIT，Copyright (c) 2020 Jeff Irion，commit 343b74e）——
-# Home Assistant 遥控 Android TV 的协议库。此前本项目音量链路是「按键 + 只读 OSD」，
-# 想一步调到某一格只能连按；按格设置的完整答案 androidtv 已经踩过一遍，三条口径直接搬：
-#   1) constants.py:145/148 两条 set 命令：旧系统
-#      `media volume --show --stream 3 --set N`，Android 11+ 是
-#      `cmd media_session volume --show --stream 3 --set N`。它按 sw_version 二选一
-#      （basetv.py:280-284）；我们不多花一次 build.prop 查询，改成有序降级：读通道
-#      已在用的 `media volume` 先试，抛 AdbError 再试 `cmd media_session volume`。
-#   2) basetv_async.py:830 的夹取公式 int(min(max(round(x), 0.0), max_volume))：
-#      先 round 再夹。只夹不舍会把 7.6 卡成 7 再跳 8，只舍不夹会放出 16 / -1，
-#      电视侧命令直接报错。max 也按不可信输入处理（读通道挂掉时前端兜底 15）。
-#   3) basetv_async.py:825-828：max_volume 拿不到就先去 volume() 读一次，仍拿不到
-#      直接返回 None（放弃）。同思路：读通道全废时 POST 报错，让前端退回音量键——
-#      24/25 在任何 ROM 上都认，这才是老设备上的降级方向，不是猜一个格数发出去。
-VOLUME_MAX_FALLBACK = 15   # 读不到 max 时的兜底格数（STREAM_MUSIC 常见上限）
-
-def _vol_finite_int(value):
-    """把入参 round 成整数；非数字 / NaN / inf 一律返回 None（调用方按「不可信」处理）。
-
-    JSON body 里的 level 理论上只会是数字，但网关/脚本可能塞进任意类型；
-    int(float("inf")) 抛的是 OverflowError 而不是 ValueError，单独兜住。
-    舍入口径是**半点向上**（int(x + 0.5)）：Python3 内建 round 是银行家舍入
-    （8.5→8），前端 Math.round 是 8.5→9，直接用内建 round 会造出「滑条停在 9、
-    电视设成 8」的错位；直接 int() 截断则会把 7.6 卡成 7（先 round 后夹的另一半）。"""
-    try:
-        num = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if num != num or num == float("inf") or num == float("-inf"):
-        return None
-    return int(num + 0.5) if num >= 0 else -int(-num + 0.5)
-
-
-def clamp_volume_level(level, max_level):
-    """把目标格数 round 后夹到 [0, max_level]，返回 (level, max)。
-
-    round 与 clamp 的顺序照抄 androidtv basetv_async.py:830 的
-    int(min(max(round(...), 0.0), max_volume))。max_level 不可信（缺省 / 0 /
-    非数字）时退到 VOLUME_MAX_FALLBACK——滑条的 max 来自上一次回读，可能是旧值。
-    level 不可信时按 0 处理（不抛，让调用方按业务决定）。"""
-    top = _vol_finite_int(max_level)
-    if top is None or top <= 0:
-        top = VOLUME_MAX_FALLBACK
-    lvl = _vol_finite_int(level)
-    if lvl is None:
-        # NaN / inf / 非数字：合法 JSON 到不了这里，但绝不猜一个格数发出去
-        lvl = 0
-    return max(0, min(lvl, top)), top
-
-
-def volume_set_cmd(level: int):
-    """设置音量的两条候选命令（有序降级链）。学 androidtv constants.py:145/148：
-    `media volume` 是读通道已在用的同款命令先试，Android 11+ 的
-    `cmd media_session volume` 兜底。"""
-    return [
-        "media volume --show --stream %d --set %d" % (STREAM_MUSIC, level),
-        "cmd media_session volume --show --stream %d --set %d" % (STREAM_MUSIC, level),
-    ]
+# 命令形态与「先 round 再夹」的口径来自 androidtv 0.0.75，连注释一起搬进了
+# atv_media.py（volume_set_cmd / clamp_volume_level / VOLUME_MAX_FALLBACK）。
+# 这里剩下的第 3 条口径：读通道全废时不猜格数，直接报错让前端退回音量键。
 
 
 def volume_set(serial, level):
@@ -1677,11 +1547,48 @@ fi
 """
 
 
-BUNDLE_FILES = ("server.py", "atv_backend.py", "start.sh")
+def _local_import_closure(entry):
+    """从 entry 出发，沿 import 求出所有「与 server.py 同目录」的本地模块文件名。
+
+    清单跟着代码走：/bundle.tgz、sync-native.sh、Gradle 的 syncPythonSrc 三处原本是
+    手工文件名列表，新增一个 atv_*.py 只要漏掉其中一处，那一种交付形态就是
+    ImportError 起不来（而且只在手机上复现）。这里自动求闭包，剩下的手工列表由
+    tests/test_delivery_manifest.py 逐条对着它钉住。"""
+    out, seen, queue = [], set(), deque([entry])
+    while queue:
+        name = queue.popleft()
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+        path = ROOT / name
+        if not path.is_file():
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, ValueError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                mods = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and not node.level:
+                mods = [node.module] if node.module else []
+            else:
+                continue
+            for mod in mods:
+                cand = mod.split(".")[0] + ".py"
+                if cand not in seen and (ROOT / cand).is_file():
+                    queue.append(cand)
+    return tuple(out)
+
+
+BUNDLE_PY = _local_import_closure("server.py")
+BUNDLE_FILES = BUNDLE_PY + ("start.sh",)
+BUNDLE_STATIC_DIR = ROOT / "static"
 
 
 def bundle_files():
-    """安装包内容清单。
+    """安装包内容清单（根目录下的相对路径名）。
 
     state.json 含 Apple TV 配对凭据（mrp/companion/airplay），拿到就等于拿到遥控器。
     /bundle.tgz 在启用令牌时只发给持令牌者，所以可随包同步配对记录；
@@ -1690,19 +1597,28 @@ def bundle_files():
     return BUNDLE_FILES + (("state.json",) if AUTH_TOKEN else ())
 
 
-def bundle_signature():
-    """打包内容的文件签名（路径 + mtime + 大小），用于判断缓存是否过期"""
-    sig = []
+def bundle_paths():
+    """要打进 /bundle.tgz 的文件（绝对路径），单一清单。
+
+    bundle_signature() 与 build_bundle() 都只从这里取——两处各写一遍的后果是一个说
+    「内容没变」继续用旧缓存、另一个已经把新文件打进包，签名和字节从此对不上。
+    """
     for name in bundle_files():
         p = ROOT / name
         if p.is_file():
-            st = p.stat()
-            sig.append((name, st.st_mtime_ns, st.st_size))
-    static_dir = ROOT / "static"
-    for p in sorted(static_dir.rglob("*")):
-        if p.is_file():
-            st = p.stat()
-            sig.append((p.relative_to(ROOT).as_posix(), st.st_mtime_ns, st.st_size))
+            yield p
+    if BUNDLE_STATIC_DIR.is_dir():
+        for p in sorted(BUNDLE_STATIC_DIR.rglob("*")):
+            if p.is_file():
+                yield p
+
+
+def bundle_signature():
+    """打包内容的文件签名（路径 + mtime + 大小），用于判断缓存是否过期"""
+    sig = []
+    for p in bundle_paths():
+        st = p.stat()
+        sig.append((p.relative_to(ROOT).as_posix(), st.st_mtime_ns, st.st_size))
     return tuple(sig)
 
 
@@ -1728,14 +1644,8 @@ def build_bundle() -> bytes:
     import tarfile
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for name in bundle_files():
-            p = ROOT / name
-            if p.is_file():
-                tar.add(str(p), arcname="atv-remote/" + name)
-        static_dir = ROOT / "static"
-        for p in static_dir.rglob("*"):
-            if p.is_file():
-                tar.add(str(p), arcname="atv-remote/static/" + p.relative_to(static_dir).as_posix())
+        for p in bundle_paths():
+            tar.add(str(p), arcname="atv-remote/" + p.relative_to(ROOT).as_posix())
     return buf.getvalue()
 
 

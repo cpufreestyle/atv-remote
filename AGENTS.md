@@ -18,24 +18,28 @@ python3 server.py        # 主入口，启动 Web 服务（默认 0.0.0.0:8300�
 |------|------|
 | `server.py` | Web 服务器入口 |
 | `atv_backend.py` | 设备控制后端（adb / pyatv 协议适配） |
+| `atv_media.py` | 媒体状态解析的**纯函数**（dumpsys media_session / 音量两条读通道 / 按格夹取与 set 命令），由 `server.py` 再导出 |
 | `static/` | Web 前端（index.html, app.js, style.css） |
 | `android/` | Android WebView 客户端 |
 | `android-native/` | Android 原生客户端（Chaquopy） |
-| `android-native/app/src/main/python/` | ⚠️ `server.py` + `atv_backend.py` + `static/` 的**手工副本**，见下方「内嵌副本」 |
+| `android-native/app/src/main/python/` | 根目录的**构建产物副本**（`syncPythonSrc` 生成，gitignore；只有 `boot.py` 是手写入库的），见下方「内嵌副本」 |
 | `mac/` | Mac 原生 App（Swift + WebKit） |
 
 ## 构建路径
 
 - **Android APK**: `./android/build.sh`
 - **Android 原生 APK**: `android-native/gradlew assembleRelease`（Chaquopy 打包 Python 引擎）
-  - `syncPythonSrc` 把根目录的 `server.py` / `atv_backend.py` / `static/` 拷进
-    `app/src/main/python/`；除 `preBuild.dependsOn` 外，还必须给 `merge*PythonSources`
+  - `syncPythonSrc` 把根目录的 `server.py` / `atv_*.py` / `static/` 拷进
+    `app/src/main/python/`；新增根目录 `atv_*.py` 时这里要跟着加一行，
+    `tests/test_delivery_manifest.py` 会拿 `server.BUNDLE_PY` 逐条比对，漏了就红。
+    除 `preBuild.dependsOn` 外，还必须给 `merge*PythonSources`
     补 `dependsOn syncPythonSrc`，否则 Gradle 并行/增量构建会用空目录或旧副本 merge
     （「新后端 + 旧前端」幽灵就是这么回来的）
   - chaquo.com 不可达时的降级构建：`-PnoAppletv`（跳过 pyatv，Android TV 全功能保留）+ 
     `-PpypiMirror=<可达镜像>`（纯 Python 的 qrcode 走镜像装），验收口径：`app.imy` 里
-    `static/*` 与根目录逐字节一致、`*.pyc` 头部记录的源码尺寸与当前文件相符（SDK/JDK 路径均可由 `ANDROID_HOME` / `JAVA_HOME` 覆盖，
-  默认自动探测；版本号从根目录 `VERSION` 注入 manifest）
+    `static/*` 与根目录逐字节一致、`*.pyc` 头部记录的源码尺寸与当前文件相符
+  - SDK / JDK 路径可由 `ANDROID_HOME` / `JAVA_HOME` 覆盖，默认自动探测；
+    版本号从根目录 `VERSION` 注入 manifest
 - **Android 原生 APK**: `cd android-native && ./gradlew assembleRelease`
   （**必须用 wrapper**：已钉 Gradle 8.14.3，AGP 8.11 与系统里的 Gradle 9.x 不兼容）
 - **Mac App**: `mac/main.swift`，使用 `swiftc` 编译
@@ -107,10 +111,25 @@ python3 -c 'import server; import atv_backend' && node --check static/app.js && 
 ./sync-native.sh --check    # 只检查；./sync-native.sh 则同步并顺带跑一遍 check.sh
 ```
 
-- 覆盖 `android-native/app/src/main/python/` 下的 6 个副本（含 `manifest.webmanifest`——
-  它的 `start_url` 若写成相对路径，装到桌面后启动地址会解析到 `/static/` 而 404）
-- 验证内容：内嵌进 APK 的前后端与根目录**逐字节一致**。不一致就 `./sync-native.sh` 同步，
-  不要手工 `cp`（上一次手工同步把 `static/` 拷成了 `static/static/`，APK 里于是装了一份旧前端）。
+- 文件清单不手工维护：脚本向 `server.py` 现拿 `BUNDLE_PY`（server.py 的本地 import 闭包），
+  `static/` 整个目录照搬，与 Gradle 的 `syncPythonSrc` 一致。所以新增 `atv_*.py` 不需要来这里补一行
+- 双向检查：副本与根目录**逐字节一致**，且副本里不得留根目录已删的残留文件（Gradle Copy 只增不删，
+  残留会跟着进 APK）。同步模式会清掉残留。不一致就 `./sync-native.sh`，不要手工 `cp`
+  （上一次手工同步把 `static/` 拷成了 `static/static/`，APK 里于是装了一份旧前端）
+- `manifest.webmanifest` 的 `start_url` 若写成相对路径，装到桌面后启动地址会解析到 `/static/` 而 404
+
+### 结构守护（拆分 / 加端点时先看这两个）
+
+```bash
+python3 -m unittest tests.test_route_contract tests.test_delivery_manifest
+```
+
+- `test_route_contract`：32 条 `(path, method, status, 视图函数指纹)` 冻结基线，
+  拆文件时漏掉一个 GET 分支、把视图换成别的函数，都会在这里变红（改派发要同时改冻结表，
+  让 diff 里看得见）。
+- `test_delivery_manifest`：`server.BUNDLE_PY` 必须逐条出现在 `/bundle.tgz`、
+  `build.gradle` 的 `syncPythonSrc`、`sync-native.sh` 三处清单里，漏一种交付形态就是
+  那台设备上 `ImportError` 起不来。
 
 ### HTTP 行为回归测试
 
@@ -136,11 +155,15 @@ python3 -m unittest discover -s tests
 
 ## 关键约定
 
-- **改 `server.py` / `atv_backend.py` / `static/*` 后跑 `./sync-native.sh`**（不跑构建时；
-  跑 `./gradlew` 构建会自动同步）：
-  `android-native/app/src/main/python/` 下是这些文件的独立副本（Chaquopy 只编该目录里现成的东西，
-  build.gradle 没有 copy 任务）。历史上漂移过一次，结果是「新后端 + 旧前端」的 APK 安静地发出去，
-  而且旧版还多拷了一层 `static/static/`。`./check.sh` 会用 `diff -q` 挡住这种漂移，别绕过它。
+- **改 `server.py` / `atv_*.py` / `static/*` 后跑 `./sync-native.sh`**（不跑构建时；
+  跑 `./gradlew` 构建会由 `syncPythonSrc` 自动同步）：
+  `android-native/app/src/main/python/` 下是构建产物副本（Chaquopy 只编该目录里现成的东西）。
+  历史上漂移过一次，结果是「新后端 + 旧前端」的 APK 安静地发出去，而且旧版还多拷了一层
+  `static/static/`。`./check.sh` 会用 `diff -q` 双向挡住这种漂移，别绕过它。
+- **外提纯函数时清单跟着 import 走**：`server.BUNDLE_PY` 是 server.py 的本地 import 闭包，
+  `/bundle.tgz` 与 `sync-native.sh` 都从它取；只有 `build.gradle` 的 `syncPythonSrc` 是逐条列举，
+  新增 `atv_*.py` 记得在那里加一行（`tests/test_delivery_manifest.py` 会挡住漏加的）。
+  搬出去的函数用 `from atv_x import ...` 再导出，`server.函数名` 保持可用（tests/ 全走这个入口）。
 - **adb 调用很贵**：`adb.devices()` / `adb.version()` 走缓存（TTL 1.5s / 只查一次）。
   连接、断开、命令超时、设备掉线时必须调用 `adb.invalidate_devices()` 主动失效缓存，
   否则会读到陈旧的在线状态。新增任何改变设备在线状态的操作都要记得失效缓存。

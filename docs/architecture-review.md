@@ -48,15 +48,27 @@
 | `Host: [::1]` / 无端口主机名 | `http://[::1]/bundle.tgz`（指向 80） | `http://[::1]:8300/bundle.tgz` |
 | 功能未回退 | — | `/api/status` 200；Android 设备 `state: device` 在线；`appletv.available: true`、已配对 1 台（重启后状态文件完好） |
 
-## 2. 仍未解决（按优先级，含证据与验证口径）
+### 1.2 结构与交付面（2026-10-13，行为不变的重构第一轮）
+
+| 项 | 结论 |
+|----|------|
+| 模块边界 | 新增 `atv_media.py`（167 行）：`parse_media_session` / `parse_media_volume` / `parse_dumpsys_audio` / `clamp_volume_level` / `volume_set_cmd` / `_vol_finite_int` 与 `MEDIA_STATE_NAMES`、`STREAM_MUSIC`、`VOLUME_MAX_FALLBACK`。`server.py` 2648 → 2558 行；TTL 缓存与 `now_playing`/`volume`/`volume_set` 留在原处（它们读 adb 与全局，搬走会把「改状态要失效缓存」这条红线藏起来） |
+| 再导出 | `server.parse_media_session` 等既有引用点（含 8 个测试文件的 `server.X`）继续可用；调用方在 `server.py` 里，所以 `server.clamp_volume_level` 仍可被 monkeypatch，挂点面没有缩小 |
+| 挂点约束 | 实测统计：测试重绑的 `server` 名字共 16 个（`adb` 42 处、`AUTH_TOKEN` 10 处、`state`/`_screen_cache`/`wol_read_arp`/`wol_send`/`_macro_worker`…）。后续外提必须以这份名单为硬约束 |
+| 交付清单 | `bundle_files()` 不再硬编文件名：`BUNDLE_PY` 由 server.py 的 import 闭包在导入时求出，`/bundle.tgz` 与 `sync-native.sh` 都从它取；`bundle_signature()` 与 `build_bundle()` 改为共用 `bundle_paths()`（原先各写一遍 static 遍历，签名与包内容可以不一致） |
+| 副本检查 | `sync-native.sh --check` 改为**双向**：既比根目录→副本逐字节一致，也报「副本里有、根目录已删」的残留（Gradle Copy 只增不删，残留会跟着进 APK）；实测清掉了 `…/python/static/icon-maskable.svg`。`.gitignore` 从逐个文件名改为 `*.py` + `!boot.py`，新增模块不会再以未跟踪文件身份被顺手提交 |
+| 新守护 | `tests/test_route_contract.py`（I14，32 条派发三元组，改动做过红绿）、`tests/test_delivery_manifest.py`（I13，三处交付清单对账，15 例）。基线 603 → **624**，`./check.sh` 全绿（系统 python3 与 .venv 两个分支） |
+
+## 2. 风险台账（按优先级；2026-10-13 复核过状态）
 
 | # | 严重度 | 置信度 | 问题 | 为什么这轮没动 | 怎么验收 |
 |---|---|---|---|---|---|
-| O1 | **High** | 高 | **没有单一事实来源**：`server.py`+`static/` 在仓库里有 5 份副本（根目录、`android-native/…/python/`、Termux 运行目录 `termux-setup.sh:25`、`/bundle.tgz`、以及 APK 内 `app.imy`）。F9 的 `diff` 只能**事后发现**漂移，不能消除 | 真正的解法是 Gradle `Copy` 任务或符号链接让 `src/main/python` 由根目录**生成**，但这要跑一次 `gradle assembleDebug` 才能确认没把 Chaquopy 的源集搞坏；本轮无 SDK 构建验证，不敢盲改 | `build.gradle` 里出现从根目录生成 `src/main/python` 的任务，且 `git ls-files` 不再跟踪那 5 个副本；随后 `gradle assembleDebug` 成功、APK 内 `static/app.js` 与根目录 md5 相同 |
+| O10 | ~~High~~ **已解决**（2026-10-13 07:36 重启后复核） | 高（实测） | **运行中的实例与工作树不一致**：LaunchAgent 那个进程起于 `2026-10-08 08:28:47`（PID 3481），内存里还是外提前的 `server.py`；而磁盘上的 `server.py` 已经 `from atv_media import ...`。它仍然按旧清单打包，`GET http://127.0.0.1:8300/bundle.tgz` 的成员实测是 `server.py / atv_backend.py / start.sh / static/*` —— **没有 atv_media.py**。也就是说此刻任何设备拉这个包，都会 `ImportError` 起不来 | 重启 LaunchAgent 是服务动作，按约定要先征询；且本轮拆分尚未做完 **实测已达成**：`launchctl kickstart -k gui/$UID/com.atv.remote` 后新进程 PID 1165（10-13 07:36:55），`GET /bundle.tgz` 成员 14 个、含 `atv-remote/atv_media.py`、不含 `state.json`，且包内 `server.py` 与磁盘 sha256 相同并含 `from atv_media import`。Termux 侧真机解包启动仍未做 |
+| O1 | ~~High~~ **已解决**（2026-10-13 复核） | 高 | 原先「没有单一事实来源：5 份副本」 | `git ls-files android-native/app/src/main/python` 现在只剩 **boot.py**；副本由 `syncPythonSrc`（Gradle Copy）生成并 gitignore。本轮又把这层保证往前推一步：清单不再手工维护，而是 `server.BUNDLE_PY`（server.py 的 import 闭包）单点决定 `/bundle.tgz` 与 `sync-native.sh` 的内容 | 验收口径本身已达成；剩下的「APK 内 app.imy 与根目录 md5 相同」仍需一次真实构建 |
+| O4 | ~~Medium~~ **已解决**（2026-10-13 复核） | 高 | 原先「无 CI、check.sh 全靠人跑」 | `.github/workflows/check.yml` 已存在，push / PR 上跑 `./check.sh` | 一次 PR 上工作流自动跑并阻断失败（已配，缺一次真实 PR 的运行记录） |
+| O5 | ~~Medium~~ **降级为 Low**（2026-10-13 复核） | 高 | 原先写「仓库里 checked-in 的过期 APK」——不成立：`git ls-files` 里没有任何 `.apk` / `app.imy`。剩下的事实是**本机磁盘**上还躺着 2026-09-28 构建的 `ATVRemote-native.apk`（28 MB，根目录另有一份 09-25 的），内容必然比当前前端旧 | 不是我删得掉的产物（也可能你还在用）；刷新要一次真实构建 | 要么重新构建，要么把这两份旧 APK 移出仓库目录；分发前一律以 `./android-native/gradlew assembleRelease` 的产物为准 |
 | O2 | **High** | 高 | **部署形态默认无鉴权**：默认 `--host 0.0.0.0` 且 `AUTH_TOKEN` 为空 → 同网段任何人都能对你的电视发 `input text` / `monkey`。F1 只堵住了凭据外泄，没堵住「直接遥控」 | 改成默认只绑回环、或首启自动生成令牌，是**产品决策**（会改变「手机打开就能用」的体验），需你定 | 见 §4 的两个选项 |
 | O3 | Medium | 高 | `atv_backend._call()` 持 `self._lock`（RLock）跨越 `run(coro, timeout=12)` → 电视休眠时一条命令能把后续所有按键堵最多 12s。这是「延迟」这条质量属性上的结构性瓶颈（该目标写在 commit `3b2fb26` 的标题里） | 放宽锁要先确认 pyatv 的 `interface.AppleTV` 是否可并发调用；没有官方结论，盲改可能把「慢」换成「坏」 | 单命令在电视休眠时不阻塞第二条按键（用计时测试固定），且连接/配对/关闭路径无竞态 |
-| O4 | Medium | 高 | **无 CI、无提交钩子**：`check.sh` 全靠人跑，`.github` 不存在。本轮新增的行为测试因此随时可能被跳过 | 属于工程外部动作（要建工作流、可能拖慢你现有节奏），未擅自加 | 一次 PR 上 `check.sh` 自动跑并阻断失败 |
-| O5 | Medium | 中 | 仓库里 checked-in 的 `android-native/ATVRemote-native.apk` 内含**过期前端**（`assets/chaquopy/app.imy` 里 `static/app.js` 19751 B 旧 + `static/static/app.js` 25522 B 新），而 `boot.py` 不设 `ATV_STATIC` → 直接装这个 APK 的用户拿到的是旧界面 | 需要重新构建 APK 才能刷新，同上无构建验证 | 重新构建并 `unzip -p … app.imy` 比对 md5 |
 | O6 | Low | 高 | 构建不可移植：`android/build.sh` 硬编码 `$HOME/Library/Android/sdk`、`build-tools/35.0.0`、`brew --prefix openjdk@17`；`make_icon.swift:88` 硬编码 `/Users/a1-6/atv-remote/mac`；`android/res/values/strings.xml:4` 把 `http://192.168.1.104:8300` 烧进 APK；端口 8300 散在 8 处；`README:32` `-target arm64-apple-macos26.0` 与 `mac/Info.plist` 的 `LSMinimumSystemVersion 12.0` 互相矛盾 | 纯本机可用，换机器才痛；改动面广、收益偏运维 | 换一台干净机器按 README 能走完三条构建路径 |
 | O7 | Low | 中 | 前端触摸坐标：`status.screen` 默认 1920×1080，只在 `!isApple && s.info.w` 时更新 → 非 1080p 设备（本机实测接的是 4128×2208 的 Quest 3）点按会偏移 | 未修：需要真机验证映射，改错比不改更糟 | 在非 1080p 设备上点按命中 |
 | O8 | Low | 高 | 前端把用户输入的文本回显进 `#log` → 在电视上输密码时密码留在手机屏幕上；`index.html` 无 CSP | 属体验取舍（日志有用），未擅自去掉 | 敏感输入不回显或可开关 |

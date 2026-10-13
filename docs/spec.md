@@ -4,7 +4,7 @@
 > 事实优先级：server.py / atv_backend.py / static/ 源码 > tests/ > 本文件 > README.md（仅作介绍）。
 > 任何行为变更必须同步更新本文件与 docs/harness.md；docs/harness.md 记录最近一次核验结论。
 >
-> 最近核验：2026-10-07（HEAD 69dca04）
+> 最近核验：2026-10-13（工作树在 fd79857 之上：新增 atv_media.py 与 I13/I14 两条不变式）
 
 ## 1. 目标与范围
 
@@ -14,7 +14,8 @@ Android TV（adb）与 Apple TV（pyatv / MediaRemote 协议，与 iOS「遥控�
 
 - 运行形态：python3 server.py，默认绑 0.0.0.0:8300，LaunchAgent 默认 --no-token（不鉴权）。
 - 代码边界：server.py（HTTP 层 + adb + 设备路由）、atv_backend.py（pyatv 封装）、
-  static/（index.html / app.js / style.css / sw.js）、mac/、android/、android-native/。
+  atv_media.py（媒体状态解析的纯函数）、static/（index.html / app.js / style.css / sw.js）、
+  mac/、android/、android-native/。
 - 非目标：多用户、公网服务、中心化配置。设备管理是「当前设备」单槽切换。
 
 ### 1.1 关键约束（摘自 AGENTS.md，改动前必读）
@@ -26,7 +27,10 @@ Android TV（adb）与 Apple TV（pyatv / MediaRemote 协议，与 iOS「遥控�
 - adb 调用有缓存（devices TTL 1.5s / version 只查一次）；任何改变设备在线状态的操作
   必须调用 adb.invalidate_devices()。
 - state 操作持 state_lock（RLock）；save_state() 走临时文件 + os.replace 原子写。
-- 改 server.py / atv_backend.py / static/* 后跑 ./sync-native.sh（内嵌副本一致性）。
+- 改 server.py / atv_backend.py / atv_media.py / static/* 后跑 ./sync-native.sh（内嵌副本一致性）。
+- 外提新模块时**不要手工往交付清单补文件名**：server.BUNDLE_PY 是 server.py 的本地 import
+  闭包，/bundle.tgz 由它生成，sync-native.sh 也从它现拿；只有 build.gradle 的 syncPythonSrc
+  是逐条列举的，漏一行就是 APK 里 ImportError。
 
 ## 2. 外部依赖契约
 
@@ -129,9 +133,11 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 | I7 | 手机免令牌：LaunchAgent plist 的 ProgramArguments 含 --no-token | tests/test_launchagent.py |
 | I8 | 前后端常量同源：宏 FE 常量与 server.py 逐项相等 | tests/test_macro_dryrun.py |
 | I9 | 中文必须经 ADBKeyboard：ASCII 命令打不出中文，IME 三态中只有 current 可输入 | tests/test_atv_fallback.py、tests/test_android_engine.py |
-| I10 | 内嵌副本零漂移：android-native 下 6 个副本与根目录逐字节一致 | ./sync-native.sh --check |
+| I10 | 内嵌副本零漂移：android-native 下的每个副本与根目录逐字节一致，且副本里不得留根目录已删的残留文件（Gradle Copy 只增不删） | ./sync-native.sh --check |
 | I11 | 图标顺序：index.html 中 PNG 在 SVG 之前，且无 data-URI 占位图标 | tests/test_icons.py |
 | I12 | 前端渲染用 textContent：设备名与 IP 不得经 innerHTML 渲染 | tests/test_command_palette.py |
+| I13 | 交付清单跟着 import 走：server.BUNDLE_PY（server.py 的本地 import 闭包）必须逐条出现在 /bundle.tgz、build.gradle 的 syncPythonSrc、sync-native.sh 三处；新增 atv_*.py 漏任何一处即 ImportError | tests/test_delivery_manifest.py |
+| I14 | 派发面冻结：32 条 (path, method, status, 视图函数指纹) 与冻结基线逐条相等，GET/HEAD 共用一条派发链，两条链都保留 404 兜底 | tests/test_route_contract.py |
 
 ## 5. 验证矩阵（spec 与 harness 对应）
 
@@ -147,6 +153,8 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 | I9 | 同上 | tests/test_atv_fallback.py |
 | I10 | ./sync-native.sh --check | 无 |
 | I11、I12 | python3 -m unittest discover -s tests | tests/test_icons.py、tests/test_command_palette.py |
+| I13 | 同上 | tests/test_delivery_manifest.py |
+| I14 | 同上 | tests/test_route_contract.py |
 | 前端行为 | node harness，由 Python 测试经 subprocess 驱动 | 20 个 tests/*_harness.js |
 
 ### 5.1 一键验证基线
@@ -154,7 +162,7 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 check.sh 依序执行：import server 与 atv_backend、node --check static/app.js、
 node --check static/sw.js、python3 -m unittest discover -s tests、
 ./sync-native.sh --check，有 .venv 时在 pyatv 分支复跑后两项。
-当前基线：603 项单测通过，skipped 11 项。
+当前基线：624 项单测通过，系统 python3 下 skipped 11 项（.venv 下 7 项）。
 
 ## 6. 已知缺口（尚未由测试覆盖，后续 spec 候选）
 
