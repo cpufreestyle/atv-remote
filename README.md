@@ -364,7 +364,18 @@ POST /api/cmd       {"type":"macro","name":"观影模式","steps":[...]}   # 一
 POST /api/cmd       {"type":"macro","action":"cancel"}                 # 取消执行中的宏
 GET  /api/macros                          # 预置宏列表 + 执行状态
 GET  /api/setup                           # 令牌与手机接入地址（渲染二维码用）
+POST /api/disconnect  {}                  # 断开当前设备（Android / Apple TV 通用）
+POST /api/forget      {"target":"192.168.1.50:5555"}   # 忘记 Android 设备
+POST /api/switch      {"type":"android"|"appletv"}    # 切换当前控制的设备
+POST /api/android/scan  {}                # Android 无线调试扫描
+POST /api/android/pair  {"host":"192.168.1.50","port":"5555"}   # Android 无线调试配对
+POST /api/atv/disconnect  {}              # 断开 Apple TV
+POST /api/atv/forget      {"id":"..."}    # 忘记 Apple TV（清除配对凭据）
+POST /api/volume     {"level":8}         # 按格精确设置音量（读不到 max 时兜底 15）
+POST /api/wol        {"mac":"AA:BB:..","ip":"..."}     # 远程开机（Wake-on-LAN）配置
 ```
+
+完整端点表（含鉴权、失败码与 `Content-Length` 约定）见 [docs/spec.md](docs/spec.md)。
 
 ## 常见问题
 

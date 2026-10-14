@@ -244,5 +244,24 @@ class SpecContractTest(unittest.TestCase):
                          "spec.md 写了不存在的端点：%s" % ", ".join(sorted(extra)))
 
 
+class ReadmeEndpointTest(unittest.TestCase):
+    """README 的 curl 清单不能漏端点，否则用户照着抄会漏掉半个遥控器。"""
+
+    def test_readme_lists_every_post_route(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        start = readme.index("## HTTP API")
+        end = readme.index("## 常见问题")
+        listed = set(re.findall(r"(?:GET|POST)\s+(/api/[a-z0-9/._]+)", readme[start:end]))
+        missing = set(server.ROUTES) - listed
+        self.assertFalse(missing,
+                         "README 忽略了这些写端点：%s" % ", ".join(sorted(missing)))
+
+    def test_readme_points_to_full_contract(self):
+        """README 是常用子集，完整契约在 spec.md，两处都要能找到。"""
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("docs/spec.md", readme)
+        self.assertTrue((ROOT / "docs/spec.md").is_file())
+
+
 if __name__ == "__main__":
     unittest.main()

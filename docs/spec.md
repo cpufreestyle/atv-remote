@@ -4,7 +4,7 @@
 > 事实优先级：server.py / atv_backend.py / static/ 源码 > tests/ > 本文件 > README.md（仅作介绍）。
 > 任何行为变更必须同步更新本文件与 docs/harness.md；docs/harness.md 记录最近一次核验结论。
 >
-> 最近核验：2026-10-13（HEAD 2dc3ca3；I15 已收敛，见 harness.md 第 4.1 节）
+> 最近核验：2026-10-14（HEAD b07fbf8 之上：README 端点清单补齐，D2 已收敛）
 
 ## 1. 目标与范围
 
@@ -164,7 +164,7 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 check.sh 依序执行：import server 与 atv_backend、node --check static/app.js、
 node --check static/sw.js、python3 -m unittest discover -s tests、
 ./sync-native.sh --check，有 .venv 时在 pyatv 分支复跑后两项。
-当前基线：629 项单测通过，系统 python3 下 skipped 11 项（.venv 下 7 项）。
+当前基线：631 项单测通过，系统 python3 下 skipped 11 项（.venv 下 7 项）。
 
 ## 6. 已知缺口（尚未由测试覆盖，后续 spec 候选）
 

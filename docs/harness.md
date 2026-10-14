@@ -12,7 +12,7 @@
 python3 -c 'import server, atv_backend'   # 后端导入自检
 node --check static/app.js          # 前端语法
 node --check static/sw.js           # Service Worker 语法
-python3 -m unittest discover -s tests    # 行为回归（629 项，skipped 11）
+python3 -m unittest discover -s tests    # 行为回归（631 项，skipped 11）
 ./sync-native.sh --check            # 内嵌副本逐字节比对
 ./sync-native.sh                    # 漂移时同步，并顺带跑一遍 check.sh
 .venv/bin/python -m unittest discover -s tests   # pyatv 分支复跑
@@ -25,7 +25,7 @@ python3 -m unittest discover -s tests    # 行为回归（629 项，skipped 11�
 | 类别 | 数量 | 说明 |
 |------|------|------|
 | Python 单测文件 | 40 | tests/test_*.py |
-| Python 用例总数 | 629 | 其中 skipped 11（依赖 pyatv 或 Pillow）；.venv 下 7 |
+| Python 用例总数 | 631 | 其中 skipped 11（依赖 pyatv 或 Pillow）；.venv 下 7 |
 | node harness | 20 | tests/*_harness.js，与宿主测试一一对应 |
 | 图标/规格守护 | 1 | tests/test_icons.py 另守护 assets/ 与桌面脚本 |
 | 结构守护 | 2 | tests/test_route_contract.py（I14 派发面冻结）、tests/test_delivery_manifest.py（I13 三处交付清单对账） |
@@ -124,7 +124,7 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | id | 严重度 | 状态 | 证据或说明 |
 |----|--------|------|-------------|
 | no-agent-routing-instructions | High | 已解决 | AGENTS.md 覆盖启动命令、源码结构、构建路径、安全约束 |
-| no-automated-validation | Medium | 已解决 | check.sh 与 629 项单测；本文件与 spec.md 固化为契约，并有 SpecContractTest 防漂移 |
+| no-automated-validation | Medium | 已解决 | check.sh 与 631 项单测；本文件与 spec.md 固化为契约，并有 SpecContractTest 防漂移 |
 | untracked-native-module | Low | 已解决 | android-native/ 已入库，README 有独立章节 |
 
 ## 6. Drift 台账（spec 与代码的偏差）
@@ -132,7 +132,7 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | 编号 | 偏差 | 状态 | 处理 |
 |------|------|------|------|
 | D1 | check.sh 全量跑通耗时约 30 秒，单次 exec 容易被超时截断 | 已知 | 分段复跑：先 python3 分支，再 .venv 分支 |
-| D2 | README 的端点清单只列常用子集，不是完整表 | 已接受 | 完整契约以 spec.md 第 3 节为准 |
+| D2 | README 的端点清单曝了 9 个写端点（android/scan、android/pair、disconnect、forget、switch、atv/disconnect、atv/forget、volume、wol） | **已收敛** | 2026-10-14 补齐 README 并加 `tests/test_icons.py::ReadmeEndpointTest` 对账（`server.ROUTES` 必须全部出现）；README 改指向 spec.md |
 
 ## 7. 下一步
 
