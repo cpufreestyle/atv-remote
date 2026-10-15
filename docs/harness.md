@@ -105,6 +105,20 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
   .venv：9 tests OK（全跑）。即无 pyatv 时这五条也有真覆盖 |
 | 全量回归 | 系统 python3 629 passed / skipped 11；.venv 629 passed / skipped 7（均比收敛前 +5） |
 
+### 4.4 2026-10-15（GitHub 推送被网络阻断，已落到台账）
+
+| 项 | 结论 |
+|----|------|
+| 本地 HEAD | `4ff76ee`（工作区干净） |
+| Gitee | `4ff76ee` 已推送成功，与本地一致 |
+| GitHub | **推送失败**：`LibreSSL SSL_connect: SSL_ERROR_SYSCALL`，https 与 ssh(443) 均不可达 |
+| 诊断 | `dig github.com` 返回 `198.18.0.73`（Clash/Surge 类客户端的 fake-ip 段）；
+  TCP 能 ping 通（0.35ms）但 TLS 握手被拦。本圸 socks 代理端口 1082 有监听但
+  `SOCKS error 1`（代理本身未上线/未选节点）。即网络环境问题，非代码问题 |
+| 已尝试 | 直连 / `--resolve` 固定真实 IP / `sslVerify=false` / HTTP1.1 / socks4+socks5h /
+  扫描 7 个常见代理端口 / 等待重试（超过 18 小时、多轮）——均失败 |
+| 待办 | 网络恢复后执行 `git push origin main`（本地已有完整提交，无需其余操作） |
+
 ### 4.2 2026-10-07
 
 | 项 | 结论 |
