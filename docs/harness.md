@@ -25,7 +25,7 @@ python3 -m unittest discover -s tests    # 行为回归（638 项，skipped 11�
 | 类别 | 数量 | 说明 |
 |------|------|------|
 | Python 单测文件 | 40 | tests/test_*.py |
-| Python 用例总数 | 638 | 其中 skipped 11（依赖 pyatv 或 Pillow）；.venv 下 7 |
+| Python 用例总数 | 642 | 其中 skipped 12（依赖 pyatv 或 Pillow）；.venv 下 7 |
 | node harness | 20 | tests/*_harness.js，与宿主测试一一对应 |
 | 图标/规格守护 | 1 | tests/test_icons.py 另守护 assets/ 与桌面脚本 |
 | 结构守护 | 2 | tests/test_route_contract.py（I14 派发面冻结）、tests/test_delivery_manifest.py（I13 三处交付清单对账） |
@@ -150,6 +150,23 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 2. **`nth-of-type` 数序是陷阱**：卡片增删会让序号静默错位。归属要么写显式 id，要么用 `:has()` 这类结构选择器。
 
 
+### 4.6 2026-10-15（反编译 tvremoted → I18：键盘聚焦改事件驱动）
+
+| 项 | 结论 |
+|----|------|
+| 参照物 | `/usr/libexec/tvremoted`（macOS Apple TV 遥控系统守护进程，REA 静态分析） |
+| 关键发现 | 原生 `TVRXKeyboardControllerDelegate` 全是推送：beganTextEditing / didUpdateAttributes / didUpdateText / endedTextEditing，没有任何轮询 |
+| 对应 pyatv | `KeyboardListener.focusstate_update(old, new)` + `atv.keyboard.listener = obj` |
+| 改动 | `atv_backend.py` 新增 `KeyboardFocusListener`，connect 时注册、close 时反注册并清缓存；`keyboard_focus()` 推送值优先，轮询只在无推送值时兜底 |
+| 为什么不全推送 | 监听器只能在连接建立后注册（atv.keyboard 此时才存在），断线重连与电视侧静默变化都可能丢推送，所以保留轮询兜底 |
+| 新测试 | `tests/test_atv_fastfail.py::KeyboardFocusPushTest` 4 例（推送置值 / 短路轮询 / 回调异常不外泄 / 断开清缓存）；无 pyatv 环境整类跳过 |
+| 双环境 | .venv 642 passed / skipped 7；系统 python3 638 passed / skipped 12（推送链路 4 例随 pyatv 跳过） |
+| 反编译边界 | 仅静态分析系统自带二进制，用于提炼协议语义与架构模式；未破解授权、未复制代码进生产 |
+
+反编译还看到但暂未落地的（记录备查）：`TVRCKeyboardAttributes`（电视端输入框属性，可驱动 inputmode/掩码）、
+`throttleSeconds`（授权挑战节流）、`enableTVRemoteOnLockscreen`（锁屏遥控）。前两条依赖 pyatv 暴露对应能力，
+第三条是 macOS 侧配置而非遥控协议，均需另行评估。
+
 ## 5. Qoder better-harness 台账
 
 来源：.qoder/better-harness/2026-08-26/220155-atv-remote/findings.json
@@ -158,7 +175,7 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | id | 严重度 | 状态 | 证据或说明 |
 |----|--------|------|-------------|
 | no-agent-routing-instructions | High | 已解决 | AGENTS.md 覆盖启动命令、源码结构、构建路径、安全约束 |
-| no-automated-validation | Medium | 已解决 | check.sh 与 638 项单测；本文件与 spec.md 固化为契约，并有 SpecContractTest 防漂移 |
+| no-automated-validation | Medium | 已解决 | check.sh 与 642 项单测；本文件与 spec.md 固化为契约，并有 SpecContractTest 防漂移 |
 | untracked-native-module | Low | 已解决 | android-native/ 已入库，README 有独立章节 |
 
 ## 6. Drift 台账（spec 与代码的偏差）

@@ -4,7 +4,7 @@
 > 事实优先级：server.py / atv_backend.py / static/ 源码 > tests/ > 本文件 > README.md（仅作介绍）。
 > 任何行为变更必须同步更新本文件与 docs/harness.md；docs/harness.md 记录最近一次核验结论。
 >
-> 最近核验：2026-10-15（布局优化：I16 双列归属 + I17 首次进入频率折叠）
+> 最近核验：2026-10-15（反编译 tvremoted 得到 I18：Apple TV 键盘聚焦改事件驱动）
 
 ## 1. 目标与范围
 
@@ -141,6 +141,7 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 | I15 | pyatv 异常文案必须本地化：auth/credentials → 「需要配对」，keyboard → 「聚焦输入框」，认不出的原样透出；该映射不依赖 pyatv 安装（无 pyatv 时 `AppleTvManager._friendly` 整体不可达，故真身在模块级 `friendly_error()`） | tests/test_atv_fastfail.py::FriendlyErrorTest |
 | I16 | 宽屏双列布局有明确归属：主遥控卡、物理按键卡与正在播放（npCard）跨两列，高频卡归左列，低频与配置卡（含手机安装）归右列，无一卡落 auto-flow | tests/test_icons.py::WideLayoutTest |
 | I17 | 首次进入按使用频率给默认折叠（收起远程开机 / 调用时间线 / 一键宏 / 睡眠定时）；存过记录则完全以用户为准，「全部展开」也是记录 | tests/test_collapse.py::FirstRunDefaultTest |
+| I18 | Apple TV 键盘聚焦态事件驱动：连接建立即注册 pyatv KeyboardListener，收到 focusstate_update 推送即更新缓存，轮询只在没有推送值时兜底；断开必须反注册并清缓存，旧推送值不得残留到新连接 | tests/test_atv_fastfail.py::KeyboardFocusPushTest |
 
 ## 5. 验证矩阵（spec 与 harness 对应）
 
@@ -161,6 +162,7 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 | I15 | 同上 | tests/test_atv_fastfail.py::FriendlyErrorTest |
 | I16 | 同上 | tests/test_icons.py（契约与结构守护） |
 | I17 | 同上 | tests/test_collapse.py::FirstRunDefaultTest |
+| I18 | 同上 | tests/test_atv_fastfail.py::KeyboardFocusPushTest |
 | 前端行为 | node harness，由 Python 测试经 subprocess 驱动 | 20 个 tests/*_harness.js |
 
 ### 5.1 一键验证基线
@@ -168,7 +170,7 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 check.sh 依序执行：import server 与 atv_backend、node --check static/app.js、
 node --check static/sw.js、python3 -m unittest discover -s tests、
 ./sync-native.sh --check，有 .venv 时在 pyatv 分支复跑后两项。
-当前基线：638 项单测通过，系统 python3 下 skipped 11 项（.venv 下 7 项）。
+当前基线：642 项单测通过（.venv），系统 python3 下 skipped 12 项。
 
 ## 6. 已知缺口（尚未由测试覆盖，后续 spec 候选）
 

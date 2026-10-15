@@ -113,5 +113,53 @@ class FriendlyErrorTest(unittest.TestCase):
         self.assertEqual(AppleTvManager._friendly("auth x"), friendly_error("auth x"))
 
 
+class KeyboardFocusPushTest(unittest.TestCase):
+    """Apple TV 键盘聚焦态从轮询改为推送置值（不依赖 pyatv，两种环境都跑）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        if pyatv is None:
+            raise unittest.SkipTest("pyatv 未安装（降级占位类没有事件循环，推送链路无从验证）")
+        from atv_backend import AppleTvManager, KeyboardFocusListener
+        cls.mgr = AppleTvManager()
+        cls.Listener = KeyboardFocusListener
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.mgr.loop.call_soon_threadsafe(cls.mgr.loop.stop)
+
+    def _state(self, name):
+        """拼一个像 pyatv const.KeyboardFocusState 的对象。"""
+        return type("S", (), {"name": name})()
+
+    def test_push_updates_cached_state(self):
+        got = []
+        lst = self.Listener(lambda n: got.append(n))
+        lst.focusstate_update(None, self._state("Focused"))
+        self.assertEqual(got, ["Focused"])
+        self.mgr._on_kb_focus_push("Focused")
+        self.assertEqual(self.mgr.keyboard_focus(), "Focused")
+
+    def test_pushed_value_skips_poll(self):
+        """有推送值时不往电视发命令：这才是改推送的意义。"""
+        self.mgr._on_kb_focus_push("Unfocused")
+        # 这时 _atv 是 None，轮询分支会抛异常被吞成 Unknown——
+        # 如果返回 Unfocused 就说明走的是推送分支。
+        self.assertEqual(self.mgr.keyboard_focus(), "Unfocused")
+
+    def test_push_exception_does_not_escape(self):
+        """回调里抛异常会拆 pyatv 的事件循环，必须吞掉。"""
+        def boom(_n):
+            raise RuntimeError("boom")
+        lst = self.Listener(boom)
+        lst.focusstate_update(None, self._state("Focused"))  # 不得抛
+
+    def test_disconnect_clears_pushed_state(self):
+        """断开后旧推送值不得残留：否则新连接会继续显示上一次的状态。"""
+        self.mgr._on_kb_focus_push("Focused")
+        self.mgr._unregister_keyboard_listener_locked()
+        self.assertIsNone(self.mgr._kb_focus)
+
+
 if __name__ == "__main__":
     unittest.main()

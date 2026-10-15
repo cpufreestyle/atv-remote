@@ -125,6 +125,33 @@ def _perf(label, ms, err=""):
             pass
 
 
+
+class KeyboardFocusListener:  # pylint: disable=too-few-public-methods
+    """pyatv 键盘聚焦状态推送的接口实现。
+
+    参考来源：反编译 macOS 系统 /usr/libexec/tvremoted（Apple TV 遥控的系统守护进程）得到的
+    TVRXKeyboardControllerDelegate 协议——原生实现里聚焦变化全部是推送（beganTextEditing /
+    didUpdateAttributes / didUpdateText / endedTextEditing），没有任何轮询。
+    pyatv 对应的就是 KeyboardListener.focusstate_update。
+
+    为什么不纯推送：监听器注册在连接建立时才能做（atv.keyboard 此时才存在），
+    而断线重连、电视侧静默变化都可能让推送丢失。所以是“推送置值 + 轮询抵底”：
+    推送到就更新缓存，轮询只在缓存过期时才真去问一次电视。
+    """
+
+    def __init__(self, on_update):
+        self._on_update = on_update
+
+    def focusstate_update(self, old_state, new_state) -> None:
+        """pyatv 的回调：聚焦状态变化时立即通知。"""
+        try:
+            name = new_state.name if hasattr(new_state, "name") else str(new_state)
+            self._on_update(name)
+        except Exception:  # pylint: disable=broad-except
+            # 推送回调里抛异常会拆 pyatv 的事件循环，必须吞掉
+            pass
+
+
 class AppleTvManager:
     """pyatv 的线程安全封装：后台 asyncio loop，HTTP 线程同步调用"""
 
@@ -139,6 +166,8 @@ class AppleTvManager:
         self._pair_dev = None       # 正在配对的设备条目
         self._lock = threading.RLock()
         self._last_timeout = 0.0    # 上次超时的时刻（0 = 很久以前 / 无）
+        self._kb_focus = None       # 推送置值的聚焦态（None = 还没收到过）
+        self._kb_listener = None    # 已注册的 KeyboardFocusListener
 
     # ---------------- loop 基础 ----------------
     def _run(self):
@@ -232,6 +261,7 @@ class AppleTvManager:
                              else KEY_MAP_COMPANION)
             self._atv = self.run(self._connect_coro(cfg), label="connect")
             self._dev = dict(dev)
+            self._register_keyboard_listener_locked()
 
     def disconnect(self):
         with self._lock:
@@ -239,6 +269,8 @@ class AppleTvManager:
 
     def _close_locked(self):
         if self._atv is not None:
+            # 先拆推送监听器再关连接：关闭过程中 pyatv 仍然可能往回调里写值
+            self._unregister_keyboard_listener_locked()
             try:
                 self.run(self._atv.close(), timeout=5, label="close")
             except Exception:
@@ -396,15 +428,62 @@ class AppleTvManager:
             raise AppleTvError("当前没有可获取的画面（无内容播放或已休眠）")
         return info.bytes, info.mimetype or "image/png"
 
+
+    def _register_keyboard_listener_locked(self):
+        """连接建立后把聚焦推送接进来（名字带 locked 是因为只能在持锁时调）。
+
+        不支持推送的协议（MRP 旧转发器）安 listener 时会抛异常，那就安上也没用——
+        吞掉异常继续跑，抵底还有 keyboard_focus() 的轮询。"""
+        if self._atv is None:
+            return
+        try:
+            kb = self._atv.keyboard
+            if kb is None:
+                return
+            self._kb_listener = KeyboardFocusListener(self._on_kb_focus_push)
+            kb.listener = self._kb_listener
+        except Exception:  # pylint: disable=broad-except
+            self._kb_listener = None
+
+    def _unregister_keyboard_listener_locked(self):
+        """断开时把监听器拆下来；不拆的话旧连接的回调会继续往新缓存里写。"""
+        if self._kb_listener is not None and self._atv is not None:
+            try:
+                kb = self._atv.keyboard
+                if kb is not None and getattr(kb, "listener", None) is self._kb_listener:
+                    kb.listener = None
+            except Exception:  # pylint: disable=broad-except
+                pass
+        self._kb_listener = None
+        self._kb_focus = None
+
+    def _on_kb_focus_push(self, name):
+        """pyatv 推送到的聚焦态：只更新缓存，不做任何 adb / 网络开销。
+
+        这个回调跑在 pyatv 的 asyncio 线程上，而 keyboard_focus() 可能同时被 HTTP 线程调用——
+        两边都持锁，否则会读到写一半的值。"""
+        with self._lock:
+            self._kb_focus = name
+
     def keyboard_focus(self):
-        """电视端输入框聚焦状态：Focused / Unfocused / Unknown"""
+        """电视端输入框聚焦状态：Focused / Unfocused / Unknown
+
+        推送值优先：收到过 focusstate_update 就直接返回，不再往电视发一次命令。
+        没收到过（新连接 / 协议不支持推送）才回到轮询，抵底仍然可用。"""
+        with self._lock:
+            pushed = self._kb_focus
+        if pushed:
+            return pushed
         def factory(atv):
             async def _do():
                 return atv.keyboard.text_focus_state
             return _do()
         try:
             st = self._call(factory)
-            return st.name if hasattr(st, "name") else str(st)
+            name = st.name if hasattr(st, "name") else str(st)
+            with self._lock:
+                self._kb_focus = name   # 轮询结果也写进缓存，下次就不用再问
+            return name
         except Exception:
             return "Unknown"
 
