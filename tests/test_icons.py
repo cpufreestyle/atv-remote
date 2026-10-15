@@ -18,7 +18,6 @@
 只用标准库 + Pillow（没装 Pillow 时跳过像素断言，其余照跑）。
 """
 
-import unittest
 import sys
 import unittest
 from html.parser import HTMLParser
@@ -261,6 +260,98 @@ class ReadmeEndpointTest(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("docs/spec.md", readme)
         self.assertTrue((ROOT / "docs/spec.md").is_file())
+
+
+class WideLayoutTest(unittest.TestCase):
+    """宽屏双列下每张卡都要有显式列归属，不得落 auto-flow。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.css = (STATIC / "style.css").read_text(encoding="utf-8")
+        cls.html = INDEX.read_text(encoding="utf-8")
+        cls.mq = cls.css[cls.css.index("@media (min-width: 760px)"):]
+        cls.block = cls.mq[:cls.mq.index(chr(10) + "}")]
+
+    def _rules(self):
+        """从媒体查询里抽 grid-column 规则：返回 (选择器, 列值, 列语义)。
+
+        先掌掉注释再抽规则：否则选择器前的中文注释会被当成选择器一部分，
+        让 #id 提取和 :has 判定全部失效。"""
+        bare = re.sub(r"/\*[\s\S]*?\*/", " ", self.block)
+        out = []
+        for m in re.finditer(r"([^{}]+)\{([^}]*grid-column[^}]*)\}", bare):
+            sel, body = m.group(1), m.group(2)
+            if "1 / -1" in body:
+                out.append((sel.strip(), "span"))
+            elif re.search(r"grid-column:\s*1\b", body):
+                out.append((sel.strip(), "left"))
+            else:
+                out.append((sel.strip(), "right"))
+        return out
+
+    def test_key_cards_have_explicit_column(self):
+        rules = self._rules()
+        assign = {}
+        for sel, col in rules:
+            for cid in re.findall(r"#([\w-]+)", sel):
+                assign[cid] = col
+        for cid, want in (("remoteCard", "span"), ("npCard", "span"),
+                          ("kbCard", "left"), ("favCard", "left"),
+                          ("appsCard", "left"), ("toolsCard", "right"),
+                          ("gpCard", "right"), ("sleepCard", "right"),
+                          ("wolCard", "right"), ("perfCard", "right"),
+                          ("macrosCard", "right")):
+            self.assertIn(cid, assign, cid + " 在宽屏规则里没有 grid-column（会落 auto-flow）")
+            self.assertEqual(assign[cid], want, cid + " 应归 " + want)
+
+    def test_structural_selectors_cover_idless_cards(self):
+        # 物理按键卡与手机安装卡没有 id（测试规定无 id 卡不许折叠），
+        # 用结构选择器给它们归列，而不改标记。
+        self.assertRegex(self.block, r'section\.card:has\(> \.brow \[data-key="4"\]\)\s*\{[^}]*1 / -1')
+        self.assertRegex(self.block, r'section\.card:has\(#phoneInstall\)\s*\{[^}]*grid-column:\s*2')
+
+    def test_no_card_falls_into_auto_flow(self):
+        """把 HTML 的顶层 section 与规则对照：除非有明硬理由，不应有卡片落 auto-flow。"""
+        main = self.html[self.html.index("<main>"):self.html.index("</main>")]
+        order = []
+        depth = 0
+        stack = []
+        for m in re.finditer(r"<(/?)(section)\b([^>]*)>", main):
+            if m.group(1) == "/":
+                depth -= 1
+                if depth == 0 and stack:
+                    it = stack.pop()
+                    it["end"] = m.start()
+                    order.append(it)
+            else:
+                if depth == 0:
+                    stack.append({"start": m.start(), "attrs": m.group(3), "end": None})
+                depth += 1
+        rules = self._rules()
+        assign = {}
+        for sel, col in rules:
+            for cid in re.findall(r"#([\w-]+)", sel):
+                assign[cid] = col
+        keypad_span = any(col == "span" for sel, col in rules
+                          if 'data-key="4"' in sel)
+        phone_right = any(col == "right" for sel, col in rules if "phoneInstall" in sel)
+        unassigned = []
+        for it in order:
+            cid = re.search(r'id="([^"]+)"', it["attrs"])
+            cid = cid.group(1) if cid else None
+            seg = main[it["start"]:it["end"]]
+            brow = re.search(r'<div class="brow">([\s\S]*?)</div>', seg)
+            is_keypad = bool(brow and 'data-key="4"' in brow.group(1))
+            is_phone = 'id="phoneInstall"' in seg
+            if cid and cid in assign:
+                continue
+            if is_keypad and keypad_span:
+                continue
+            if is_phone and phone_right:
+                continue
+            unassigned.append(cid or "(no id)")
+        self.assertEqual(unassigned, [],
+                         "这些卡片没有宽屏列归属，会落 auto-flow：" + ", ".join(unassigned))
 
 
 if __name__ == "__main__":

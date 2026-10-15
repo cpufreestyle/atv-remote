@@ -912,6 +912,13 @@ body.disc [data-needs-device] { opacity: .68; filter: saturate(.8); }
   /* 主遥控卡（方向键 / 触摸板）跨两列：它是这个 App 存在的理由，
      宽屏上应该一屏就看完，不该和次级功能一样被分割。 */
   #remoteCard { grid-column: 1 / -1; }
+  /* 正在播放（Now Playing）跨两列：它是「此刻在放什么」的状态条，进度条 + 快进快退
+     + 时间读数都要横向空间，挤进半列会让这几个控件折行。默认隐藏，出现时就是全宽一行。 */
+  #npCard { grid-column: 1 / -1; }
+  /* 手机安装卡归右列：一次性配置（装 APK 的步骤说明），内容是折叠 details，
+     跟右列其它低频卡同一性质。选择器用 :has(#phoneInstall) 而不加 id：
+     无 id 卡片的踪迹是测试规定，改标记会让那些断言失效。 */
+  main > section.card:has(#phoneInstall) { grid-column: 2; }
   /* 物理按键卡也跨两列：返回/主页/菜单/电源/音量/媒体控制是物理遥控器上都有的基础键，
      容器够宽时一行排开比折成两行更接近真实遥控器。
      选择器用 :has([data-key]) 而不给它加 id / 类名：无 id 卡片的踪迹是测试规定（不许折叠），

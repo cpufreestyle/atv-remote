@@ -12,7 +12,7 @@
 python3 -c 'import server, atv_backend'   # 后端导入自检
 node --check static/app.js          # 前端语法
 node --check static/sw.js           # Service Worker 语法
-python3 -m unittest discover -s tests    # 行为回归（635 项，skipped 11）
+python3 -m unittest discover -s tests    # 行为回归（638 项，skipped 11）
 ./sync-native.sh --check            # 内嵌副本逐字节比对
 ./sync-native.sh                    # 漂移时同步，并顺带跑一遍 check.sh
 .venv/bin/python -m unittest discover -s tests   # pyatv 分支复跑
@@ -25,7 +25,7 @@ python3 -m unittest discover -s tests    # 行为回归（635 项，skipped 11�
 | 类别 | 数量 | 说明 |
 |------|------|------|
 | Python 单测文件 | 40 | tests/test_*.py |
-| Python 用例总数 | 635 | 其中 skipped 11（依赖 pyatv 或 Pillow）；.venv 下 7 |
+| Python 用例总数 | 638 | 其中 skipped 11（依赖 pyatv 或 Pillow）；.venv 下 7 |
 | node harness | 20 | tests/*_harness.js，与宿主测试一一对应 |
 | 图标/规格守护 | 1 | tests/test_icons.py 另守护 assets/ 与桌面脚本 |
 | 结构守护 | 2 | tests/test_route_contract.py（I14 派发面冻结）、tests/test_delivery_manifest.py（I13 三处交付清单对账） |
@@ -137,10 +137,10 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | 动机 | 13 张卡片宽屏下按 DOM 顺序左右横跳，且首次进入 9 张次级卡全展开——「简洁高效」两条都不成立 |
 | 改动 | style.css 宽屏媒体查询给每张卡显式 grid-column；app.js 新增 collapseDefaults()，collapseRestore() 在「从没存过」时用它 |
 | 新增不变式 | I16 双列归属（不落 auto-flow）、I17 首次进入频率折叠（存过则以用户为准） |
-| 新测试 | tests/test_collapse.py::FirstRunDefaultTest 4 例 + collapse_harness.js 3 例；基线 631 → 635 |
+| 新测试 | tests/test_collapse.py::FirstRunDefaultTest 4 例 + collapse_harness.js 3 例 + test_icons.py::WideLayoutTest 3 例；基线 631 → 638 |
 | 行为核验 | node 脚本按 CSS 规则推导演练：remoteCard/keypad 跨列，kb/fav/apps 左列，tools/gp/sleep/wol/perf/macros 右列 |
 | 折叠核验 | 8 场景全过：首进收 4 张低频、存过空数组保持全展开、只折用户折的那张、坏 JSON 不误折、未知 id 不过界 |
-| 双环境 | 系统 python3 635 passed / skipped 11；.venv 635 passed / skipped 7 |
+| 双环境 | 系统 python3 638 passed / skipped 11；.venv 638 passed / skipped 7 |
 | 副本 | ./sync-native.sh --check 一致（static/ 三件已同步进内嵌副本） |
 
 踩到的两个坑（写下来免得复发）：
@@ -158,7 +158,7 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | id | 严重度 | 状态 | 证据或说明 |
 |----|--------|------|-------------|
 | no-agent-routing-instructions | High | 已解决 | AGENTS.md 覆盖启动命令、源码结构、构建路径、安全约束 |
-| no-automated-validation | Medium | 已解决 | check.sh 与 635 项单测；本文件与 spec.md 固化为契约，并有 SpecContractTest 防漂移 |
+| no-automated-validation | Medium | 已解决 | check.sh 与 638 项单测；本文件与 spec.md 固化为契约，并有 SpecContractTest 防漂移 |
 | untracked-native-module | Low | 已解决 | android-native/ 已入库，README 有独立章节 |
 
 ## 6. Drift 台账（spec 与代码的偏差）
