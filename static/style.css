@@ -909,8 +909,22 @@ body.disc [data-needs-device] { opacity: .68; filter: saturate(.8); }
     align-items: start;
   }
   main > .card { margin-bottom: var(--sp-3); }
-  /* 遥控键 + 键盘是高频区，左列；应用/工具/宏/睡眠/安装走右列 */
-  #macrosCard, #sleepCard, #perfCard { break-inside: avoid; }
+  /* 主遥控卡（方向键 / 触摸板）跨两列：它是这个 App 存在的理由，
+     宽屏上应该一屏就看完，不该和次级功能一样被分割。 */
+  #remoteCard { grid-column: 1 / -1; }
+  /* 物理按键卡也跨两列：返回/主页/菜单/电源/音量/媒体控制是物理遥控器上都有的基础键，
+     容器够宽时一行排开比折成两行更接近真实遥控器。
+     选择器用 :has([data-key]) 而不给它加 id / 类名：无 id 卡片的踪迹是测试规定（不许折叠），
+     改标记会让那些断言失效。 */
+  main > section.card:has(> .brow [data-key="4"]) { grid-column: 1 / -1; }
+  /* 左列：高频交互（键盘输入 / 快捷启动 / 应用）——一天点的东西 */
+  #kbCard, #favCard, #appsCard { grid-column: 1; }
+  /* 右列：低频 / 配置类（工具 / 手柄 / 睡眠定时） */
+  #toolsCard, #gpCard, #sleepCard { grid-column: 2; }
+  /* 遥控 / 远程 / 调用时间线归右列下段：它们都不是每天点的东西，且默认折叠
+     —— 放在右列尾部，不会把左列的高频区挤散。不写 grid-column 的卡会落进
+     auto-flow，那就又回到了「交错摆」。 */
+  #wolCard, #perfCard, #macrosCard { grid-column: 2; break-inside: avoid; }
   #log { max-width: 960px; }
 }
 

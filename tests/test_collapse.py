@@ -218,6 +218,46 @@ class SettingsEntryTest(unittest.TestCase):
         self.assertIn('data-collapse-all="closed"', modal, "缺「全部折叠」")
 
 
+class FirstRunDefaultTest(unittest.TestCase):
+    """首次进入收起低频卡；存过就完全以用户的为准。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.js = (STATIC / "app.js").read_text(encoding="utf-8")
+
+    def test_defaults_function_in_pure_segment(self):
+        s = self.js.find(SEG_BEGIN)
+        e = self.js.find(SEG_END)
+        self.assertIn("function collapseDefaults(known)", self.js[s:e],
+                      "collapseDefaults 必须在纯函数段里（可搬进 node 测试）")
+
+    def test_defaults_are_frequency_based(self):
+        s = self.js.find("const LOW_FREQ = ")
+        self.assertGreater(s, 0, "缺 LOW_FREQ 常量")
+        seg = self.js[s:s + 200]
+        for low in ("wolCard", "perfCard", "macrosCard", "sleepCard"):
+            self.assertIn(low, seg, low + " 应置于默认折叠集")
+        for hot in ("kbCard", "favCard", "appsCard"):
+            self.assertNotIn(hot, seg, hot + " 是高频，不该默认折起")
+
+    def test_restore_prefers_saved_state_over_defaults(self):
+        """存过空数组（手动全展开）时不能再拿默认值覆盖。"""
+        glue = _glue(self.js)
+        i = glue.find("function collapseRestore()")
+        self.assertGreater(i, 0, "collapseRestore 缺失")
+        body = glue[i:i + 900]
+        self.assertIn("localStorage.getItem(COLLAPSE_KEY) === null", body,
+                      "首次进入必须指向 localStorage 为空，否则无法区分「从没存过」和「存过空」")
+        self.assertIn("collapseDefaults(known)", body, "首次进入要用默认值")
+
+    def test_html_defaults_stay_open(self):
+        """HTML 里 9 张卡仍是 data-state=open：首次进入的折叠由 JS 给，
+        而不是静态写死——否则关掉 JS 的环境下所有卡片都展不开。"""
+        html = (STATIC / "index.html").read_text(encoding="utf-8")
+        self.assertNotIn(chr(34).join(["data-state=", "closed", ""]), html,
+                         "别在 HTML 里写死 closed：JS 失效时整页会空白")
+
+
 class GlueTest(unittest.TestCase):
     """DOM 胶水在段外：restore 先于 bind，存储只在胶水里，样式只走属性。"""
 

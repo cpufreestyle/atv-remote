@@ -4,7 +4,7 @@
 > 事实优先级：server.py / atv_backend.py / static/ 源码 > tests/ > 本文件 > README.md（仅作介绍）。
 > 任何行为变更必须同步更新本文件与 docs/harness.md；docs/harness.md 记录最近一次核验结论。
 >
-> 最近核验：2026-10-14（HEAD b07fbf8 之上：README 端点清单补齐，D2 已收敛）
+> 最近核验：2026-10-15（布局优化：I16 双列归属 + I17 首次进入频率折叠）
 
 ## 1. 目标与范围
 
@@ -139,6 +139,8 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 | I13 | 交付清单跟着 import 走：server.BUNDLE_PY（server.py 的本地 import 闭包）必须逐条出现在 /bundle.tgz、build.gradle 的 syncPythonSrc、sync-native.sh 三处；新增 atv_*.py 漏任何一处即 ImportError | tests/test_delivery_manifest.py |
 | I14 | 派发面冻结：32 条 (path, method, status, 视图函数指纹) 与冻结基线逐条相等，GET/HEAD 共用一条派发链，两条链都保留 404 兜底 | tests/test_route_contract.py |
 | I15 | pyatv 异常文案必须本地化：auth/credentials → 「需要配对」，keyboard → 「聚焦输入框」，认不出的原样透出；该映射不依赖 pyatv 安装（无 pyatv 时 `AppleTvManager._friendly` 整体不可达，故真身在模块级 `friendly_error()`） | tests/test_atv_fastfail.py::FriendlyErrorTest |
+| I16 | 宽屏双列布局有明确归属：主遥控卡与物理按键卡跨两列，高频卡（键盘输入 / 快捷启动 / 应用）归左列，低频与配置卡归右列，不落 auto-flow | static/style.css 宽屏媒体查询 |
+| I17 | 首次进入按使用频率给默认折叠（收起远程开机 / 调用时间线 / 一键宏 / 睡眠定时）；存过记录则完全以用户为准，「全部展开」也是记录 | tests/test_collapse.py::FirstRunDefaultTest |
 
 ## 5. 验证矩阵（spec 与 harness 对应）
 
@@ -157,6 +159,8 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 | I13 | 同上 | tests/test_delivery_manifest.py |
 | I14 | 同上 | tests/test_route_contract.py |
 | I15 | 同上 | tests/test_atv_fastfail.py::FriendlyErrorTest |
+| I16 | 同上 | tests/test_icons.py（契约与结构守护） |
+| I17 | 同上 | tests/test_collapse.py::FirstRunDefaultTest |
 | 前端行为 | node harness，由 Python 测试经 subprocess 驱动 | 20 个 tests/*_harness.js |
 
 ### 5.1 一键验证基线
@@ -164,7 +168,7 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 check.sh 依序执行：import server 与 atv_backend、node --check static/app.js、
 node --check static/sw.js、python3 -m unittest discover -s tests、
 ./sync-native.sh --check，有 .venv 时在 pyatv 分支复跑后两项。
-当前基线：631 项单测通过，系统 python3 下 skipped 11 项（.venv 下 7 项）。
+当前基线：635 项单测通过，系统 python3 下 skipped 11 项（.venv 下 7 项）。
 
 ## 6. 已知缺口（尚未由测试覆盖，后续 spec 候选）
 

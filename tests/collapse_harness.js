@@ -28,7 +28,7 @@ for (const banned of ["document.", "localStorage", "setTimeout", "fetch(", "inne
 const NL = String.fromCharCode(10);
 const EXPORTS = ["COLLAPSE_MS", "COLLAPSE_KEY", "COLLAPSE_OPEN", "COLLAPSE_CLOSED",
                  "collapseAnimMs", "collapseStateOf", "parseCollapsed", "serializeCollapsed",
-                 "collapseLabel"].join(", ");
+                 "collapseLabel", "collapseDefaults"].join(", ");
 const factory = new Function(seg + NL + "return { " + EXPORTS + " };");
 const H = factory();
 
@@ -96,6 +96,35 @@ t("collapseLabel：按钮 aria-label 的动作词跟随当前态", () => {
   ok(H.collapseLabel("open") === "折叠", "open -> 折叠");
   ok(H.collapseLabel("closed") === "展开", "closed -> 展开");
   ok(H.collapseLabel("garbage") === "折叠", "其他值按 open 处理");
+});
+
+t("collapseDefaults：首次进入收起低频卡，高频卡留在首屏", () => {
+  const ALL = ["kbCard", "favCard", "appsCard", "toolsCard", "gpCard",
+               "wolCard", "perfCard", "macrosCard", "sleepCard"];
+  const closed = H.collapseDefaults(ALL);
+  ok(JSON.stringify(closed) === JSON.stringify(["macrosCard", "perfCard", "sleepCard", "wolCard"]),
+     "默认折叠集合：" + JSON.stringify(closed));
+  for (const hot of ["kbCard", "favCard", "appsCard", "gpCard"]) {
+    ok(closed.indexOf(hot) < 0, hot + " 是高频，不该默认折起");
+  }
+});
+
+t("collapseDefaults：只认 known 里的 id，未知 id 一律忽略", () => {
+  ok(JSON.stringify(H.collapseDefaults([])) === "[]", "空已知集");
+  ok(JSON.stringify(H.collapseDefaults(null)) === "[]", "null");
+  ok(JSON.stringify(H.collapseDefaults(undefined)) === "[]", "undefined");
+  ok(JSON.stringify(H.collapseDefaults(["kbCard", "favCard"])) === "[]",
+     "已知集里没有低频卡时不误折高频卡");
+  ok(JSON.stringify(H.collapseDefaults(["wolCard", "zzz", 42, null])) === JSON.stringify(["wolCard"]),
+     "混进来的非已知项被过滤");
+});
+
+t("collapseDefaults 与 parseCollapsed 各去任务：默认值不能覆盖用户记录", () => {
+  // 用户手动点过「全部展开」后存的是空数组；此时不该再把默认值拿出来覆盖。
+  const saved = H.serializeCollapsed([]);
+  ok(JSON.stringify(H.parseCollapsed(saved, ["wolCard"])) === "[]",
+     "存过空数组时解析结果为空（即全展开）");
+  ok(H.collapseDefaults(["wolCard"]).length === 1, "默认值本身仍然有内容，只是不该在此时候用");
 });
 
 for (const [name, fn] of cases) {

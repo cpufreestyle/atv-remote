@@ -3460,6 +3460,20 @@ function serializeCollapsed(ids) {
   return JSON.stringify(Array.from(out).sort());
 }
 function collapseLabel(state) { return state === COLLAPSE_CLOSED ? "展开" : "折叠"; }
+function collapseDefaults(known) {
+  /* 首次进入（localStorage 还没有记录）时默认收起哪些卡片。
+
+     判据是使用频率，不是卡片大小：方向键 / 键盘输入 / 快捷启动 / 应用是天天点的，
+     必须摄在首屏；远程开机、调用时间线、一键宏、睡眠定时是「用一次要翻很久」的，
+     折起来只留一行标题，需要时点一下展开。全部展开是上一版的默认，实测首屏 13 张卡
+     全铺开，用户得滚三屏才够到「应用」——那正是「不够简洁高效」的由来。
+
+     只认 known 里的 id：未知 id（老版本遗留、别处写坏的）一律忽略，
+     否则一条坏数据能让整页卡片集体消失。 */
+  const allow = new Set(known || []);
+  const LOW_FREQ = ["wolCard", "perfCard", "macrosCard", "sleepCard"];
+  return LOW_FREQ.filter((id) => allow.has(id)).sort();
+}
 
 /* ===== collapse:end ===== */
 
@@ -3948,6 +3962,14 @@ function collapseRestore() {
   let hit = new Set();
   try { hit = new Set(parseCollapsed(localStorage.getItem(COLLAPSE_KEY), known)); }
   catch (e) { hit = new Set(); }
+  // 首次进入（什么都没存过）按使用频率给默认折叠；存过就完全以用户的为准，
+  // 包括他手动点过「全部展开」的那次——那也是一条记录，不该被默认值覆盖。
+  // 这里不写回 localStorage：否则「从没存过」和「存过全展开」会混为一谈，以后改默认也不会生效。
+  if (hit.size === 0) {
+    const firstRun = true;
+    try { firstRun = localStorage.getItem(COLLAPSE_KEY) === null; } catch (e) { /* 隐私模式 */ }
+    if (firstRun) hit = new Set(collapseDefaults(known));
+  }
   collapseCards().forEach((el) => collapseApply(el, hit.has(el.id) ? COLLAPSE_CLOSED : COLLAPSE_OPEN));
 }
 function collapseAll(want) {

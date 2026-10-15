@@ -3,7 +3,7 @@
 > 配套 docs/spec.md：spec.md 定义「应当具备的契约」，本文件记录「如何验证、覆盖到哪、
 > 最近一次核验结论」。
 > harness 产物根目录 .qoder/better-harness/ 与 .mimosa/ 已 gitignore，不在本台账内。
-> 最近核验：2026-10-13（HEAD 2dc3ca3；最新一轮 I15 已收敛，见第 4.3 节）
+> 最近核验：2026-10-15（布局优化：I16 / I17，见第 4.5 节）
 
 ## 1. 一键验证命令
 
@@ -12,7 +12,7 @@
 python3 -c 'import server, atv_backend'   # 后端导入自检
 node --check static/app.js          # 前端语法
 node --check static/sw.js           # Service Worker 语法
-python3 -m unittest discover -s tests    # 行为回归（631 项，skipped 11）
+python3 -m unittest discover -s tests    # 行为回归（635 项，skipped 11）
 ./sync-native.sh --check            # 内嵌副本逐字节比对
 ./sync-native.sh                    # 漂移时同步，并顺带跑一遍 check.sh
 .venv/bin/python -m unittest discover -s tests   # pyatv 分支复跑
@@ -25,7 +25,7 @@ python3 -m unittest discover -s tests    # 行为回归（631 项，skipped 11�
 | 类别 | 数量 | 说明 |
 |------|------|------|
 | Python 单测文件 | 40 | tests/test_*.py |
-| Python 用例总数 | 631 | 其中 skipped 11（依赖 pyatv 或 Pillow）；.venv 下 7 |
+| Python 用例总数 | 635 | 其中 skipped 11（依赖 pyatv 或 Pillow）；.venv 下 7 |
 | node harness | 20 | tests/*_harness.js，与宿主测试一一对应 |
 | 图标/规格守护 | 1 | tests/test_icons.py 另守护 assets/ 与桌面脚本 |
 | 结构守护 | 2 | tests/test_route_contract.py（I14 派发面冻结）、tests/test_delivery_manifest.py（I13 三处交付清单对账） |
@@ -77,7 +77,19 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 
 ## 4. 最近验证结论
 
-### 4.1 2026-10-13（媒体解析外提 + 交付清单跟着 import 走）
+
+### 4.1 2026-10-07
+
+| 项 | 结论 |
+|----|------|
+| HEAD | 69dca04 桌面图标修复 |
+| 全量单测 | python3 -m unittest discover -s tests 得 603 passed、skipped 11 |
+| 内嵌副本 | ./sync-native.sh --check 得「内嵌副本与根目录一致」 |
+| 桌面图标 | NSWorkspace 实渲染修前为 AppleScript 羊皮纸、修后为遥控器图标；codesign 验证通过 |
+| 清理 | 删除 android-native 构建缓存、.gradle、__pycache__ 与 .DS_Store，释放 330 MB，未触碰任何入库文件 |
+| 事实核对 | 端点表、不变式、令牌策略逐条对照源码，与 spec.md 一致 |
+
+### 4.2 2026-10-13（媒体解析外提 + 交付清单跟着 import 走）
 
 | 项 | 结论 |
 |----|------|
@@ -89,7 +101,6 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | 运行实例 | 10-13 07:36 `launchctl kickstart -k` 重启（PID 1165）；`GET /bundle.tgz` 成员 14 个、含 `atv_media.py`、不含 `state.json`，包内 server.py 与磁盘 sha256 相同
 | 真机复探针 | 拆分前 22 个只读端点复跑：status / Content-Type / JSON 字段集 / 本轮 Content-Length 与 body 一致性全部通过；唯一字段级差异是 `/api/status` 多出 `version`（HEAD 的 `app_version()`，旧进程起于 10-08 所以基线里没有，与外提无关）；字节数变化 4 处均为设备实时状态或包内容变化。`/api/volume`、`/api/nowplaying` 因当前设备是 Apple TV 仍回 `{"connected": false}`，与基线一致
 | 体量 | server.py 2648 → 2558 行（外提 −188、清单闭包 +54）；atv_media.py 167 行纯函数，server.py 再导出所以既有引用点（含 tests/）不用改 |
-
 
 ### 4.3 2026-10-13（I15 已收敛：pyatv 错误文案不再依赖 pyatv）
 
@@ -119,16 +130,25 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
   扫描 7 个常见代理端口 / 等待重试（超过 18 小时、多轮）——均失败 |
 | 待办 | 网络恢复后执行 `git push origin main`（本地已有完整提交，无需其余操作） |
 
-### 4.2 2026-10-07
+### 4.5 2026-10-15（布局优化：双列归属 + 首次进入频率折叠）
 
 | 项 | 结论 |
 |----|------|
-| HEAD | 69dca04 桌面图标修复 |
-| 全量单测 | python3 -m unittest discover -s tests 得 603 passed、skipped 11 |
-| 内嵌副本 | ./sync-native.sh --check 得「内嵌副本与根目录一致」 |
-| 桌面图标 | NSWorkspace 实渲染修前为 AppleScript 羊皮纸、修后为遥控器图标；codesign 验证通过 |
-| 清理 | 删除 android-native 构建缓存、.gradle、__pycache__ 与 .DS_Store，释放 330 MB，未触碰任何入库文件 |
-| 事实核对 | 端点表、不变式、令牌策略逐条对照源码，与 spec.md 一致 |
+| 动机 | 13 张卡片宽屏下按 DOM 顺序左右横跳，且首次进入 9 张次级卡全展开——「简洁高效」两条都不成立 |
+| 改动 | style.css 宽屏媒体查询给每张卡显式 grid-column；app.js 新增 collapseDefaults()，collapseRestore() 在「从没存过」时用它 |
+| 新增不变式 | I16 双列归属（不落 auto-flow）、I17 首次进入频率折叠（存过则以用户为准） |
+| 新测试 | tests/test_collapse.py::FirstRunDefaultTest 4 例 + collapse_harness.js 3 例；基线 631 → 635 |
+| 行为核验 | node 脚本按 CSS 规则推导演练：remoteCard/keypad 跨列，kb/fav/apps 左列，tools/gp/sleep/wol/perf/macros 右列 |
+| 折叠核验 | 8 场景全过：首进收 4 张低频、存过空数组保持全展开、只折用户折的那张、坏 JSON 不误折、未知 id 不过界 |
+| 双环境 | 系统 python3 635 passed / skipped 11；.venv 635 passed / skipped 7 |
+| 副本 | ./sync-native.sh --check 一致（static/ 三件已同步进内嵌副本） |
+
+踩到的两个坑（写下来免得复发）：
+
+1. **给无 id 卡片加 id 会踩测试**：`test_keypad_card_not_collapsible` 靠 `split('<section class="card">')` 认卡片，
+   加 id 或类名都会让那段断言失效。改用 `:has(> .brow [data-key="4"])` 选择器，标记零改动。
+2. **`nth-of-type` 数序是陷阱**：卡片增删会让序号静默错位。归属要么写显式 id，要么用 `:has()` 这类结构选择器。
+
 
 ## 5. Qoder better-harness 台账
 
@@ -138,7 +158,7 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | id | 严重度 | 状态 | 证据或说明 |
 |----|--------|------|-------------|
 | no-agent-routing-instructions | High | 已解决 | AGENTS.md 覆盖启动命令、源码结构、构建路径、安全约束 |
-| no-automated-validation | Medium | 已解决 | check.sh 与 631 项单测；本文件与 spec.md 固化为契约，并有 SpecContractTest 防漂移 |
+| no-automated-validation | Medium | 已解决 | check.sh 与 635 项单测；本文件与 spec.md 固化为契约，并有 SpecContractTest 防漂移 |
 | untracked-native-module | Low | 已解决 | android-native/ 已入库，README 有独立章节 |
 
 ## 6. Drift 台账（spec 与代码的偏差）
@@ -150,5 +170,10 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 
 ## 7. 下一步
 
-1. 收敛 spec.md 第 6 节列的三条缺口，收敛后更新 harness.md 第 3、4 节。
-2. 代码或边界发生实质变更时重跑 ./check.sh，并把结论写进第 4 节。
+1. spec.md 第 6 节三条缺口：第一条（pyatv 错误文案）已收敛为 I15；
+   第二条（harness 共享基建）取证后判定收益/风险不成比例，暂不动；
+   第三条（真机验收）受设备环境约束无法进 CI。后续轮次先复核这三条是否仍成立。
+2. **GitHub 推送待恢复**：本地 `a4b3ece` 之后又多了布局优化这一轮，网络恢复后 `git push origin main`。
+3. 代码或边界发生实质变更时重跑 ./check.sh，并把结论写进第 4 节（新开 4.x 小节，按日期升序）。
+4. 布局若要再收紧，候选是「npCard 与手机安装卡的宽屏归属」——这两张目前走 auto-flow，
+   因为它们内容轻（一行状态条 / 折叠 details），但一旦某天内容变重就得显式归列。

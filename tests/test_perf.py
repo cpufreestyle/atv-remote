@@ -393,7 +393,8 @@ class StyleTest(unittest.TestCase):
         self.assertIn("overflow-y: auto", seg)
 
     def test_wide_layout_keeps_card_together(self):
-        self.assertIn("#macrosCard, #sleepCard, #perfCard { break-inside: avoid; }", self.css)
+        # 双列布局下这三张不得被撕开（一断就会左右列各半张）
+        self.assertIn("#wolCard, #perfCard, #macrosCard { grid-column: 2; break-inside: avoid; }", self.css)
 
 
 class HarnessBehaviorTest(unittest.TestCase):
