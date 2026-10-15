@@ -797,7 +797,9 @@ async function sendText(text, withEnter) {
     }
   }
   try {
-    await api("/api/cmd", { type: "text", text, enter: !!withEnter });
+    await api("/api/cmd", { type: "text", text, enter: !!withEnter,
+      // Apple TV \u624d\u6709\u8fd9\u4e2a\u8bed\u4e49\u5206\u6b67\uff1bAndroid \u603b\u662f\u8ffd\u52a0\uff0c\u4e0d\u5e26\u8fd9\u4e2a\u5b57\u6bb5
+      ...(status.curType === "appletv" ? { mode: atvAppend.on ? "append" : "set" } : {}) });
     const echo = privacy.on
       ? "•".repeat(Math.min(8, text.length))
       : `"${text.slice(0, 30)}"${text.length > 30 ? "…" : ""}`;
@@ -826,6 +828,31 @@ $("#privacyBtn").addEventListener("click", () => {
   localStorage.setItem("atv.privacy", privacy.on ? "1" : "0");
   applyPrivacy();
   renderHist(); // 隐私模式下整行隐藏，避免旁人瞥到此前的输入记录
+});
+
+/* Apple TV \u8f93\u5165\u8bed\u4e49\uff1a\u8ffd\u52a0\uff08Companion text_append\uff0c\u540c Android input text\uff09
+   \u8fd8\u662f\u6574\u6bb5\u66ff\u6362\uff08text_set\uff09\u3002\u9ed8\u8ba4\u8ffd\u52a0\u2014\u2014\u5426\u5219\u53d1\u4e00\u53e5\u5c31\u628a\u7535\u89c6\u7aef
+   \u8f93\u5165\u6846\u91cc\u5df2\u6709\u7684\u65e7\u5173\u952e\u8bcd\u641e\u5e72\u51fa\u53bb\uff0c\u8fd9\u4e2a\u5dee\u5f02\u7528\u6237\u5f88\u96be\u81ea\u5df1\u60f3\u660e\u767d\u3002
+   \u53ea\u5f71\u54cd Apple TV\uff1bAndroid \u4fa7\u672c\u6765\u5c31\u662f\u8ffd\u52a0\uff0c\u6ca1\u6709\u8fd9\u4e2a\u9009\u9879\u3002 */
+const atvAppend = { on: localStorage.getItem("atv.append") !== "0" };
+
+function applyAtvAppend() {
+  const btn = $("#atvAppendBtn");
+  if (!btn) return;
+  btn.classList.toggle("on", atvAppend.on);
+  btn.setAttribute("aria-pressed", atvAppend.on ? "true" : "false");
+  btn.textContent = atvAppend.on ? "\u2795 \u8ffd\u52a0" : "\u21bb \u66ff\u6362";
+  const hint = $("#atvAppendHint");
+  if (hint) hint.hidden = status.curType !== "appletv";
+  btn.classList.toggle("hidden", status.curType !== "appletv");
+}
+
+$("#atvAppendBtn").addEventListener("click", () => {
+  atvAppend.on = !atvAppend.on;
+  localStorage.setItem("atv.append", atvAppend.on ? "1" : "0");
+  applyAtvAppend();
+  toast(atvAppend.on ? "\u5df2\u5207\u6362\u4e3a\u8ffd\u52a0\uff08\u63a5\u5728\u7535\u89c6\u7aef\u73b0\u6709\u5185\u5bb9\u540e\u9762\uff09"
+                  : "\u5df2\u5207\u6362\u4e3a\u6574\u6bb5\u66ff\u6362\uff08\u8986\u76d6\u7535\u89c6\u7aef\u73b0\u6709\u5185\u5bb9\uff09");
 });
 
 /* ---------------- 输入历史（最近发送过的内容） ---------------- */
@@ -2273,6 +2300,7 @@ function renderStatus(s) {
   if (isApple) $("#textInput").placeholder = "在此打字，回车发送到电视（Apple TV 支持中文）";
   // 清空 / 搜索键走 ADBKeyboard 广播，Apple TV 没有这回事
   $("#kbTools").classList.toggle("hidden", isApple);
+  applyAtvAppend();  // 追加/替换只对 Apple TV 有意义，切换设备时重算显隐
 
   if (s.version) $("#verHint").textContent = "ATV Remote v" + s.version + " · 数据只存在本机浏览器";
   // 睡眠定时状态（倒计时本地走秒，这里只负责发现 set/cancel 的变化）

@@ -182,8 +182,12 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
         </div>
         <div class="brow">
           <button id="privacyBtn" class="btn tiny" aria-pressed="false">👁 隐私模式</button>
+          <!-- Apple TV 专用：Companion 协议的 text_append 是追加语义（同 Android 的 input text），
+               text_set 才整段替换。默认追加才不会把电视端已有的旧关键词搞干净。 -->
+          <button id="atvAppendBtn" class="btn tiny hidden" aria-pressed="true" title="追加到电视端现有内容之后；关掉则整段替换">➕ 追加</button>
         </div>
         <p class="hint" id="privacyHint" hidden>隐私模式：发送的内容在日志里只显示 ••、输入框掩码显示 —— 在电视上输密码一类场景用，可随时关掉。</p>
+        <p class="hint" id="atvAppendHint" hidden>Apple TV 默认「追加」：发送的内容接在电视输入框现有文字后面（同 Android 行为）。点「➕ 追加」切换成整段替换——想覆盖旧关键词时用。</p>
         <div class="brow">
           <button id="pasteBtn" class="btn tiny">📋 粘贴发送</button>
           <button id="micBtn" class="btn tiny" aria-pressed="false">🎤 语音</button>

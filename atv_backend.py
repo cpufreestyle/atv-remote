@@ -376,14 +376,30 @@ class AppleTvManager:
             iface_name, method = action
             self._call(lambda atv, _n=iface_name, _m=method: getattr(getattr(atv, _n), _m)())
 
-    def send_text(self, text, enter=False):
+    def send_text(self, text, enter=False, append=False):
+        """向电视端输入框发送文本。
+
+        append=只有 Companion 协议（tvOS 16+）支持：它的 text_append 是追加语义，
+        而 text_set 是整段替换——搞干清空副本就有的旧关键词。
+        Android 侧 input text 同样是追加，所以默认走追加才能两端一致。
+        MRP（旧转发器）没有 Keyboard 实现，没有 text_append，安装时会抛
+        NotSupportedError——那就回到 text_set（至少还能用）。
+        """
         text = str(text)
         if not text:
             raise AppleTvError("内容为空")
 
         def factory(atv):
             async def _do():
-                await atv.keyboard.text_set(text)
+                kb = atv.keyboard
+                sender = kb.text_append if append else kb.text_set
+                try:
+                    await sender(text)
+                except Exception:
+                    if not append:
+                        raise
+                    # 追加不支持（MRP / 旧 pyatv）：退回替换语义，不让整条发送失败
+                    await kb.text_set(text)
                 if enter:
                     await atv.remote_control.select()
             return _do()
@@ -525,7 +541,7 @@ if not PYATV_AVAILABLE:
         def send_keys(self, codes):
             raise AppleTvError("pyatv 未安装，" + _pyatv_hint())
 
-        def send_text(self, text, enter=False):
+        def send_text(self, text, enter=False, append=False):
             raise AppleTvError("pyatv 未安装，" + _pyatv_hint())
 
         def tap(self):

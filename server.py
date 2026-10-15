@@ -1287,7 +1287,10 @@ def handle_cmd_appletv(body):
         text = str(body.get("text", ""))[:MAX_TEXT_LEN]
         if not text:
             raise AppleTvError("内容为空")
-        atv_mgr.send_text(text, enter=body.get("enter"))
+        # mode=append（默认）追加到电视端现有内容之后，与 Android 的 input text 一致；
+        # mode=set 整段替换（旧行为，用户想覆盖时显式选它）。
+        atv_mgr.send_text(text, enter=body.get("enter"),
+                          append=str(body.get("mode", "append")) != "set")
         return {"ok": True}
     if t == "tap":
         atv_mgr.tap()  # Apple TV 无坐标点击，等价轻点
