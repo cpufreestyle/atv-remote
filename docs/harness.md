@@ -227,6 +227,18 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | 双环境 | .venv 693 passed / skipped 7；系统 python3 689 passed / skipped 15 |
 | 备注 | 零后端改动，test_route_contract（32 条冻结三元组）未受影响；static/ 改动已跑 ./sync-native.sh 同步内嵌副本（I10） |
 
+### 4.12 2026-10-17（Android 构建路径收敛：-PnoAppletv + 三星真机安装验证）
+
+| 项 | 结论 |
+|----|------|
+| 动机 | 用户要求「更新到三星手机」；构建 native APK 时发现 pyatv==0.18.0 在 Android 上已装不上 |
+| 根因 | chaquo 仓库（pypi-13.1）全部 Android ABI 的 cryptography 最高 42.0.8（cp311/cp312/cp313 × arm64-v8a/x86_64，直接列仓库目录确认），pyatv 0.18.0 声明 cryptography>=44.0.1，pip 解析即失败。chaquo.com 可达、pypi.org 200，不是网络问题，是仓库里没有 43+ 的 Android 原生 wheel |
+| 处置 | 走 build.gradle 既有降级开关：JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew assembleRelease -PnoAppletv（BUILD SUCCESSFUL in 41s）。pyatv 0.18.0 用到的 cryptography API 全是老接口（Ed25519/X25519/HKDF/序列化，解 wheel grep 确认），>=44 只是安全底线；但把 pin 降到 42 会引入桌面/Android 版本漂移（build.gradle 注释记着踩过的坑），不做 |
+| 史实 | 磁盘上 9 月 25 日发的 ATVRemote-native.apk 同样不含 pyatv（unzip 列表里 pyatv 条目数为 0）——Android 侧 Apple TV 控制历来就没上线，本次降级不损失既有功能 |
+| 验收 | aapt badging：com.atv.remote.native / versionName=1.34.0 / versionCode=35；app.imy 内 static/* 与根目录 diff -r 逐字节一致；server/atv_backend/atv_media 三个 pyc 头部源码尺寸与实际文件相符；requirements-common.imy 有 qrcode、整个 APK 无 pyatv |
+| 真机 | adb -s R5CY249VM4N（SM-S9380 / S25 Ultra）install -r 成功（lastUpdateTime 04:42:16，首装）；adb forward 18300→8300 冒烟：/api/status 返回 adb_found=true（内置 libadb.so 1.0.41）、appletv.available=false（与降级契约一致）、embedded；/ 返回 ATV Remote 页面；logcat 无 traceback；构建后 git status 干净 |
+| 备注 | Apple TV 遥控入口不变：Mac 服务端（.venv pyatv 0.18.0）仍是 Apple TV 控制点，手机 native 侧全功能遥控 Android TV。旧 WebView 客户端 com.atv.remote v1.0 与 native 不同包名，共存不冲突 |
+
 ## 5. Qoder better-harness 台账
 
 来源：.qoder/better-harness/2026-08-26/220155-atv-remote/findings.json
@@ -245,12 +257,14 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | D1 | check.sh 全量跑通耗时约 30 秒，单次 exec 容易被超时截断 | 已知 | 分段复跑：先 python3 分支，再 .venv 分支 |
 | D2 | README 的端点清单曝了 9 个写端点（android/scan、android/pair、disconnect、forget、switch、atv/disconnect、atv/forget、volume、wol） | **已收敛** | 2026-10-14 补齐 README 并加 `tests/test_icons.py::ReadmeEndpointTest` 对账（`server.ROUTES` 必须全部出现）；README 改指向 spec.md |
 
+| D3 | pyatv==0.18.0 在 Android 上无法安装：chaquo pypi-13.1 的 cryptography 最高 42.0.8，不满足 pyatv 的 >=44.0.1 | 已知（外部不可修复） | Android native 构建走 -PnoAppletv（见 4.12），Apple TV 控制留在 Mac 服务端；chaquo 发布 43+ Android wheel 后可移除降级开关 |
+
 ## 7. 下一步
 
 1. spec.md 第 6 节三条缺口：第一条（pyatv 错误文案）已收敛为 I15；
    第二条（harness 共享基建）取证后判定收益/风险不成比例，暂不动；
    第三条（真机验收）受设备环境约束无法进 CI。后续轮次先复核这三条是否仍成立。
-2. **GitHub 推送待恢复**：本地领先 GitHub 9 个提交（I18-I22 五轮 + 宽屏布局两轮 + D2 收敛 + 台账；GitHub 连接仍被 fake-ip 阻断，Gitee 已同步），网络恢复后 `git push origin main`。
+2. **GitHub 推送待恢复**：本地领先 GitHub 10 个提交（I18-I23 六轮 + 宽屏布局两轮 + D2 收敛 + 台账；GitHub 连接仍被 fake-ip 阻断，Gitee 已同步），网络恢复后 `git push origin main`。
 3. 代码或边界发生实质变更时重跑 ./check.sh，并把结论写进第 4 节（新开 4.x 小节，按日期升序）。
 4. 布局若要再收紧，候选是「npCard 与手机安装卡的宽屏归属」——这两张目前走 auto-flow，
    因为它们内容轻（一行状态条 / 折叠 details），但一旦某天内容变重就得显式归列。
