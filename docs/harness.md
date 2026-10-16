@@ -25,7 +25,7 @@ python3 -m unittest discover -s tests    # 行为回归（638 项，skipped 11�
 | 类别 | 数量 | 说明 |
 |------|------|------|
 | Python 单测文件 | 40 | tests/test_*.py |
-| Python 用例总数 | .venv 651 / 系统 647 | skipped 12（依赖 pyatv 或 Pillow）；.venv 下 7 |
+| Python 用例总数 | .venv 657 / 系统 653 | skipped 12（依赖 pyatv 或 Pillow）；.venv 下 7 |
 | node harness | 20 | tests/*_harness.js，与宿主测试一一对应 |
 | 图标/规格守护 | 1 | tests/test_icons.py 另守护 assets/ 与桌面脚本 |
 | 结构守护 | 2 | tests/test_route_contract.py（I14 派发面冻结）、tests/test_delivery_manifest.py（I13 三处交付清单对账） |
@@ -164,7 +164,7 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | 反编译边界 | 仅静态分析系统自带二进制，用于提炼协议语义与架构模式；未破解授权、未复制代码进生产 |
 
 反编译还看到但暂未落地的（记录备查）：`TVRCKeyboardAttributes`（电视端输入框属性，可驱动 inputmode/掩码——2026-10-15 探过 pyatv 能力面，抽象类未暴露该字段，此条放弃）、
-`throttleSeconds`（授权挑战节流）、`enableTVRemoteOnLockscreen`（锁屏遥控）。前两条依赖 pyatv 暴露对应能力，
+`throttleSeconds`（授权挑战节流——2026-10-16 已落地为 I20）、`enableTVRemoteOnLockscreen`（锁屏遥控）。前两条依赖 pyatv 暴露对应能力，
 第三条是 macOS 侧配置而非遥控协议，均需另行评估。
 
 ### 4.7 2026-10-15（反编译 tvremoted → I19：Apple TV 文本输入语义与 Android 对齐）
@@ -180,6 +180,18 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | 新测试 | `tests/test_atv_text_mode.py` 9 例：mode 缺省、set 显式退出、降级钩子、占位类签名对齐（2 处）、前端默认值与显隐 |
 | 双环境 | .venv 651 passed / skipped 7；系统 python3 647 passed / skipped 12 |
 
+### 4.8 2026-10-16（反编译 tvremoted → I20：配对 PIN 连续试错节流）
+
+| 项 | 结论 |
+|----|------|
+| 参照物 | tvremoted 的 `deviceWithState:encounteredAuthChallengeOfType:attributes:codeToEnterOnDevice:throttleSeconds:`——Apple 原生把「再试等多久」直接传给客户端 |
+| 为什么要节流 | 配对服务端对连续试错会主动封禁，盲目重试只会让封禁时间越来越长；客户端侧先拦住能保护用户不被自己拖进更长的封禁 |
+| 改动 | server.py 新增 `_pair_attempt_key` / `_pair_throttle_check`，`finish` 分支接入：进前查、失败计数、成功清零；节流按设备 id/ip 算，换浏览器不能绕过 |
+| 参数 | 限 5 次 / 窗口 60 秒，是配对节奏的一组参数，测试锁死不得单边改 |
+| 新测试 | tests/test_pair_throttle.py 6 例：限内放行、超限拒绝、成功清零、换设备不受累及、冷却过期重置、参数钉死 |
+| 双环境 | .venv 657 passed / skipped 7；系统 python3 653 passed / skipped 12 |
+| 未落地 | `enableTVRemoteOnLockscreen`（锁屏遥控）——是 macOS 侧 entitlement/配置而非遥控协议，与 atv-remote 的 Web 形态不匹配，放弃 |
+
 ## 5. Qoder better-harness 台账
 
 来源：.qoder/better-harness/2026-08-26/220155-atv-remote/findings.json
@@ -188,7 +200,7 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | id | 严重度 | 状态 | 证据或说明 |
 |----|--------|------|-------------|
 | no-agent-routing-instructions | High | 已解决 | AGENTS.md 覆盖启动命令、源码结构、构建路径、安全约束 |
-| no-automated-validation | Medium | 已解决 | check.sh 与 651 项单测（.venv）；本文件与 spec.md 固化为契约，并有 SpecContractTest 防漂移 |
+| no-automated-validation | Medium | 已解决 | check.sh 与 657 项单测（.venv）；本文件与 spec.md 固化为契约，并有 SpecContractTest 防漂移 |
 | untracked-native-module | Low | 已解决 | android-native/ 已入库，README 有独立章节 |
 
 ## 6. Drift 台账（spec 与代码的偏差）

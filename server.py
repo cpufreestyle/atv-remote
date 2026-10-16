@@ -1321,6 +1321,37 @@ def handle_atv_scan(body):
     return {"devices": found}
 
 
+# 配对 PIN 连续试错的节流。参考来源：反编译 macOS /usr/libexec/tvremoted
+# 得到的 deviceWithState:encounteredAuthChallengeOfType:attributes:codeToEnterOnDevice:
+# throttleSeconds: —— Apple 原生实现会把“再试等多久”这个字段直接传给客户端，
+# 因为配对服务端对连续试错会主动封禁，盲目重试只会让封禁时间越来越长。
+PAIR_ATTEMPT_LIMIT = 5
+PAIR_THROTTLE_SECONDS = 60.0
+_pair_attempts = {"key": None, "count": 0, "first": 0.0}
+
+
+def _pair_attempt_key(dev):
+    """节流按设备算，不按请求算：换一个浏览器试同一台电视不能绕过。"""
+    return str(dev.get("id") or dev.get("ip") or "")
+
+
+def _pair_throttle_check(key):
+    """触发限次后拒绝，直到冷却窗过完；成功配对或手动停止会清零。"""
+    now = time.time()
+    if _pair_attempts["key"] != key:
+        _pair_attempts.update({"key": key, "count": 0, "first": now})
+        return
+    if _pair_attempts["count"] >= PAIR_ATTEMPT_LIMIT:
+        remain = int(PAIR_THROTTLE_SECONDS - (now - _pair_attempts["first"]))
+        if remain > 0:
+            raise AppleTvError(
+                "连续 {} 次配对失败，请等 {} 秒后再试（确认 PIN 后再填，"
+                "连续错会让电视端封禁越来越久）".format(
+                    _pair_attempts["count"], remain))
+        _pair_attempts["count"] = 0
+        _pair_attempts["first"] = now
+
+
 def handle_atv_pair(body):
     action = body.get("action")
     dev = {k: body[k] for k in ("id", "name", "ip", "proto", "mrp_port",
@@ -1331,7 +1362,24 @@ def handle_atv_pair(body):
         atv_mgr.pair_begin(dev)
         return {"ok": True, "hint": "电视屏幕上应已显示 4 位 PIN 码，请填入后点「完成配对」"}
     if action == "finish":
-        entry = atv_mgr.pair_finish(str(body.get("pin", "")))
+        key = _pair_attempt_key(dev)
+        _pair_throttle_check(key)
+        try:
+            entry = atv_mgr.pair_finish(str(body.get("pin", "")))
+        except AppleTvError:
+            # 失败计数：同一台电视连续错 PIN 才会触发节流，
+            # 换设备或重启服务（内存变量重置）就会清零
+            now = time.time()
+            if _pair_attempts["key"] != key:
+                _pair_attempts.update({"key": key, "count": 1, "first": now})
+            else:
+                _pair_attempts["count"] += 1
+                if _pair_attempts["count"] == 1:
+                    _pair_attempts["first"] = now
+            raise
+        # 成功：清零，下次配对另一台电视不受这台的历史累加
+        if _pair_attempts["key"] == key:
+            _pair_attempts["count"] = 0
         with state_lock:
             state["appletvs"] = [d for d in state["appletvs"] if d["id"] != entry["id"]]
             state["appletvs"].append(entry)
