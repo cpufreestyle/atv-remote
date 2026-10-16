@@ -5176,6 +5176,16 @@ const INTENT_ALIASES = [
   ["关机", "key:26"], ["关电视", "key:26"], ["睡觉", "key:26"], ["休息了", "key:26"],
   ["唤醒", "key:224"], ["开机", "key:224"], ["打开电视", "key:224"],
   ["截图", "shot"], ["截个屏", "shot"], ["电视截屏", "shot"],
+  /* Apple TV 专属：命令只在连上 Apple TV 时才存在（palCommands 的门禁），
+     所以 Android 上这些说法不会被误判成命令，会安静地当作文本下发。 */
+  ["双击", "atv:dbl"], ["双击一下", "atv:dbl"], ["双击待命", "atv:dbl"],
+  ["长按确定", "atv:hold:23"], ["长按ok", "atv:hold:23"], ["长按菜单", "atv:hold:23"],
+  ["长按上", "atv:hold:19"], ["长按向上", "atv:hold:19"],
+  ["长按下", "atv:hold:20"], ["长按向下", "atv:hold:20"],
+  ["长按左", "atv:hold:21"], ["长按向左", "atv:hold:21"],
+  ["长按右", "atv:hold:22"], ["长按向右", "atv:hold:22"],
+  ["追加", "atv:append:on"], ["追加文本", "atv:append:on"], ["接在后面", "atv:append:on"],
+  ["替换", "atv:append:off"], ["整段替换", "atv:append:off"], ["覆盖", "atv:append:off"],
 ];
 
 /* 动词表：长动词排前面，避免「打开」先把「开」吃掉剩下「电视」。 */
@@ -5622,6 +5632,34 @@ function palCommands() {
     wolDiscover(wolIpsCache.length ? wolIpsCache : wolIpsFromStatus(wolLastStatus || {}));
   });
   push("coach", "工具", "🎓", "重看使用指引", "引导 教程 coach help", () => $("#coachBtn").click());
+  // —— Apple TV 专属动作 ——（连 I19/I21/I22 三项能力的键盘入口）
+  /* 为什么单独一组而不是塞进「按键」：这三项都只对 Apple TV 有意义（Android 的 adb input
+     没有原生长按 / 双击，文本本来就是追加），混进按键组会让 Android 用户看到一堆点不动的命令。
+     门禁跟着 status.curType 走，与页面上那三个按钮的 hidden 是同一个条件。 */
+  if (status.curType === "appletv") {
+    /* 文本语义走「指定目标态」而不是翻转：语音说「替换」时若当前已是替换态，翻转会把它
+       切回追加，与用户说的正好相反。所以两条命令各自保证终态，重复执行是幂等的。 */
+    const setAppend = (on) => { if (atvAppend.on !== on) $("#atvAppendBtn").click(); };
+    const curMode = atvAppend.on ? "追加" : "整段替换";
+    push("atv:append:on", "Apple TV", "➕", `文本改为追加（当前：${curMode}）`,
+      "文本 追加 输入 接在后面 append", () => setAppend(true),
+      atvAppend.on ? "当前已是追加" : "点击切换到追加");
+    push("atv:append:off", "Apple TV", "⟳", `文本改为整段替换（当前：${curMode}）`,
+      "文本 替换 覆盖 清空重写 set", () => setAppend(false),
+      atvAppend.on ? "点击切换到替换" : "当前已是整段替换");
+    push("atv:dbl", "Apple TV", "⏩", `下一个按键改为双击${dblArmed ? "（待命中）" : ""}`,
+      "双击 double tap 待命 苹果", () => $("#atvDoubleBtn").click(),
+      dblArmed ? "待命中：发一次即解除" : "点此进入待命");
+    /* 长按是「指定哪一个键被长按」：没有「当前键」这个概念，所以五个常用键各给一条，
+       搜「长按」能一起列出来。执行体直接复用 holdSend（与连发满 5 次那条路同一个出口）。 */
+    /* 命名常量是给 tests/test_intent.py 收割用的（同 PAL_KEYS）：别名表里的 atv:hold:<code>
+       必须能对上真实推出来的 id。 */
+    const ATV_HOLD_KEYS = [[23, "确定"], [19, "上"], [20, "下"], [21, "左"], [22, "右"]];
+    ATV_HOLD_KEYS.forEach(([code, name]) =>
+      push("atv:hold:" + code, "Apple TV", "⏺", `长按${name}`,
+        "长按 hold 按住 " + name + " " + code + " context 菜单",
+        () => holdSend(code), "InputAction.Hold"));
+  }
   return cmds;
 }
 

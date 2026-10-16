@@ -120,6 +120,10 @@ class CommandIdConsistencyTest(unittest.TestCase):
         km = cls.js[cls.js.index("const PAL_KEYS = "):]
         km = km[:km.index("];")]
         cls.pushed_ids |= {"key:" + c for c in re.findall(r"\[(\d+),", km)}
+        # Apple TV 长按同类动态 id：push("atv:hold:" + code, ...)，code 来自 ATV_HOLD_KEYS
+        hold = cls.js[cls.js.index("const ATV_HOLD_KEYS = "):]
+        hold = hold[:hold.index("];")]
+        cls.pushed_ids |= {"atv:hold:" + c for c in re.findall(r"\[(\d+),", hold)}
 
     def test_alias_ids_exist_in_palette(self):
         missing = sorted(self.alias_ids - self.pushed_ids)

@@ -160,6 +160,40 @@ t("intentParse：动词 + 对象起应用（含 typo）", () => {
   ok(idOf(H.intentParse("启动 youtube", CMDS)) === "app:com.google.android.youtube.tv", "启动 youtube");
 });
 
+t("intentParse：Apple TV 三档能力别名（含大小写 / 门禁反证）", () => {
+  /* 夹具形状与 palCommands() 在 Apple TV 页签下真推出来的 8 条一致（id/label/terms），
+     取自 static/app.js 门禁块；Android 用户的 CMDS 里一条 atv: 都没有，正好当门禁反证：
+     别名命中的 id 在 cmds 里找不到时 intentParse 不会瞎执行，而是继续往下落空。 */
+  const ATV_CMDS = [
+    { id: "atv:append:on", label: "文本改为追加（当前：整段替换）", terms: "文本 追加 输入 接在后面 append" },
+    { id: "atv:append:off", label: "文本改为整段替换（当前：整段替换）", terms: "文本 替换 覆盖 清空重写 set" },
+    { id: "atv:dbl", label: "下一个按键改为双击", terms: "双击 double tap 待命 苹果" },
+    { id: "atv:hold:23", label: "长按确定", terms: "长按 hold 按住 确定 23 context 菜单" },
+    { id: "atv:hold:19", label: "长按上", terms: "长按 hold 按住 上 19 context 菜单" },
+    { id: "atv:hold:20", label: "长按下", terms: "长按 hold 按住 下 20 context 菜单" },
+    { id: "atv:hold:21", label: "长按左", terms: "长按 hold 按住 左 21 context 菜单" },
+    { id: "atv:hold:22", label: "长按右", terms: "长按 hold 按住 右 22 context 菜单" },
+  ];
+  const atv = (said, id) => ok(idOf(H.intentParse(said, ATV_CMDS)) === id, said + " -> " + id);
+  atv("追加", "atv:append:on");
+  atv("接在后面", "atv:append:on");
+  atv("替换", "atv:append:off");
+  atv("覆盖", "atv:append:off");
+  atv("双击", "atv:dbl");
+  atv("双击一下", "atv:dbl");
+  atv("长按确定", "atv:hold:23");
+  atv("长按OK", "atv:hold:23");
+  atv("长按菜单", "atv:hold:23");
+  atv("长按上", "atv:hold:19");
+  atv("长按向上", "atv:hold:19");
+  atv("长按下", "atv:hold:20");
+  atv("长按左", "atv:hold:21");
+  atv("长按右", "atv:hold:22");
+  ok(H.intentParse("长按确定", CMDS) === null, "Android 面板没有 atv: 命令，说了也不该执行");
+  ok(H.intentParse("双击", CMDS) === null, "Android 没有双击命令，不能误判到别的键");
+  ok(H.intentParse("追加", CMDS) === null, "Android 文本本来就是追加，不该有这条命令");
+});
+
 t("intentParse：不误判——这是本功能的安全底线", () => {
   ok(H.intentParse("周杰伦", CMDS) === null, "人名/搜索词绝不能被当成命令");
   ok(H.intentParse("打开电视机顶盒", CMDS) === null, "未安装的应用不能瞎起");

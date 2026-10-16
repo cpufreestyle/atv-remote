@@ -4,7 +4,7 @@
 > 事实优先级：server.py / atv_backend.py / static/ 源码 > tests/ > 本文件 > README.md（仅作介绍）。
 > 任何行为变更必须同步更新本文件与 docs/harness.md；docs/harness.md 记录最近一次核验结论。
 >
-> 最近核验：2026-10-17（反编译 tvremoted 系列：I18-I22 聚焦推送 / 追加语义 / 配对节流 / 原生长按 / 双击）
+> 最近核验：2026-10-17（反编译 tvremoted 系列：I18-I22 聚焦推送 / 追加语义 / 配对节流 / 原生长按 / 双击；I23 三档能力的命令面板 / 语音入口）
 
 ## 1. 目标与范围
 
@@ -146,6 +146,7 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 | I20 | Apple TV 配对 PIN 连续试错有节流：同一设备连续失败 5 次后拒绝 60 秒，成功配对或换设备会清零；参数是一组对节奏的配对，不得单边改 | tests/test_pair_throttle.py |
 | I21 | 长按语义分两路：连发是快速点按多次（滚列表 / 调音量），连发满 5 次后停掉点按、改发一次 `hold=true`（Apple TV 走 InputAction.Hold 触发电视端长按菜单，MRP 不支持时降级回单击）；Android 无原生长按语义，`holdSend` 直接短路 | tests/test_atv_hold.py |
 | I22 | 按键动作泛化三档：`/api/cmd` 的 `key` 加 `action` 字段（白名单 `tap` / `hold` / `double`），优先于旧的 `hold` 布尔字段；`DoubleTap` 只在 Companion（tvOS 16+）可用，MRP 降级回单击；前端双击是临时模式，发一次即解除待命 | tests/test_atv_double.py |
+| I23 | Apple TV 三档能力有键盘 / 语音入口：命令面板在 status.curType === "appletv" 门禁下推 8 条命令（追加 / 替换 / 双击 / 五键长按，与页面按钮 hidden 同判据），执行体只复用页面按钮与 holdSend、不另发请求；文本两条走「指定目标态」而非翻转（重复执行幂等）；语音层每个新命令至少两个别名，别名指向的 id 必须真在面板里存在，Android 用户（cmds 里无 atv: 命令）说了不执行 | tests/test_atv_palette_actions.py |
 
 ## 5. 验证矩阵（spec 与 harness 对应）
 
@@ -171,14 +172,15 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 | I20 | 同上 | tests/test_pair_throttle.py |
 | I21 | 同上 | tests/test_atv_hold.py |
 | I22 | 同上 | tests/test_atv_double.py |
-| 前端行为 | node harness，由 Python 测试经 subprocess 驱动 | 20 个 tests/*_harness.js |
+| I23 | 同上 | tests/test_atv_palette_actions.py |
+| 前端行为 | node harness，由 Python 测试经 subprocess 驱动 | 21 个 tests/*_harness.js |
 
 ### 5.1 一键验证基线
 
 check.sh 依序执行：import server 与 atv_backend、node --check static/app.js、
 node --check static/sw.js、python3 -m unittest discover -s tests、
 ./sync-native.sh --check，有 .venv 时在 pyatv 分支复跑后两项。
-当前基线：.venv 675 项通过；系统 python3 671 项通过、skipped 12。
+当前基线：.venv 693 项通过（skipped 7）；系统 python3 689 项通过、skipped 15。
 
 ## 6. 已知缺口（尚未由测试覆盖，后续 spec 候选）
 
@@ -186,7 +188,7 @@ node --check static/sw.js、python3 -m unittest discover -s tests、
   但**错误文案层已不再依赖 pyatv**：`atv_backend.friendly_error()` 是模块级纯函数，
   由 I15 锁定，系统 python3 下也照样跑
   （`tests/test_atv_fastfail.py::FriendlyErrorTest`）。
-- static/app.js 体量 5712 行，交互大量靠 20 个 node harness 覆盖。
+- static/app.js 体量 5861 行，交互大量靠 21 个 node harness 覆盖。
   取证（2026-10-13）：各 harness 的 BEGIN/END 切片标记各不相同（本就该各不相同），
   副本化的巧偏重只有 1 份（reconnect_ui 的 sliceFn）；假 DOM 实现各容各语，
   仅 1 份用 querySelector。共享基建的可共享面小而重构风险高（2938 行），

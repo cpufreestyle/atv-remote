@@ -217,6 +217,16 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | 双环境 | .venv 675 passed / skipped 7；系统 python3 671 passed / skipped 12 |
 | 已知限制 | DoubleTap 只在 Companion 可用，MRP 降级回单击（与 Hold 同策略） |
 
+### 4.11 2026-10-17（I23：Apple TV 三档能力的命令面板 / 语音入口）
+
+| 项 | 结论 |
+|----|------|
+| 动机 | I18/I19/I21/I22 给 Apple TV 加了文本追加 / 双击 / 原生长按，但入口只有页面按钮——命令面板（Cmd/Ctrl+K）与语音意图层（INTENT_ALIASES）完全没收录，熟手敲几个字母到不了这些新功能，功能等于只做了一半 |
+| 改动 | palCommands() 在门禁 status.curType === "appletv"（与页面按钮 hidden 同判据）下推 8 条命令：追加 / 替换走「指定目标态」而非翻转（重复执行幂等，不会把「替换」切成追加），双击与五键长按的执行体复用页面按钮 / holdSend 单一出口、不另发请求；INTENT_ALIASES 补 20 条别名（长按确定 / 长按OK / 长按菜单 / 长按上下左右 / 双击 / 追加 / 替换 / 覆盖…） |
+| 新测试 | tests/test_atv_palette_actions.py 18 例（harness 真跑 + 门禁契约 + 单一状态源 + 别名可达四类）；tests/atv_pal_harness.js 8 组（门禁 / 幂等 / label 反态 / 无重复 id，末行输出 facts 供 Python 复核）；tests/intent_harness.js 加 1 组（15→16，14 条正证 + 3 条 Android 门禁反证：cmds 里无 atv: 命令时说了不执行） |
+| 双环境 | .venv 693 passed / skipped 7；系统 python3 689 passed / skipped 15 |
+| 备注 | 零后端改动，test_route_contract（32 条冻结三元组）未受影响；static/ 改动已跑 ./sync-native.sh 同步内嵌副本（I10） |
+
 ## 5. Qoder better-harness 台账
 
 来源：.qoder/better-harness/2026-08-26/220155-atv-remote/findings.json
@@ -240,7 +250,7 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 1. spec.md 第 6 节三条缺口：第一条（pyatv 错误文案）已收敛为 I15；
    第二条（harness 共享基建）取证后判定收益/风险不成比例，暂不动；
    第三条（真机验收）受设备环境约束无法进 CI。后续轮次先复核这三条是否仍成立。
-2. **GitHub 推送待恢复**：本地 `a4b3ece` 之后又多了布局优化这一轮，网络恢复后 `git push origin main`。
+2. **GitHub 推送待恢复**：本地领先 GitHub 9 个提交（I18-I22 五轮 + 宽屏布局两轮 + D2 收敛 + 台账；GitHub 连接仍被 fake-ip 阻断，Gitee 已同步），网络恢复后 `git push origin main`。
 3. 代码或边界发生实质变更时重跑 ./check.sh，并把结论写进第 4 节（新开 4.x 小节，按日期升序）。
 4. 布局若要再收紧，候选是「npCard 与手机安装卡的宽屏归属」——这两张目前走 auto-flow，
    因为它们内容轻（一行状态条 / 折叠 details），但一旦某天内容变重就得显式归列。
