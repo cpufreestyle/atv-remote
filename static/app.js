@@ -663,7 +663,7 @@ const COACH_HELP = {
   ],
   post: [
     { tab: "dpad", sel: ".dpad", title: "方向键可以长按连发",
-      desc: "方向、音量、seek 键按住 450ms 后会连续发送——滚列表、调音量不用点到手酸。" },
+      desc: "方向、音量、seek 键按住 450ms 后会连续发送——滚列表、调音量不用点到手酸。连发一段时间后还会自动发一次原生长按（Apple TV 的长按菜单，如长按 OK 弹上下文菜单）。" },
     { tab: "pad", sel: "#touchpad", title: "触摸板的四种手势",
       desc: "轻点 = 点击、拖动 = 滑动；✌️ 双指上下滑 = 音量、左右滑 = 快进，双轻点 = 播放/暂停；单指长按 = 连续滚动。" },
     { tab: "pad", sel: "#textInput", title: "直接用键盘遥控",
@@ -3132,7 +3132,7 @@ document.addEventListener("keydown", (e) => {
 // 450ms 起发、之后每 120ms 一次；指针抬起/离开/页面隐藏/失焦立即停。
 // 只有方向、音量、seek 允许连发（电源/静音/主页连发会翻转状态，见 HOLD_KEYS）。
 // 键盘 Enter/Space 触发 click 时没有 pointerdown，靠 lastHoldSend 时间戳防双重发送。
-const HOLD_DELAY = 450, HOLD_RATE = 120;
+const HOLD_DELAY = 450, HOLD_RATE = 120, HOLD_AFTER_REPEATS = 5;
 const HOLD_KEYS = new Set([19, 20, 21, 22, 23, 24, 25, 87, 88, 89, 90]);
 
 // 当前按住的键的停止函数。pointerup 必须「在窗口任何位置收到都停」——手指滑出按钮、
@@ -3162,7 +3162,18 @@ $$("[data-key]").forEach((btn) => {
     kmSend(code);                     // 统一出口：没改绑就发自己（历史行为）
     btn.classList.add("pressed");     // 按压态全程保持，stop() 里摘掉
     if (kmHoldable(bound())) {         // 连发按绑定目标推导：启动器/宏不连发
-      hold = setTimeout(() => { rep = setInterval(tick, HOLD_RATE); }, HOLD_DELAY);
+      // 连发是快速点按多次（滚列表）；电视端自己的长按菜单需要 InputAction.Hold，点击多少次都换不来。
+      // 所以连发满若干次后停掉点按、改发一次 hold：先滚到位，再给用户一个原生长按。
+      let ticks = 0;
+      hold = setTimeout(() => {
+        rep = setInterval(() => {
+          tick();
+          if (++ticks < HOLD_AFTER_REPEATS) return;
+          clearInterval(rep); rep = null;
+          if (activeHoldStop === stop) activeHoldStop = null;
+          holdSend(code);
+        }, HOLD_RATE);
+      }, HOLD_DELAY);
       activeHoldStop = stop;
     }
     // 长按进改键弹窗：触发时先停连发，别让用户白白多发几个键
@@ -4523,6 +4534,21 @@ async function kmSend(code) {
   if (!f) { toast("该键的绑定已失效，重新设置一下"); return; }
   buzz();
   return f.run();
+}
+
+// 原生长按（Apple TV InputAction.Hold）：连发满若干次后发一次，触发电视端自己的长按菜单。
+// 不走 sendKey：那里有 90ms 节流和音量 OSD，两者对长按都不适用。
+// Android 没有这个语义（adb input 无长按），所以只对 Apple TV 发。
+async function holdSend(code) {
+  if (status.curType !== "appletv") return;
+  flashKey(code);
+  try {
+    await api("/api/cmd", { type: "key", code, hold: true });
+    log("→ hold " + code);
+    toast("已发送长按（电视端长按菜单）", 1200);
+  } catch (e) {
+    log("⚠ " + e.message);
+  }
 }
 
 // 长按是否连发：只认 keyevent，且目标键本身在 HOLD_KEYS 里

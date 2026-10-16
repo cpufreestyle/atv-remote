@@ -1280,7 +1280,9 @@ def handle_cmd_appletv(body):
         codes = [int(c) for c in codes if str(c).lstrip("-").isdigit()]
         if not codes:
             raise AppleTvError("键码不合法")
-        atv_mgr.send_keys(codes)
+        # hold=true 时用 InputAction.Hold（按住一秒再松），
+        # 这才能触发电视端自己的长按菜单（点击多少次都换不来）。
+        atv_mgr.send_keys(codes, hold=body.get("hold") is True)
         return {"ok": True, "sent": codes}
     if t == "text":
         # 与 Android 分支同样限长：长文本会一直卡在 pyatv 的往返里

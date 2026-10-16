@@ -25,7 +25,7 @@ python3 -m unittest discover -s tests    # 行为回归（638 项，skipped 11�
 | 类别 | 数量 | 说明 |
 |------|------|------|
 | Python 单测文件 | 40 | tests/test_*.py |
-| Python 用例总数 | .venv 657 / 系统 653 | skipped 12（依赖 pyatv 或 Pillow）；.venv 下 7 |
+| Python 用例总数 | .venv 666 / 系统 662 | skipped 12（依赖 pyatv 或 Pillow）；.venv 下 7 |
 | node harness | 20 | tests/*_harness.js，与宿主测试一一对应 |
 | 图标/规格守护 | 1 | tests/test_icons.py 另守护 assets/ 与桌面脚本 |
 | 结构守护 | 2 | tests/test_route_contract.py（I14 派发面冻结）、tests/test_delivery_manifest.py（I13 三处交付清单对账） |
@@ -192,6 +192,18 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | 双环境 | .venv 657 passed / skipped 7；系统 python3 653 passed / skipped 12 |
 | 未落地 | `enableTVRemoteOnLockscreen`（锁屏遥控）——是 macOS 侧 entitlement/配置而非遥控协议，与 atv-remote 的 Web 形态不匹配，放弃 |
 
+### 4.9 2026-10-17（反编译 tvremoted → I21：原生长按语义暴露给用户）
+
+| 项 | 结论 |
+|----|------|
+| 参照物 | pyatv `const.InputAction`：SingleTap / DoubleTap / Hold（按住一秒再松）——`send_keys` 此前只用了默认 SingleTap，Hold 完全没暴露 |
+| 用户可感知的差异 | 长按 OK 弹上下文菜单这类电视端原生交互，靠前端连发（快速点按多次）永远触发不了 |
+| 改动 | `atv_backend.send_keys(codes, hold=False)`：hold 时用 `InputAction.Hold`，MRP 不支持时抛异常降级回单击；`/api/cmd` 的 `key` 加 `hold` 字段（严格 `is True`） |
+| 前端 | 连发满 5 次（`HOLD_AFTER_REPEATS`，约 1 秒）后停掉点按、改发一次 `holdSend(code)`；`holdSend` 只对 Apple TV 发（Android 的 adb input 没有长按参数），不走 `sendKey` 的 90ms 节流与音量 OSD |
+| 为什么不在长按一开始就发 Hold | 那样滚列表会变成每次按住都弹菜单，破坏连发的主要用途；分开后两者共存：先滚到位，再给原生长按 |
+| 新测试 | tests/test_atv_hold.py 9 例：签名、Hold 调用、MRP 降级、占位类签名对齐、路由 hold 字段、常量、连发停止后发 hold、仅 Apple TV、携带 flag |
+| 双环境 | .venv 666 passed / skipped 7；系统 python3 662 passed / skipped 12 |
+
 ## 5. Qoder better-harness 台账
 
 来源：.qoder/better-harness/2026-08-26/220155-atv-remote/findings.json
@@ -200,7 +212,7 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | id | 严重度 | 状态 | 证据或说明 |
 |----|--------|------|-------------|
 | no-agent-routing-instructions | High | 已解决 | AGENTS.md 覆盖启动命令、源码结构、构建路径、安全约束 |
-| no-automated-validation | Medium | 已解决 | check.sh 与 657 项单测（.venv）；本文件与 spec.md 固化为契约，并有 SpecContractTest 防漂移 |
+| no-automated-validation | Medium | 已解决 | check.sh 与 666 项单测（.venv）；本文件与 spec.md 固化为契约，并有 SpecContractTest 防漂移 |
 | untracked-native-module | Low | 已解决 | android-native/ 已入库，README 有独立章节 |
 
 ## 6. Drift 台账（spec 与代码的偏差）
