@@ -23,25 +23,28 @@ class BackendHoldTest(unittest.TestCase):
         cls.src = (ROOT / "atv_backend.py").read_text(encoding="utf-8")
 
     def test_send_keys_accepts_hold_flag(self):
-        self.assertIn("def send_keys(self, codes, hold=False):", self.src)
+        self.assertIn("def send_keys(self, codes, hold=False, action=None):", self.src)
 
     def test_uses_input_action_hold(self):
-        seg = self.src[self.src.index("def send_keys"):]
-        seg = seg[:seg.index("def send_text")]
-        self.assertIn("InputAction.Hold", seg, "\u957f\u6309\u5206\u652f\u8981\u7528 InputAction.Hold")
-        self.assertIn("if _h:", seg, "\u53ea\u6709\u6307\u5b9a hold \u65f6\u624d\u7528 Hold\uff0c\u5426\u5219\u4fdd\u6301\u5355\u51fb")
+        seg = self.src[self.src.index('def _input_action'):]
+        seg = seg[:seg.index("def send_keys", 100)]
+        self.assertIn("InputAction.Hold", seg, "长按要映射到 InputAction.Hold”")
+        seg2 = self.src[self.src.index("def send_keys"):]
+        seg2 = seg2[:seg2.index("def send_text")]
+        self.assertIn("_ia is not InputAction.SingleTap", seg2, "只有非单击才传动作参数”")
 
     def test_hold_falls_back_to_tap_on_mrp(self):
-        """MRP \u65e7\u8f6c\u53d1\u5668\u4e0d\u6307 Hold\uff1a\u964d\u7ea7\u56de\u5355\u51fb\uff0c\u4e0d\u8ba9\u957f\u6309\u76f4\u63a5\u5931\u6548\u3002"""
+        """MRP 旧转发器不指 Hold：降级回单击，不让长按直接失效。"""
         seg = self.src[self.src.index("def send_keys"):]
         seg = seg[:seg.index("def send_text")]
-        self.assertIn("try:", seg) and self.assertIn("return fn(InputAction.Hold)", seg)
-        self.assertLess(seg.index("return fn(InputAction.Hold)"), seg.index("except Exception:"),
-                        "Hold 调用应在降级分支之前")
+        self.assertIn("try:", seg) and self.assertIn("return fn(_ia)", seg)
+        self.assertLess(seg.index("return fn(_ia)"), seg.index("except Exception:"),
+                        "动作调用应在降级分支之前”")
+        self.assertIn("return fn()", seg)
         self.assertIn("return fn()", seg)
 
     def test_stub_signature_aligned(self):
-        self.assertEqual(self.src.count("def send_keys(self, codes, hold=False):"), 2,
+        self.assertEqual(self.src.count("def send_keys(self, codes, hold=False, action=None):"), 2,
                          "\u771f\u7c7b + \u964d\u7ea7\u5360\u4f4d\u7c7b\u5404\u4e00\u4efd")
 
 
@@ -51,7 +54,7 @@ class RouteHoldTest(unittest.TestCase):
         cls.src = (ROOT / "server.py").read_text(encoding="utf-8")
 
     def test_key_branch_passes_hold_flag(self):
-        self.assertIn('atv_mgr.send_keys(codes, hold=body.get("hold") is True)', self.src,
+        self.assertIn('action=act)', self.src) and self.assertIn('hold=body.get("hold") is True', self.src,
                       "\u8def\u7531\u5c42\u628a hold \u5b57\u6bb5\u900f\u7ed9\u540e\u7aef\uff08\u4e25\u683c bool\uff0c\u9632\u5fa1\u610f\u5916\u503c\uff09")
 
 
@@ -74,12 +77,12 @@ class FrontendHoldTest(unittest.TestCase):
 
     def test_hold_send_only_for_appletv(self):
         """Android \u6ca1\u6709\u539f\u751f\u957f\u6309\u8bed\u4e49\uff08adb input \u65e0\u957f\u6309\u53c2\u6570\uff09\u3002"""
-        seg = self.js[self.js.index("async function holdSend"):]
+        seg = self.js[self.js.index("async function sendAction"):]
         seg = seg[:seg.index("\u957f\u6309\u662f\u5426\u8fde\u53d1") if "\u957f\u6309\u662f\u5426\u8fde\u53d1" in seg else seg.index("function kmHoldable")]
         self.assertIn('status.curType !== "appletv"', seg)
 
     def test_hold_sends_flag(self):
-        self.assertIn('{ type: "key", code, hold: true }', self.js)
+        self.assertIn('action: kind', self.js)
 
 
 if __name__ == "__main__":

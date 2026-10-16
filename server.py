@@ -1282,8 +1282,14 @@ def handle_cmd_appletv(body):
             raise AppleTvError("键码不合法")
         # hold=true 时用 InputAction.Hold（按住一秒再松），
         # 这才能触发电视端自己的长按菜单（点击多少次都换不来）。
-        atv_mgr.send_keys(codes, hold=body.get("hold") is True)
-        return {"ok": True, "sent": codes}
+        # action 支持 "tap" / "hold" / "double"，优先于 hold 布尔字段（向后兼容）。
+        act = body.get("action")
+        if act not in (None, "tap", "hold", "double"):
+            raise AppleTvError("不支持的按键动作：{}（可选 tap / hold / double）".format(act))
+        atv_mgr.send_keys(codes,
+                          hold=body.get("hold") is True,
+                          action=act)
+        return {"ok": True, "sent": codes, "action": act or ("hold" if body.get("hold") is True else "tap")}
     if t == "text":
         # 与 Android 分支同样限长：长文本会一直卡在 pyatv 的往返里
         text = str(body.get("text", ""))[:MAX_TEXT_LEN]

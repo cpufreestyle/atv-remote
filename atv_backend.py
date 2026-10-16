@@ -367,16 +367,29 @@ class AppleTvManager:
             self._pair_dev = None
 
     # ---------------- 遥控命令 ----------------
-    def send_keys(self, codes, hold=False):
+    @staticmethod
+    def _input_action(name):
+        """把前端的动作名转成 pyatv InputAction；不认识的名字回 None。"""
+        return {"tap": InputAction.SingleTap, "hold": InputAction.Hold,
+                "double": InputAction.DoubleTap}.get(name)
+
+    def send_keys(self, codes, hold=False, action=None):
         """发按键。
 
-        hold=True 时用 InputAction.Hold（按住一秒再松）而不是默认的 SingleTap。
+        hold=True 等价于 action="hold"（向后兼容保留）；
+        新参数 action 支持 "tap" / "hold" / "double"。
         两者语义不同：前端的长按连发是快速点击多次（滚列表），
         而 Hold 能触发电视端自己的“长按菜单”（如长按 OK 弹上下文菜单）——
         这个能力点击多少次都换不来。
 
-        协议差异：MRP（旧转发器）不指 Hold，安装时会抛异常，那就回到 SingleTap。
+        协议差异：MRP（旧转发器）不指 Hold / DoubleTap，安装时会抛异常，
+        那就回到 SingleTap。
         """
+        if action is None:
+            action = "hold" if hold else "tap"
+        ia = self._input_action(str(action))
+        if ia is None:
+            raise AppleTvError("不支持的按键动作：{}".format(action))
         for code in codes:
             code = int(code)
             action = self._key_map.get(code)
@@ -384,15 +397,15 @@ class AppleTvManager:
                 raise AppleTvError("Apple TV 不支持键码 {}".format(code))
             iface_name, method = action
 
-            def factory(_n=iface_name, _m=method, _h=hold):
+            def factory(_n=iface_name, _m=method, _ia=ia):
                 def build(atv):
                     iface = getattr(atv, _n)
                     fn = getattr(iface, _m)
-                    if _h:
-                        # MRP 旧转发器不指 Hold：抛异常就回到点击，
+                    if _ia is not InputAction.SingleTap:
+                        # MRP 旧转发器不指 Hold / DoubleTap：抛异常就回到点击，
                         # 否则“长按”在那些设备上会直接失效。
                         try:
-                            return fn(InputAction.Hold)
+                            return fn(_ia)
                         except Exception:  # pylint: disable=broad-except
                             return fn()
                     return fn()
@@ -561,7 +574,7 @@ if not PYATV_AVAILABLE:
         def current_device(self):
             return None
 
-        def send_keys(self, codes, hold=False):
+        def send_keys(self, codes, hold=False, action=None):
             raise AppleTvError("pyatv 未安装，" + _pyatv_hint())
 
         def send_text(self, text, enter=False, append=False):

@@ -185,6 +185,9 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
           <!-- Apple TV 专用：Companion 协议的 text_append 是追加语义（同 Android 的 input text），
                text_set 才整段替换。默认追加才不会把电视端已有的旧关键词搞干净。 -->
           <button id="atvAppendBtn" class="btn tiny hidden" aria-pressed="true" title="追加到电视端现有内容之后；关掉则整段替换">➕ 追加</button>
+          <!-- Apple TV 双击：Companion 协议 InputAction.DoubleTap，跟长按同源。
+               想要双击某键时点它发一次 DoubleTap（与连发不同，连发是 N 次点按）。 -->
+          <button id="atvDoubleBtn" class="btn tiny hidden" title="发送一次双击（Apple TV 原生语义）">⏩⏩ 双击</button>
         </div>
         <p class="hint" id="privacyHint" hidden>隐私模式：发送的内容在日志里只显示 ••、输入框掩码显示 —— 在电视上输密码一类场景用，可随时关掉。</p>
         <p class="hint" id="atvAppendHint" hidden>Apple TV 默认「追加」：发送的内容接在电视输入框现有文字后面（同 Android 行为）。点「➕ 追加」切换成整段替换——想覆盖旧关键词时用。</p>

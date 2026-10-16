@@ -4,7 +4,7 @@
 > 事实优先级：server.py / atv_backend.py / static/ 源码 > tests/ > 本文件 > README.md（仅作介绍）。
 > 任何行为变更必须同步更新本文件与 docs/harness.md；docs/harness.md 记录最近一次核验结论。
 >
-> 最近核验：2026-10-17（反编译 tvremoted 系列：I18-I21 聚焦推送 / 追加语义 / 配对节流 / 原生长按）
+> 最近核验：2026-10-17（反编译 tvremoted 系列：I18-I22 聚焦推送 / 追加语义 / 配对节流 / 原生长按 / 双击）
 
 ## 1. 目标与范围
 
@@ -145,6 +145,7 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 | I19 | Apple TV 文本输入默认追加：`/api/cmd` 的 `text` 命令 `mode` 缺省为 `append`（与 Android `input text` 一致），仅显式 `mode=set` 才整段替换；MRP 等不支持 `text_append` 的协议必须降级到 `text_set` 而非让整条发送失败 | tests/test_atv_text_mode.py |
 | I20 | Apple TV 配对 PIN 连续试错有节流：同一设备连续失败 5 次后拒绝 60 秒，成功配对或换设备会清零；参数是一组对节奏的配对，不得单边改 | tests/test_pair_throttle.py |
 | I21 | 长按语义分两路：连发是快速点按多次（滚列表 / 调音量），连发满 5 次后停掉点按、改发一次 `hold=true`（Apple TV 走 InputAction.Hold 触发电视端长按菜单，MRP 不支持时降级回单击）；Android 无原生长按语义，`holdSend` 直接短路 | tests/test_atv_hold.py |
+| I22 | 按键动作泛化三档：`/api/cmd` 的 `key` 加 `action` 字段（白名单 `tap` / `hold` / `double`），优先于旧的 `hold` 布尔字段；`DoubleTap` 只在 Companion（tvOS 16+）可用，MRP 降级回单击；前端双击是临时模式，发一次即解除待命 | tests/test_atv_double.py |
 
 ## 5. 验证矩阵（spec 与 harness 对应）
 
@@ -169,6 +170,7 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 | I19 | 同上 | tests/test_atv_text_mode.py |
 | I20 | 同上 | tests/test_pair_throttle.py |
 | I21 | 同上 | tests/test_atv_hold.py |
+| I22 | 同上 | tests/test_atv_double.py |
 | 前端行为 | node harness，由 Python 测试经 subprocess 驱动 | 20 个 tests/*_harness.js |
 
 ### 5.1 一键验证基线
@@ -176,7 +178,7 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 check.sh 依序执行：import server 与 atv_backend、node --check static/app.js、
 node --check static/sw.js、python3 -m unittest discover -s tests、
 ./sync-native.sh --check，有 .venv 时在 pyatv 分支复跑后两项。
-当前基线：.venv 666 项通过；系统 python3 662 项通过、skipped 12。
+当前基线：.venv 675 项通过；系统 python3 671 项通过、skipped 12。
 
 ## 6. 已知缺口（尚未由测试覆盖，后续 spec 候选）
 

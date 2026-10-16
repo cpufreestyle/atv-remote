@@ -25,7 +25,7 @@ python3 -m unittest discover -s tests    # 行为回归（638 项，skipped 11�
 | 类别 | 数量 | 说明 |
 |------|------|------|
 | Python 单测文件 | 40 | tests/test_*.py |
-| Python 用例总数 | .venv 666 / 系统 662 | skipped 12（依赖 pyatv 或 Pillow）；.venv 下 7 |
+| Python 用例总数 | .venv 675 / 系统 671 | skipped 12（依赖 pyatv 或 Pillow）；.venv 下 7 |
 | node harness | 20 | tests/*_harness.js，与宿主测试一一对应 |
 | 图标/规格守护 | 1 | tests/test_icons.py 另守护 assets/ 与桌面脚本 |
 | 结构守护 | 2 | tests/test_route_contract.py（I14 派发面冻结）、tests/test_delivery_manifest.py（I13 三处交付清单对账） |
@@ -204,6 +204,19 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | 新测试 | tests/test_atv_hold.py 9 例：签名、Hold 调用、MRP 降级、占位类签名对齐、路由 hold 字段、常量、连发停止后发 hold、仅 Apple TV、携带 flag |
 | 双环境 | .venv 666 passed / skipped 7；系统 python3 662 passed / skipped 12 |
 
+### 4.10 2026-10-17（反编译 tvremoted → I22：DoubleTap 暴露给用户）
+
+| 项 | 结论 |
+|----|------|
+| 参照物 | pyatv `const.InputAction` 三档：SingleTap / DoubleTap / Hold。上一轮把 Hold 暴露了，这一轮把 DoubleTap 也补上 |
+| Companion 实现 | `protocols/companion/__init__.py:417` 明确支持 `DoubleTap`；`api.py:378` 处理 SingleTap / DoubleTap 两种编码 |
+| 改动 | `send_keys(codes, hold=False, action=None)` 泛化：action 是白名单字符串（`tap` / `hold` / `double`），优先于 `hold` 布尔；`_input_action()` 是唯一映射点，不认识的值拒绝而不是静默回退 |
+| 路由 | `/api/cmd` 的 `key` 分支加 `action` 白名单校验；响应里带 `action` 让调用方知道实际发了什么 |
+| 前端 | 新增「⏩⏩ 双击」按钮（Apple TV 专属，显隐跟随设备类型）；点击进入待命态，下一个按键改发 DoubleTap 后自动解除——避免用户误把后续按键都变双击 |
+| 新测试 | tests/test_atv_double.py 9 例：签名、映射表、未知 action 拒绝、路由白名单、优先级、按钮存在、发一次即解除、action 透传、显隐 |
+| 双环境 | .venv 675 passed / skipped 7；系统 python3 671 passed / skipped 12 |
+| 已知限制 | DoubleTap 只在 Companion 可用，MRP 降级回单击（与 Hold 同策略） |
+
 ## 5. Qoder better-harness 台账
 
 来源：.qoder/better-harness/2026-08-26/220155-atv-remote/findings.json
@@ -212,7 +225,7 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | id | 严重度 | 状态 | 证据或说明 |
 |----|--------|------|-------------|
 | no-agent-routing-instructions | High | 已解决 | AGENTS.md 覆盖启动命令、源码结构、构建路径、安全约束 |
-| no-automated-validation | Medium | 已解决 | check.sh 与 666 项单测（.venv）；本文件与 spec.md 固化为契约，并有 SpecContractTest 防漂移 |
+| no-automated-validation | Medium | 已解决 | check.sh 与 675 项单测（.venv）；本文件与 spec.md 固化为契约，并有 SpecContractTest 防漂移 |
 | untracked-native-module | Low | 已解决 | android-native/ 已入库，README 有独立章节 |
 
 ## 6. Drift 台账（spec 与代码的偏差）

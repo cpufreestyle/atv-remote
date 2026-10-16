@@ -773,6 +773,12 @@ async function sendKey(code) {
   if (lastSent[code] && now - lastSent[code] < 90) return; // 按住自动重复时节流
   lastSent[code] = now;
   flashKey(code);
+  // 双击待命中：把这一次点按改发 DoubleTap 并解除待命
+  if (dblArmed && status.curType === "appletv") {
+    dblArmed = false;
+    applyAtvDouble();
+    return sendAction(code, "double");
+  }
   if (VOL_KEYS.has(code)) volBump(code);   // 音量 OSD：本地先反馈，不等 adb 回包
   try {
     await api("/api/cmd", { type: "key", code });
@@ -846,6 +852,28 @@ function applyAtvAppend() {
   if (hint) hint.hidden = status.curType !== "appletv";
   btn.classList.toggle("hidden", status.curType !== "appletv");
 }
+
+
+/* Apple TV 双击（Companion InputAction.DoubleTap）：独立的临时模式，
+   选中后下一个按键改为发送 DoubleTap 而不是 SingleTap。
+   与「追加 / 替换」不同——那是文本语义，这是按键动作。 */
+let dblArmed = false;   // true = 下一个按键发 DoubleTap
+
+function applyAtvDouble() {
+  const btn = $("#atvDoubleBtn");
+  if (!btn) return;
+  btn.classList.toggle("hidden", status.curType !== "appletv");
+  btn.classList.toggle("on", dblArmed);
+  btn.setAttribute("aria-pressed", dblArmed ? "true" : "false");
+  btn.textContent = dblArmed ? "⏩⏩ 双击·待命中" : "⏩⏩ 双击";
+}
+
+$("#atvDoubleBtn")?.addEventListener("click", () => {
+  dblArmed = !dblArmed;
+  applyAtvDouble();
+  toast(dblArmed ? "双击待命中：下一个按键将发送 DoubleTap"
+                 : "双击已取消");
+});
 
 $("#atvAppendBtn").addEventListener("click", () => {
   atvAppend.on = !atvAppend.on;
@@ -2301,6 +2329,7 @@ function renderStatus(s) {
   // 清空 / 搜索键走 ADBKeyboard 广播，Apple TV 没有这回事
   $("#kbTools").classList.toggle("hidden", isApple);
   applyAtvAppend();  // 追加/替换只对 Apple TV 有意义，切换设备时重算显隐
+  applyAtvDouble();   // 双击按钮同样只对 Apple TV 有意义
 
   if (s.version) $("#verHint").textContent = "ATV Remote v" + s.version + " · 数据只存在本机浏览器";
   // 睡眠定时状态（倒计时本地走秒，这里只负责发现 set/cancel 的变化）
@@ -4539,17 +4568,23 @@ async function kmSend(code) {
 // 原生长按（Apple TV InputAction.Hold）：连发满若干次后发一次，触发电视端自己的长按菜单。
 // 不走 sendKey：那里有 90ms 节流和音量 OSD，两者对长按都不适用。
 // Android 没有这个语义（adb input 无长按），所以只对 Apple TV 发。
-async function holdSend(code) {
+async function sendAction(code, kind) {  // kind: "hold" | "double"
   if (status.curType !== "appletv") return;
+  if (kind !== "hold" && kind !== "double") return;
   flashKey(code);
   try {
-    await api("/api/cmd", { type: "key", code, hold: true });
-    log("→ hold " + code);
-    toast("已发送长按（电视端长按菜单）", 1200);
+    await api("/api/cmd", { type: "key", code, action: kind });
+    const label = kind === "hold" ? "长按" : "双击";
+    log("→ " + kind + " " + code);
+    toast("已发送" + label + "（Apple TV 原生语义）", 1200);
   } catch (e) {
     log("⚠ " + e.message);
   }
 }
+
+// 向后兼容保留：holdSend 仍是长按的入口，双击走新的入口。
+async function holdSend(code) { return sendAction(code, "hold"); }
+async function doubleSend(code) { return sendAction(code, "double"); }
 
 // 长按是否连发：只认 keyevent，且目标键本身在 HOLD_KEYS 里
 function kmHoldable(action) {
