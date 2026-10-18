@@ -140,7 +140,7 @@ class ServiceWorkerDownloadTest(unittest.TestCase):
         # 改了 fetch 逻辑就必须换缓存名，否则老客户端还在跑旧 SW
         # 纯前端升级（布局 / 交互）也要递增，否则装过桌面的老客户端
         # 会一直用 stale-while-revalidate 吐出来的旧外壳。这里钉当前值当绊线。
-        self.assertIn('CACHE = "atv-shell-v7"', self.sw)
+        self.assertIn('CACHE = "atv-shell-v9"', self.sw)
 
 
 if __name__ == "__main__":

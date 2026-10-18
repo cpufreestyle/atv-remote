@@ -1,214 +1,121 @@
-# 交接 — ATV Remote（2026-09-26 夜）
+# 交接 — ATV Remote（2026-10-18 午轮）
 
-> 本轮从「装个 APK 就能用」这条主线出发，一路挖到安装链路、图标、下载三处真 bug。
-> 下面按「现在是什么状态 → 怎么验证 → 还剩什么」写，每条结论都有实测数字。
+> 本轮一句话：小米 K90 上「点了 Apple TV 页签没反应」的根因不是页签逻辑，是
+> static/app.js:2116 一处漏 const 的顶层裸赋值在 use strict 下当场中断整个脚本，
+> 3304 行的页签 click 绑定从没注册。已修 + 已加整文件顶层可执行性兜底测试，SW 版本顶到 v9。
+> 代码/harness 级全绿；Mac Chrome 端到端（SW v9 → 真实鼠标点 🍎 切 pane、零异常）也已闭环；
+> 真机验收（重装 APK）留给下一步。上一轮（2026-09-26，APK 安装链路/
+> 图标/下载三处 bug）的交接已并入 git 历史，不再赘述。
 
 ## 0. 一分钟速览
 
 | 项 | 值 |
 |---|---|
-| 版本 | `VERSION` = 1.34.0 / versionCode 35（本轮已发版） |
-| 测试 | `python3 -m unittest discover -s tests` → **455 通过**（skipped=7） |
-| 一键校验 | `./check.sh` → ✅ ALL CHECKS PASSED（系统 python3 与 `.venv` 各跑一遍） |
-| 内嵌副本 | `./sync-native.sh --check` → ✅ 一致 |
-| 服务 | LaunchAgent `com.atv.remote`，`.venv/bin/python server.py --no-open --no-token`，`:8300` |
-| 局域网 | `http://192.168.1.109:8300`（令牌已关，手机直连免输入） |
-| APK | `ATVRemote-native.apk` 20,261,447 字节（原生版，自带引擎 + adb，SHA256 `b69ece…8482`） |
-| git | 工作区**有未提交改动**（33 文件 + 若干新文件，见 §6） |
+| 根因 | static/app.js:2116 VOLSET_MAX_FALLBACK = 15 漏 const（第 2 行 use strict → 顶层 ReferenceError 中断整文件） |
+| 引入 | dd3b99e（2026-10-02 音量按格设置），存活 16 天 |
+| 修复 | app.js:2116 补 const；static/sw.js CACHE v8→v9；新增 tests/top_level_harness.js + tests/test_top_level.py |
+| 新不变式 | spec.md I24（Apple TV 能力门禁，补登）+ I25（前端顶层整文件可执行） |
+| 测试 | ./check.sh 全绿：系统 python3 698 OK skipped=15；.venv 702 OK skipped=7 |
+| 内嵌副本 | ./sync-native.sh --check 一致（sw.js 已 v9） |
+| git | main 领先 origin 11 提交；只推 gitee（GitHub SSL 阻断）；本轮改动未提交 |
+| 服务 | Mac .venv 服务端 192.168.1.111:8300 仍是 Apple TV 控制点 |
+| 待办 | 真机验收：重建 APK + 清数据重装 + 点 🍎 验证切 pane（重装会清 state.json） |
+| 端到端 | Mac Chrome：SW 自更新 v9 后 CDP 真实鼠标点 🍎 → pane 切换、Runtime.exceptionThrown 零事件（需先跳过 #coachMark 引导层，它是全屏 modal 会吞点击，产品正常行为） |
 
-## 1. 本轮解决的问题（按发现顺序）
+## 1. 根因链（从表象到骨）
 
-### 1.1 手机装 APK 用不了 → 其实是两件事叠在一起
+1. 表象：小米 K90 native App 点了 🍎 页签没反应；页面却能正常滚动。
+2. 骨因：app.js:2116 VOLSET_MAX_FALLBACK = 15 漏 const。文件第 2 行就是 use strict，顶层
+   裸赋值抛 ReferenceError，整个脚本当场停在这一行——3304 行的 .devtab 页签 click 绑定及其后
+   所有初始化从未执行。原生滚动不走 JS，所以页面照常滚、点击全被吞。
+3. 为何 16 天没人发现：
+   - 现有 23 个 harness 全按 atv-xxx:begin/end 标记抽段执行，整文件顶层路径从无行为证据；
+   - node --check 只查语法、不执行；
+   - Service Worker 的 stale-while-revalidate 持续发放旧 app.js，掩盖症状。
+4. 表层放大器：sw.js:97 if (hit) return hit——HTTP 响应虽是 no-store，但管不住 SW 自己的
+   Cache Storage。表现即「修了源码、设备仍是旧的」。
+5. 关键判定（证伪第二个断点 + 端到端闭环）：
+   - tests/top_level_harness.js 用 vm 沙箱整文件执行当前 app.js：顶层不抛、两个 .devtab
+     均注册 click——证明当前源码没有第二个断点；Chrome 里 1839~3304 之间看到的第二个
+     报错是 SW 旧缓存，不是当前文件。
+   - Mac Chrome 端到端闭环（午轮末补）：等旧 SW 自更新到 v9 后，Cache Storage 里 app.js:2116
+     已是 const 版；主 world 里 VolSet/pageVisible 均正常初始化（顶层完整执行）；
+     CDP Input.dispatchMouseEvent 真实鼠标点击 🍎 → #pane-appletv 加 on、#pane-android 去 on，
+     Runtime.exceptionThrown 零事件。
+   - Mac Chrome 复现「点击无效」的最后一个混淆变量：#coachMark.modal.coach 首次访问引导层
+     是全屏 modal，会吞掉页签区域所有真实鼠标点击（产品正常行为，有「跳过」按钮）。原生
+     btn.click() 不经 hit-testing 所以能过——别被它带偏去改绑定代码。
 
-**现象**：装上原生 APK 打不开遥控功能 / 页面提示「apk不存在」。
+## 2. 本轮改动（文件级）
 
-**根因 A**：页面上「下载 APK」链接触发 `/app.apk`，而后端一直发的是
-`android/ATVRemote.apk` —— 那是 **62KB 的 WebView 壳**，没有自己的引擎，必须 Mac 上
-跑着服务才能用。
+| 文件 | 改动 |
+|---|---|
+| static/app.js | :2116 补 const（根因修复） |
+| static/sw.js | CACHE v8→v9（强制 SW 更新发新 app.js，修复才落地） |
+| tests/test_pwa.py | 版本下限 assertGreaterEqual(..., 8) 改 9 |
+| tests/test_download.py | 钉 CACHE = atv-shell-v9 |
+| tests/top_level_harness.js | 新增：vm 沙箱整文件执行 app.js，断言顶层不抛 + 两页签 click 注册 |
+| tests/test_top_level.py | 新增：驱 harness + 静态挡顶层裸赋值 + 钉住 use strict（3 项） |
+| tests/atv_gate_harness.js、tests/test_atv_gate.py | 上一轮 I24 能力门禁测试（未提交，本轮一并纳入 spec） |
+| docs/spec.md | 补 I24、新增 I25；验证矩阵/基线（702/698）/harness 数（23）/最近核验 |
+| docs/harness.md | 新增 4.13；Drift 台账补 D4；最近核验/基线 |
 
-**根因 B**：原生 APK 虽然自带 Python 引擎，但 `server.py` 的 `Adb` 类是 `subprocess`
-调 **adb 可执行文件** 的，而 Android App 沙箱里压根没有 adb（`boot.py` 里原来就写着
-指向一个不存在的路径）。所以它连 Android TV 也连不上。
+未跟踪：tests/atv_gate_harness.js、tests/test_atv_gate.py、tests/top_level_harness.js、
+tests/test_top_level.py（均在 tests/ 下，unittest discover 已纳入，702/698 已含）。
 
-**修法**：
+## 3. 验证结论
 
-- `server.py:2085` 起 `/app.apk` 优先发 `ATVRemote-native.apk`，没有才退回壳；
-- **给 APK 塞进一个真能跑的 adb**：
-  - `android-native/app/src/main/jniLibs/arm64-v8a/libadb.so` —— Termux `android-tools`
-    里为 aarch64 Android 编的 adb。放 jniLibs 是因为装机时 PackageManager 会解到
-    `nativeLibraryDir`，**Android 上基本只有那个目录允许 `execve()`**（10+ 起 App 私有
-    目录一律 noexec）。**文件名必须以 `.so` 结尾**，否则 AGP 静默不打包（第一次直接叫
-    `adb`，包里就真的没有）；
-  - 依赖库在 `assets/adb-libs/`（**56 个**，8.0MB），由 `NativeActivity` 首次启动解到
-    `files/adb-libs`，再用 `LD_LIBRARY_PATH` 指过去。走 assets 是因为 `libz.so.1` 这类
-    带版本号的名字不能改；
-  - `build.gradle` 关掉 `jniLibs.useLegacyPackaging` 的现代默认（不解压就没法 execve）。
+已核验（本机，可复现）：
+- node tests/top_level_harness.js → 3 项 ok，ALL_TOP_LEVEL_CASES_PASSED
+- python3 -m unittest tests.test_top_level -v → 3 tests OK
+- 兜底实证：把裸赋值 bug 注回 → harness 红且报错与真机 console 一字不差；还原 → 绿
+- ./check.sh 全绿：系统 python3 Ran 698 tests OK (skipped=15)；.venv Ran 702 tests OK (skipped=7)
+- ./sync-native.sh --check → 内嵌副本与根目录一致（含 v9 sw.js）
+- curl 127.0.0.1:8300/static/app.js → 已是 const VOLSET_MAX_FALLBACK = 15，Cache-Control: no-store
+- 端到端（午轮末补）：Mac Chrome 里 SW 自更新 v9 → Cache Storage app.js:2116 已是 const →
+  主 world 顶层完整执行 → 跳过 coachMark 后 CDP 真实鼠标点 🍎 切 pane，零未捕获异常
 
-### 1.2 模拟器实测又抓出三个「Mac 上看不到」的 bug
+待办（未核验，需真机）：
+- 小米 fe0084a2 重装 APK 后点 🍎 验证切 pane（见 §5）
+- 已还原测试残留：设备 screen_off_timeout 1800000→60000；Mac launchctl remove atv.recv（端口 8798 取证接收器已停）
 
-用 AVD `test_avd`（arm64，headless）真跑了一遍，一跑就崩：
+## 4. 未决 / 需决策
 
-1. **引擎根本没起来**：`boot.py` 的 `_install_crypto_shim()` 里兜底 `from cryptography... import`
-   没保护。降级构建（`-PnoAppletv`）不装 cryptography → `ModuleNotFoundError` 冒到线程外
-   → 服务线程死掉，App 只显示「引擎启动失败」。
-2. **路径全拿不到**：`from com.chaquo.python import Android` 在后台线程报
-   `ModuleNotFoundError: No module named 'com'` —— 这条一直是**静默失败**的（旧代码的
-   except 把它吞了），所以 `ADB_PATH` 从来没设上过。改成 **NativeActivity 在 Java 侧把
-   `files` / `nativeLibraryDir` / `adb-libs` 传进 Python**（Java 本来就握着这些路径，
-   没必要绕 Chaquopy 的 Python→Java 桥）。
-3. **依赖只收了一层**：adb 自己只要 8 个库，但 `libprotobuf.so` 还要 `libabsl_die_if_null.so`
-   等一串 → `CANNOT LINK EXECUTABLE`。抓包脚本改成**传递闭包**解析。
+- 强塞 pyatv 进 APK vs 维持 -PnoAppletv 既定契约：未批准不要动。chaquo 仓库 cryptography 最高 42.0.8，pyatv 0.18.0 要 >=44.0.1，Android 无 wheel（见 harness.md 4.12/D3）。
+- 重装 APK 会清 App 内 state.json（最近设备列表没了）——是否现在做由用户定。
 
-**最终模拟器实测**（可复现：`tools/emulator-test.sh`）：
+## 5. 如何继续（下一步 exact 命令）
 
-- 引擎横幅：`adb : .../lib/arm64/libadb.so (Android Debug Bridge version 1.0.41)`
-- `/api/status` → `adb_found: true`；`/api/connect` → 拿到设备信息；
-  `/api/cmd` 按键 → `{"ok":true}`；`/api/screenshot` → 真 PNG 1080×2400；
-- 界面 OCR 确认 WebView 加载了内嵌界面。
-
-### 1.3 「看不到图标」→ 两个独立原因
-
-1. **手机桌面图标是一块深色方块（主因）**：Android 自适应图标 = 背景 `#1d212b` +
-   `res/mipmap-*/ic_launcher_fg.png`。9/26 重做图标时只更新了 `mac/` 和 `static/`，
-   **漏了 `res/` 那五张**，它们还是 8/27 的旧图。WCAG 对比度实测 **1.08:1**（阈值 3:1）。
-   新增 `tools/make-android-icons.py` 生成五档 + **自带对比度自查**（不合格非零退出）。
-   现在 15.11:1。
-2. **浏览器标签页图标被旧 emoji 图顶掉**：`index.html` 里最后一条 `rel=icon` 是早期写死的
-   emoji data-URI（📺）。浏览器取「最后一个能用的 `rel=icon`」当主图标，新图标**根本没被用上**。
-   已删掉那条，并锁住顺序：PNG 在前、SVG 在后。
-
-### 1.4 「点击了无法下载」→ 三个原因叠加
-
-用模拟器里真 Chrome 复现：
-
-1. **服务器没实现 HEAD → 回 501**（主因）。下载管理器与「点链接后先探测」的浏览器都会先发
-   `HEAD`，看到 501 就放弃——**而地址栏直接敲 URL（GET）却是好的**，极难查。现在 `do_HEAD`
-   走同一条 `_serve()`，只回头不回体（`Content-Length` 仍是真实字节数）。
-2. **没有 `Content-Disposition`** → 浏览器按 URL 命名（`app.apk`），下载管理器也不当它是安装包。
-   现在 `attachment; filename="ATVRemote.apk"`。
-3. **Service Worker 把下载搞坏了**：通用分支里 `cache.put()` 的 promise 没被 await，它 reject
-   时被后面的 `.catch(() => hit)` 接住——于是「缓存写失败」被当成「网络失败」，无缓存命中时
-   `respondWith(undefined)`，浏览器直接报下载失败。20MB 的 APK 写 Cache Storage 很容易踩配额。
-   现在下载类请求（`*.apk`/`*.tgz`/`*.zip`、`no-cors`）在进缓存分支**之前就放行**，且
-   `cache.put(...).catch(() => {})` 永不吞响应。缓存名 bump 到 `atv-shell-v5`。
-
-**模拟器实测**：落盘 `/sdcard/Download/ATVRemote.apk`，20,261,451 字节，**SHA256 与服务器一致**
-（`08063d89…9fd7`），拉回来验包是合法 ZIP、120 条目、`testzip()` 无损坏。
-
-### 1.5 顺手修的两处
-
-- **二维码页面无法加载**：`lan_ip()` 重写（UDP 探测不像局域网 IP 时退 `SIOCGIFADDR` 枚举 +
-  `ifconfig`/`ip` 兜底，排 127./169.254./100.64./198.18./198.19./0.）；`main()` 里 `load_state()`
-  提到 `resolve_token()` 之前（令牌不再每次重启变）；`manifest.webmanifest` 的 `start_url`/`scope`
-  改 `/`。
-- **「不要输入访问令牌」**：LaunchAgent 加 `--no-token`（`mac-install.sh` 与线上 plist 都改了）。
-  代价是同网段任何设备都能遥控；想收紧就删那行重启。
-
-## 2. 关键文件与它们的「单一事实来源」
-
-```
-server.py                        # HTTP 层 + 路由 + INSTALL_SCRIPT + /app.apk
-atv_backend.py                   # adb / pyatv 适配 + 降级占位（含平台化提示）
-static/{index,app.js,style.css,sw.js,manifest.webmanifest}
-android-native/app/src/main/python/boot.py         # Chaquopy 引导（路径由 Java 传入）
-android-native/app/src/main/java/.../NativeActivity.java  # 解 adb-libs + 传路径
-android-native/app/src/main/jniLibs/arm64-v8a/libadb.so   # adb 本体（必须 .so 结尾）
-android-native/app/src/main/assets/adb-libs/              # 56 个依赖库
-tools/fetch-adb-android.py       # 抓 adb + 传递闭包解析依赖（可只抓一个包）
-tools/make-android-icons.py      # Android 五档前景（带对比度自查）
-tools/make_icons.py              # PWA / iOS 四张
-tools/emulator-test.sh           # 模拟器端到端验证（六步）
-mac/make_icon.swift              # 主图：1024 全出血 + 自适应前景 432
-mac/make-icns.sh                 # iconset -> AppIcon.icns
-mac/make-desktop-shortcut.sh     # 桌面 ATV Remote.app（含 ad-hoc 重签）
-VERSION                          # versionName / versionCode 唯一来源
-```
-
-## 3. 验证基线（改完必跑）
+真机验收（会清 state.json，先确认）：
 
 ```bash
-cd ~/atv-remote
-python3 -c 'import server; import atv_backend'   # 语法 + 导入
-node --check static/app.js && node --check static/sw.js
-./check.sh                    # 一键全跑（455 用例 × 2 个解释器 + 副本比对）
-./sync-native.sh              # 改了 server/atv_backend/static 之后必须同步内嵌副本
-python3 -m unittest discover -s tests
+cd android-native && JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew assembleRelease -PnoAppletv
+adb -s fe0084a2 uninstall com.atv.remote.native
+adb -s fe0084a2 install app/build/outputs/apk/release/app-release.apk
+# 启动 App → 点 🍎 → 截图确认 .devpane 切到 pane-appletv；console 零 error
 ```
 
-APK 重建（chaquo.com 不通时的降级口径）：
+注意：native App 用的是 APK 内嵌的 static/，不是 Mac 的 8300——所以对 native App 必须重装
+（清 SW 缓存 + 换内嵌 app.js）；只有浏览器访问 192.168.1.111:8300 才能靠 sw.js v9 自动更新
+（后台+前台 App 两次，onResume 会 webView.reload()）。
+
+提交（只推 gitee）：
 
 ```bash
-cd android-native
-./gradlew assembleRelease -PnoAppletv \
-  -PpypiMirror=https://mirrors.cloud.tencent.com/pypi/simple
-cp app/build/outputs/apk/release/app-release.apk ../ATVRemote-native.apk
+git add -A && git status   # 确认无 state.json / debug.keystore
+git commit -m 'fix(ui): app.js:2116 补 const 修复顶层中断（无法点到 Apple TV）+ sw.js v9 + 顶层可执行性兜底测试'
+git push gitee main
 ```
 
-模拟器验证（Mac 上测不到的部分）：
+## 6. 环境事实与坑（交接给下一轮）
 
-```bash
-tools/emulator-test.sh            # 默认 test_avd；AVD 名作第一个参数
-```
+- 设备 fe0084a2（Redmi K90/2510DRK44C，1156×2510@480dpi，1 CSS px = 3 设备 px）；包名 com.atv.remote.native，Activity com.atv.remote.NativeActivity；NativeActivity.onResume() 有 webView.reload()（每次 am start 重载回默认 Android pane）
+- Mac LAN 192.168.1.111；git main 领先 origin 11（只推 gitee，GitHub SSL 阻断）
+- exec 工具入参是裸 JS（tools.exec_command({cmd,workdir})），JSON 入参 SyntaxError；命令 30s 被杀，check.sh/gradle 用后台写日志或 session 轮询
+- apply_patch：Add File 不带 @@；write_stdin 的 session_id 在此环境按 i32 传（字符串会被拒）
+- cua_repl playwright 的 typeof 探针在 isolated world 不可信（全返 undefined 不抛 TDZ），别用它探测顶层词法环境
+- cua_repl 的 tab.playwright.evaluate 跑在 isolated world：document 可见，但 document.defaultView 的 navigator/fetch/caches 全 undefined；探测主 world 词法环境必须走 raw CDP（await tab.capabilities.get("cdp")，先 agent.documentation.get("capabilities/tab/cdp") 读文档再 send；白名单外的方法直接报 not supported，如 Storage.clearDataForOrigin）
+- tab.dev.logs 是 tab 创建起的累积缓冲（时间戳是旧的），判断「本次操作有没有新 error」要用 CDP readEvents({methods:["Runtime.exceptionThrown"]})
+- 页面 #coachMark（使用指引）未跳过时是全屏 modal，吞掉所有真实鼠标点击；playwright locator.click 对它不超时但事件被吞，别据此判定「绑定没生效」
+- rm 被沙箱拒绝；zsh 里 echo === 被 = 展开，分隔符加引号
 
-## 4. 本轮新增的测试（共 6 个文件，都带「为什么」注释）
-
-| 文件 | 条数 | 盯什么 |
-|---|---|---|
-| `tests/test_download.py` | 9 | HEAD 不再 501、HEAD 有头无体、Content-Length 正确、GET 仍有体、Content-Disposition、SW 放行下载、`cache.put` 不吞响应、缓存版本 |
-| `tests/test_icons.py` | 8 | favicon 顺序 / 无 data-URI / 文件存在、五档密度齐全、**对比度 ≥3:1**、与主图同源、生成脚本覆盖 |
-| `tests/test_android_engine.py` | 10 | jniLibs 里 adb 是 `.so`、**传递闭包完整**、boot 接线、gradle 打包、`/app.apk` 路由优先级、内嵌标记、404 文案、成品 APK 内容 |
-| `tests/test_install.py` | 3 | 安装命令/二维码/明文地址用**局域网 IP** 而非 `location.origin`；`/api/setup` 失败退回 origin |
-| `tests/test_launchagent.py` | 10 | plist 带 `--no-token`、不写死令牌、`resolve_token` 语义、README 有收紧路径 |
-| `tests/test_atv_fallback.py` | 5 | pyatv 缺失时**每个**占位方法都带可粘贴命令、按平台分流、安装脚本暴露真实原因、页面有补救入口 |
-
-外加 `tests/install_harness.js`（node 假 DOM 跑安装引导段）。
-
-## 5. 用户偏好 / 环境坑（务必沿用）
-
-- **不要 `git commit`**（除非明确说「提交」）；不要 `git checkout` 覆盖改动；不要手工 `cp` 同步副本，用 `./sync-native.sh`。
-- 改 `server.py` / `atv_backend.py` / `static/*` 后**必须** `./sync-native.sh`。
-- `state.json` 与 `debug.keystore` 禁提交；`state.json` 不得进 `/bundle.tgz`（除非启用令牌）。
-- 前端渲染设备名 / IP 一律 `textContent`，禁 `innerHTML`（数据来自局域网广播，可伪造）。
-- HTTP 层是 keep-alive，所有响应走 `_send()`（它管 Content-Length 与 HEAD 语义）。
-- **adb 调用很贵**：`devices()`/`version()` 走缓存，改变在线状态的操作必须 `adb.invalidate_devices()`。
-- `exec` 工具只吃 **JavaScript 源码**（不是 JSON）；单次 30s 硬上限，长任务用 `tty:true` + 轮询。
-- `rm -f` 被沙箱拒 → 用 Python `os.remove`；macOS 无 `cat -A`，用 `od -c` 或 Python repr。
-- 写文件优先 `tools.apply_patch`（多文件用多个 `*** Update File`；`@@` 必须单独一行）。
-
-## 6. 未提交的改动（33 改 + 若干新增，`git status` 61 项）
-
-**改**：`server.py`(+235) `static/app.js`(+793) `static/index.html`(±373) `static/style.css`(+113)
-`static/sw.js`(±32) `atv_backend.py`(±33) `make_icon.swift`(±175) `mac-install.sh` `sync-native.sh`
-`VERSION` `android-native/app/build.gradle` `NativeActivity.java` `boot.py` 五张 mipmap PNG、
-`static/` 四张图标 PNG + `icon.svg` + `manifest.webmanifest`，以及 `docs/*` 三个文档。
-
-**新增**：`tools/` 四个脚本、`tests/` 六个测试 + 一个 harness、`mac/make-icns.sh`、
-`mac/make-desktop-shortcut.sh`、`android-native/adb-bundle.txt`、
-`android-native/app/src/main/{jniLibs,assets}/`（adb 与 56 个依赖库）。
-
-**注意**：`VERSION` 已 bump 到 1.34.0/35；`tests/test_undo.py` 的版本断言同步更新。
-
-## 7. 下一步候选（按优先级）
-
-1. **真机验一次**：模拟器过了，但真机（尤其非 arm64 / 老系统）还没试。重点看
-   `libadb.so` 能否 execve、`adb-libs` 能否加载。真机报错的话，App 横幅会打出
-   `CANNOT LINK EXECUTABLE ...` 这类信息，直接发回来即可定位。
-2. **bump 版本发版**：`VERSION` → 1.34.0 / 35，然后 `./check.sh` + APK 重建。
-3. **提交**：本轮改动量大（33 文件），建议拆成几个提交（安装链路 / 图标 / 下载 / 令牌 / 文档），
-   但用户没说要提交，**不要自作主张**。
-4. **Apple TV 在手机 APK 里仍不可用**：协议依赖 pyatv → pydantic-core（Rust），Chaquopy 没有
-   Android 预编译 wheel。想手机独立遥控 Apple TV 只能走 Termux 方案（页面里已折叠）。
-5. 已记但未修的既有缺口：`sync-native.sh` 同步清单只有 6 个文件，`static/sw.js` 与 icon PNG
-   不在内嵌副本里（APK 里 SW 注册会 404）—— 现在 `app.imy` 里其实**有** `static/sw.js` 与四张
-   PNG（构建时 Copy 整个 static 目录），但 `sync-native.sh --check` 不比对它们，是校验盲区。
-
-## 8. 交接时的实时状态快照
-
-```
-服务     : LaunchAgent com.atv.remote（--no-open --no-token），:8300
-局域网   : http://192.168.1.34:8300（页面 200；/app.apk 200 / 20,261,447 字节）
-/api/status: version 1.34.0 | embedded false | adb true | appletv available true
-APK      : ATVRemote-native.apk 20,261,447 字节（9/28 22:39 重建，SHA256 b69ece…8482）
-测试     : 455 通过（系统 11 skipped / .venv 6 skipped）；check.sh ✅；sync-native --check ✅
-模拟器   : 已停（launchctl bootout gui/501/com.atv.emulator）
-```

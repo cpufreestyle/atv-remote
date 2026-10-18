@@ -59,8 +59,16 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
       </div>
 
     <div id="pane-appletv" class="devpane">
-      <div class="brow">
+      <div class="brow" id="atvScanBrow">
         <button id="scanBtn" class="btn primary">🔍 扫描局域网 Apple TV</button>
+      </div>
+      <!-- I24 能力门禁：available !== true 时由 applyAtvGate 显示本卡、隐藏上方入口与列表 -->
+      <div id="atvUnsupported" class="atvnote hidden" aria-live="polite">
+        <p class="atvnotetitle">🍎 这个客户端不支持 Apple TV</p>
+        <p class="atvnotedesc">Apple TV 的遥控协议跑在 <b>pyatv</b>（Mac 上的 Python 库）上，
+          打不进手机 APK，所以这里扫描不到、也连不上。想用这台手机遥控 Apple TV：用<b>手机浏览器</b>
+          打开 Mac 上 atv-remote 的「本机地址」（Mac 上跑着服务的终端窗口里会打印）——按键全走
+          Mac，什么都不用装。</p>
       </div>
       <div id="atvList"><p class="hint">点「扫描」自动发现同一网段的 Apple TV；首次使用需在电视上输 PIN 配对。</p></div>
       <div id="pairBox" class="pairbox hidden">

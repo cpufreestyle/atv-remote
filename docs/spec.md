@@ -4,7 +4,7 @@
 > 事实优先级：server.py / atv_backend.py / static/ 源码 > tests/ > 本文件 > README.md（仅作介绍）。
 > 任何行为变更必须同步更新本文件与 docs/harness.md；docs/harness.md 记录最近一次核验结论。
 >
-> 最近核验：2026-10-17（反编译 tvremoted 系列：I18-I22 聚焦推送 / 追加语义 / 配对节流 / 原生长按 / 双击；I23 三档能力的命令面板 / 语音入口）
+> 最近核验：2026-10-18 午轮（修 app.js:2116 顶层裸赋值中断整文件——「无法点到 Apple TV」根因；I24 能力门禁补登 + I25 顶层可执行性新不变式，见 harness.md 4.13）
 
 ## 1. 目标与范围
 
@@ -147,6 +147,8 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 | I21 | 长按语义分两路：连发是快速点按多次（滚列表 / 调音量），连发满 5 次后停掉点按、改发一次 `hold=true`（Apple TV 走 InputAction.Hold 触发电视端长按菜单，MRP 不支持时降级回单击）；Android 无原生长按语义，`holdSend` 直接短路 | tests/test_atv_hold.py |
 | I22 | 按键动作泛化三档：`/api/cmd` 的 `key` 加 `action` 字段（白名单 `tap` / `hold` / `double`），优先于旧的 `hold` 布尔字段；`DoubleTap` 只在 Companion（tvOS 16+）可用，MRP 降级回单击；前端双击是临时模式，发一次即解除待命 | tests/test_atv_double.py |
 | I23 | Apple TV 三档能力有键盘 / 语音入口：命令面板在 status.curType === "appletv" 门禁下推 8 条命令（追加 / 替换 / 双击 / 五键长按，与页面按钮 hidden 同判据），执行体只复用页面按钮与 holdSend、不另发请求；文本两条走「指定目标态」而非翻转（重复执行幂等）；语音层每个新命令至少两个别名，别名指向的 id 必须真在面板里存在，Android 用户（cmds 里无 atv: 命令）说了不执行 | tests/test_atv_palette_actions.py |
+| I24 | Apple TV 能力门禁把死路变成一句人话：native APK 走 -PnoAppletv 时 appletv.available 恒 false，🍎 页签不得照常渲染「扫描」按钮；判据单一（只认 available === true，truthy / 列表非空 / status 缺失都按不可用），显隐只走 .hidden，三要素（#atvScanBrow / #atvUnsupported / #atvList）一个不漏，调用点齐（renderStatus 与 🍎 页签点击都调 applyAtvGate） | tests/test_atv_gate.py |
+| I25 | 前端顶层整文件可执行：app.js 第 2 行保持 use strict，整文件在 DOM/fetch stub 下执行不抛异常且两个 .devtab 都注册 click；源码不得出现顶层裸赋值（行首标识符直接 = 且无声明关键字）——严格模式下裸赋值会 ReferenceError 当场中断整个脚本，吞掉其后所有初始化（点击全失效但页面照常滚动） | tests/test_top_level.py |
 
 ## 5. 验证矩阵（spec 与 harness 对应）
 
@@ -173,14 +175,16 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 | I21 | 同上 | tests/test_atv_hold.py |
 | I22 | 同上 | tests/test_atv_double.py |
 | I23 | 同上 | tests/test_atv_palette_actions.py |
-| 前端行为 | node harness，由 Python 测试经 subprocess 驱动 | 21 个 tests/*_harness.js |
+| I24 | 同上 | tests/test_atv_gate.py |
+| I25 | 同上 | tests/test_top_level.py |
+| 前端行为 | node harness，由 Python 测试经 subprocess 驱动 | 23 个 tests/*_harness.js |
 
 ### 5.1 一键验证基线
 
 check.sh 依序执行：import server 与 atv_backend、node --check static/app.js、
 node --check static/sw.js、python3 -m unittest discover -s tests、
 ./sync-native.sh --check，有 .venv 时在 pyatv 分支复跑后两项。
-当前基线：.venv 693 项通过（skipped 7）；系统 python3 689 项通过、skipped 15。
+当前基线：.venv 702 项通过（skipped 7）；系统 python3 698 项通过、skipped 15。
 
 ## 6. 已知缺口（尚未由测试覆盖，后续 spec 候选）
 

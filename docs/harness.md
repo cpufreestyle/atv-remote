@@ -3,7 +3,7 @@
 > 配套 docs/spec.md：spec.md 定义「应当具备的契约」，本文件记录「如何验证、覆盖到哪、
 > 最近一次核验结论」。
 > harness 产物根目录 .qoder/better-harness/ 与 .mimosa/ 已 gitignore，不在本台账内。
-> 最近核验：2026-10-15（布局优化：I16 / I17，见第 4.5 节）
+> 最近核验：2026-10-18 午轮（修 app.js:2116 顶层裸赋值——「无法点到 Apple TV」根因；I25 顶层可执行性 + I24 补登，见第 4.13 节）
 
 ## 1. 一键验证命令
 
@@ -12,7 +12,7 @@
 python3 -c 'import server, atv_backend'   # 后端导入自检
 node --check static/app.js          # 前端语法
 node --check static/sw.js           # Service Worker 语法
-python3 -m unittest discover -s tests    # 行为回归（638 项，skipped 11）
+python3 -m unittest discover -s tests    # 行为回归（系统 698 项 skipped 15 / .venv 702 项 skipped 7）
 ./sync-native.sh --check            # 内嵌副本逐字节比对
 ./sync-native.sh                    # 漂移时同步，并顺带跑一遍 check.sh
 .venv/bin/python -m unittest discover -s tests   # pyatv 分支复跑
@@ -239,6 +239,21 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | 真机 | adb -s R5CY249VM4N（SM-S9380 / S25 Ultra）install -r 成功（lastUpdateTime 04:42:16，首装）；adb forward 18300→8300 冒烟：/api/status 返回 adb_found=true（内置 libadb.so 1.0.41）、appletv.available=false（与降级契约一致）、embedded；/ 返回 ATV Remote 页面；logcat 无 traceback；构建后 git status 干净 |
 | 备注 | Apple TV 遥控入口不变：Mac 服务端（.venv pyatv 0.18.0）仍是 Apple TV 控制点，手机 native 侧全功能遥控 Android TV。旧 WebView 客户端 com.atv.remote v1.0 与 native 不同包名，共存不冲突 |
 
+### 4.13 2026-10-18 午轮（修 app.js:2116 顶层裸赋值中断整文件——「无法点到 Apple TV」根因）
+
+| 项 | 结论 |
+|----|------|
+| 动机 | 用户报「无法点到 appletV / 点了 Apple TV 页签没反应」 |
+| 根因 | static/app.js:2116 VOLSET_MAX_FALLBACK = 15 漏 const；文件第 2 行即 use strict，顶层裸赋值抛 ReferenceError 当场中断整个脚本，3304 行的页签 click 绑定及其后所有初始化从未执行。原生滚动不走 JS，所以页面照常滚动、所有点击被吞。该行由 dd3b99e（10-02 音量按格设置）引入，存活 16 天：现有 harness 全按 atv-xxx:begin/end 抽段执行，整文件顶层从无行为证据；node --check 只查语法不执行 |
+| 表层放大器 | Service Worker stale-while-revalidate（sw.js:97 if (hit) return hit）持续发放旧 app.js——HTTP 响应虽是 no-store，但管不住 SW 自己的 Cache Storage；表现即「修了源码、设备仍是旧的」 |
+| 关键判定 | tests/top_level_harness.js 用 vm 沙箱整文件执行当前 app.js：顶层不抛、两个 .devtab 均注册 click——证明当前源码没有「第二个断点」，Chrome 里 1839~3304 之间的第二个报错是 SW 旧缓存，不是当前文件 |
+| 修复 | app.js:2116 补 const；sw.js CACHE v8→v9 强制 SW 更新发新 app.js；新增 tests/top_level_harness.js + tests/test_top_level.py（3 项：整文件执行不抛 / 两个页签 click 注册 / 静态挡顶层裸赋值 + 钉住 use strict） |
+| 兜底实证 | 把裸赋值 bug 注回 → harness 红且报错与真机 console 一字不差；还原 → 绿。test_pwa 下限抬到 ≥9、test_download 钉 v9 |
+| 验收 | ./check.sh 全绿（午轮末复跑 exit 0：系统 python3 698 OK skipped=15、.venv 702 OK skipped=7）；./sync-native.sh --check 一致；curl 127.0.0.1:8300/static/app.js 已是 const 且 Cache-Control: no-store；Mac Chrome 端到端：旧 SW 自更新 v9 → Cache Storage 里 app.js:2116 已是 const 版 → 主 world 顶层完整执行（VolSet/pageVisible 正常）→ 跳过 #coachMark 后 CDP Input.dispatchMouseEvent 真实鼠标点 🍎 切 pane、Runtime.exceptionThrown 零事件 |
+| 证伪 | ① m1/m2 截图 150ms 真实 swipe-tap 后仍 Android pane → 确认真 bug 非合成假象；② typeof 探针在 cua_repl playwright isolated world 全返 undefined 且不抛 TDZ，结果不可信，已弃用；③ Mac Chrome「点 🍎 不切换」曾疑似 1839~3304 第二个断点，实为 #coachMark 全屏引导层吞真实鼠标点击 + SW 旧缓存——vm 整文件执行不抛、主 world 原生 btn.click() 直接切 pane 双双证伪，当前源码无第二断点 |
+| 待办（未决） | 小米 fe0084a2 需重装 APK 清 SW 缓存后点 🍎 验证切 pane（重装会清 App 内 state.json，最近设备列表没了）；「强塞 pyatv 进 APK」vs「维持 -PnoAppletv 既定契约」未决策，未批准不动 |
+| 备注 | Apple TV 控制点不变：Mac .venv 服务端 192.168.1.111:8300；手机 native 侧仍全功能遥控 Android TV |
+
 ## 5. Qoder better-harness 台账
 
 来源：.qoder/better-harness/2026-08-26/220155-atv-remote/findings.json
@@ -258,6 +273,7 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | D2 | README 的端点清单曝了 9 个写端点（android/scan、android/pair、disconnect、forget、switch、atv/disconnect、atv/forget、volume、wol） | **已收敛** | 2026-10-14 补齐 README 并加 `tests/test_icons.py::ReadmeEndpointTest` 对账（`server.ROUTES` 必须全部出现）；README 改指向 spec.md |
 
 | D3 | pyatv==0.18.0 在 Android 上无法安装：chaquo pypi-13.1 的 cryptography 最高 42.0.8，不满足 pyatv 的 >=44.0.1 | 已知（外部不可修复） | Android native 构建走 -PnoAppletv（见 4.12），Apple TV 控制留在 Mac 服务端；chaquo 发布 43+ Android wheel 后可移除降级开关 |
+| D4 | I24（Apple TV 能力门禁）在 app.js / index.html / style.css / tests 多处引用，但 spec.md 不变式表漏登 | **已收敛** | 2026-10-18 午轮补登 I24 并新增 I25（顶层可执行性，见 4.13）；教训：代码里引用的 I 号要及时回填 spec 表 |
 
 ## 7. 下一步
 

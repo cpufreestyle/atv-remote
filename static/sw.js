@@ -13,7 +13,17 @@
 // 不改版本号的话，装过桌面的老客户端会一直用 stale-while-revalidate 的旧外壳。
 // v7：图标重做（屏内加品牌蓝信号弧）——icon.svg 与四张 PNG 都在预缓存清单里，
 // 不递增的话老客户端的 favicon / 桌面图标还是旧图。
-const CACHE = "atv-shell-v7";
+// v8：I24 Apple TV 能力门禁改了 app.js / index.html / style.css 三件套。漏递增的代价
+// 2026-10-18 在小米 K90 上现形：App 重装后 WebView 仍从 stale-while-revalidate 缓存
+// 拿旧 app.js，把新 HTML 里的静态解释卡改写回旧文案，页签行为也一起退回到旧版——
+// 外观就是「装了新包、界面却是旧的」。以后改前端三件套必须同步递增这里的版本号，
+// tests/test_pwa.py 兜底下限。
+// v9：2026-10-18 午轮修 app.js:2116 顶层裸赋值 VOLSET_MAX_FALLBACK = 15（漏 const，
+// "use strict" 下抛 ReferenceError 当场中断整文件，3304 行页签 click 绑定从没注册，
+// 表现为「点了 Apple TV 页签没反应」）。新增 tests/top_level_harness.js 兜底顶层整文件
+// 可执行性。不递增版本号，小米 SW 仍从 stale-while-revalidate 发旧 app.js，修复不落地；
+// tests/test_pwa.py 下限与 tests/test_download.py 同步钉 v9。
+const CACHE = "atv-shell-v9";
 const SHELL = [
   "/",
   "/static/app.js",

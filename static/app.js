@@ -2113,7 +2113,7 @@ function volBump(code) {
    发出的命令有两条候选（学 constants.py:145/148，服务端 volume_set_cmd() 有序降级链）：
      media volume --show --stream 3 --set N      —— 读通道同款，先试；
      cmd media_session volume --show --stream 3 --set N —— Android 11+ 兜底。 */
-VOLSET_MAX_FALLBACK = 15;
+const VOLSET_MAX_FALLBACK = 15;
 
 function volSetClamp(level, max) {
   let top = Number(max);
@@ -2273,6 +2273,7 @@ async function refreshStatus() {
 
 function renderStatus(s) {
   palStatus = s;
+  applyAtvGate(s);              // I24：Apple TV 页签能力门禁，每次状态刷新都判
   window.__atvLastStatus = s;   // chip 菜单要用（Apple TV 行的 connected 判断）
   // 服务跑在手机 App 的 Chaquopy 引擎里时，「把遥控器装到手机」那张卡片没有意义：
   // 手机上都装好了，而且 APK 文件不在包里——点下载只会拿到 404「APK 不存在」。
@@ -2993,6 +2994,31 @@ async function imeEnable() {
 }
 
 /* ---------------- Apple TV ---------------- */
+/* ===== atv-gate:begin（纯函数段，node 单测 harness 原样抽取执行；禁引用 DOM / 全局态） ===== */
+/* Apple TV 能力门禁。动机（2026-10-18 小米 K90 真机）：native APK 走 -PnoAppletv 降级
+   构建（chaquo 仓库的 cryptography 最高 42.0.8，装不了 pyatv 0.18.0），/api/status 的
+   appletv.available 于是恒为 false。🍎 页签过去照常渲染「扫描」按钮，用户点了只拿到空
+   列表或 pyatv 报错——表现就是「无法点到 Apple TV」。门禁把死路变成一句人话：不可用时
+   隐藏扫描入口与设备列表，显示解释 + 指路 Mac 服务端。
+   判据单一：只认 status.appletv.available === true，不缓存二次真相；available 缺失
+   （旧服务端）按不可用处理——宁可多一句话，不给个死按钮。 */
+function atvGateState(s) {
+  const a = (s && s.appletv) || {};
+  const supported = a.available === true;
+  return { supported: supported, showScan: supported, showList: supported, showNote: !supported };
+}
+/* ===== atv-gate:end ===== */
+
+/* DOM 胶水（段外）：显隐只走 .hidden 一个类，与 collapse 段同规矩——CSS 不读 JS 变量、
+   JS 不直接改样式。renderStatus 与 🍎 页签点击分支都调它。 */
+function applyAtvGate(s) {
+  const g = atvGateState(s);
+  const brow = $("#atvScanBrow"), note = $("#atvUnsupported"), list = $("#atvList");
+  if (brow) brow.classList.toggle("hidden", !g.showScan);
+  if (note) note.classList.toggle("hidden", !g.showNote);
+  if (list) list.classList.toggle("hidden", !g.showList);
+}
+
 async function atvScan() {
   const box = $("#atvList");
   skeletonRows(box);
@@ -3291,6 +3317,7 @@ $$(".devtab").forEach((t) => {
           renderAtvKnown(cached);
         }
         api("/api/status").then((s) => {
+          applyAtvGate(s);
           if ((s.appletv.devices || []).length) {
             box.dataset.scanned = "1";
             renderAtvFound(s.appletv.devices.map((d) => ({ ...d, paired: true, stored: true })), s);

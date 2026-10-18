@@ -92,7 +92,14 @@ class ServiceWorkerTest(unittest.TestCase):
             self.assertIn(a, self.sw)
 
     def test_cache_versioned(self):
-        self.assertRegex(self.sw, r'CACHE\s*=\s*"atv-shell-v\d+"')
+        m = re.search(r'CACHE\s*=\s*"atv-shell-v(\d+)"', self.sw)
+        self.assertIsNotNone(m, "CACHE 版本号缺失")
+        # 下限即契约：每次改动 app.js / index.html / style.css 任一件套都必须递增。
+        # 2026-10-18 的教训（I24 漏递增 → 小米 App 重装后仍跑旧 app.js，
+        # 解释卡被旧 JS 改写回旧文案）现由这个下限兜底；将来再改前端就往上抬。
+        # 午轮再抬：app.js:2116 裸赋值中断顶层（VOLSET 修复）→ v9。
+        self.assertGreaterEqual(int(m.group(1)), 9,
+                                "改过前端三件套就要递增 sw.js 的 CACHE 版本号")
 
 
 class IconDesignTest(unittest.TestCase):

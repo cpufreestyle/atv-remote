@@ -555,6 +555,17 @@ code {
 .estate .ecta { margin-top: var(--sp-4); display: flex; flex-wrap: wrap; gap: var(--sp-2); justify-content: center; }
 .estate .ecta .btn { min-height: var(--touch-min); }
 
+/* ---------- Apple TV 能力门禁（I24）：不可用时把死路变成一句人话 ----------
+   契约：与 .estate 同款虚线卡片语气，但不放 CTA——下一步在文案里（指路 Mac 服务端
+   的「本机地址」），不给点不动的按钮。显隐只认 .hidden，JS 不直接改样式。 */
+.atvnote {
+  margin-top: var(--sp-3); padding: var(--sp-4); text-align: left;
+  border: 1px dashed var(--line); border-radius: var(--r-lg); background: var(--card2);
+}
+.atvnote .atvnotetitle { font-size: 14px; font-weight: 600; color: var(--text); }
+.atvnote .atvnotedesc { margin-top: var(--sp-2); font-size: 12.5px; line-height: 1.7; color: var(--muted); }
+.atvnote .atvnotedesc b { color: var(--accent-text); }
+
 /* ---------- 音量 OSD（本地反馈，学 Google TV 官方遥控） ----------
    位置取屏幕上部三分之一：不挡顶部设备信息、也不压底部按键区；纯浮层不吞点击。 */
 .vosd {
