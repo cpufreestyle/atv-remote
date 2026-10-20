@@ -42,6 +42,8 @@ python3 server.py        # 主入口，启动 Web 服务（默认 0.0.0.0:8300�
     版本号从根目录 `VERSION` 注入 manifest
 - **Android 原生 APK**: `cd android-native && ./gradlew assembleRelease`
   （**必须用 wrapper**：已钉 Gradle 8.14.3，AGP 8.11 与系统里的 Gradle 9.x 不兼容）
+  ⚠️ 构建前先确认没有外部循环在跑 `-PnoAppletv`：`grep -c 'Starting .* build in daemon' ~/.gradle/daemon/8.14.3/daemon-*.out.log`
+  不应自增，否则真 pyatv 包会被降级包静默覆盖（2026-10-18 深夜轮实测，见 docs/harness.md 4.15）
 - **Mac App**: `mac/main.swift`，使用 `swiftc` 编译
 
 ## 版本号与内嵌副本

@@ -35,6 +35,10 @@ android/debug.keystore
 !/android-native/app/src/main/python/boot.py
 /android-native/app/src/main/python/static/
 
+# 发布产物：dist/ 下的 APK 随时可由 gradlew assembleRelease 重新构建，
+# 入库会让仓库永久增重（26MB 二进制），故与其它构建产物同等对待。
+dist/
+
 # Android Native 构建产物
 android-native/app/build/
 android-native/build/
