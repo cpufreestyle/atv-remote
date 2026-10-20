@@ -4,7 +4,9 @@
 Apple TV 后端 — 基于 pyatv（MediaRemote 协议，与 iOS「遥控器」App 同款）
 提供：扫描 / PIN 配对 / 连接 / 按键 / 键盘文字输入 / 触摸滑动 / 应用 / 画面
 
-依赖 .venv 中的 pyatv 0.18+，导入失败时由 server.py 优雅降级。
+pyatv 版本跨端不一致：macOS/.venv 用 0.18.x，Android/chaquo 因 cryptography /
+zeroconf 的 Android wheel 天花板锁 0.13.0（见 android-native/app/build.gradle 的 pip
+块）。导入失败时由 server.py 优雅降级；两端版本差异靠下方 _filter_key_map 等兼容分支兜。
 """
 
 import asyncio
@@ -40,6 +42,40 @@ if PYATV_AVAILABLE:
 else:
     PYATV_ERRORS = ()
 
+if PYATV_AVAILABLE:
+    # 键码 → (接口, 方法) 映射的能力过滤基准：pyatv 各版本接口方法有增删
+    # （0.13.0 的 RemoteControl 没有 guide / control_center，0.15+ 才补上）。
+    # macOS/.venv 跑 0.18.x，Android/chaquo 锁 0.13.0；映射定义时按已装版本裁剪，
+    # 两端共用同一份 KEY_MAP 源码，却各自只留当前版本真有的方法。
+    _PYATV_IFACE = {
+        "remote_control": pyatv.interface.RemoteControl,
+        "audio": pyatv.interface.Audio,
+        "power": pyatv.interface.Power,
+    }
+else:
+    _PYATV_IFACE = {}
+
+
+def _iface_capable(iface_name, method):
+    """该 (接口, 方法) 是否存在于当前已安装的 pyatv。
+
+    pyatv 缺失时无从校验，保守返回 True——保持「无 pyatv 不遥控 Apple TV」的历史
+    行为，映射原样保留（反正没有 pyatv 时这些键也发不出去）。
+    """
+    cls = _PYATV_IFACE.get(iface_name)
+    return True if cls is None else hasattr(cls, method)
+
+
+def _filter_key_map(mapping):
+    """按 pyatv 能力裁剪键码映射，去掉当前版本不存在的方法。
+
+    映射里若留一个当前 pyatv 不存在的方法（如 0.13.0 缺 guide/control_center），
+    用户按到那个键时 send_keys 的 getattr(iface, method) 会抛 AttributeError，
+    而它不在 PYATV_ERRORS 里，直接变 500。定义时过滤掉，按不到就是「不支持键码」。
+    """
+    return {code: action for code, action in mapping.items()
+            if _iface_capable(action[0], action[1])}
+
 
 # 上一条命令超时后的快速失败窗口：电视休眠时一条命令能占住遥控器锁 12s，
 # 之后每条按键都排在那把锁后面干等。窗口内直接失败，用户立刻知道电视没响应。
@@ -56,7 +92,7 @@ class AppleTvConnError(AppleTvError):
 
 # Android 风格键码 → Apple TV 动作（与前端/Android 侧共用同一套键码）
 # 旧 Apple TV（tvOS ≤15，广播 MRP）走 MRP；新 Apple TV（tvOS 16+，广播 Companion）走 Companion
-KEY_MAP_MRP = {
+KEY_MAP_MRP = _filter_key_map({
     19: ("remote_control", "up"), 20: ("remote_control", "down"),
     21: ("remote_control", "left"), 22: ("remote_control", "right"),
     23: ("remote_control", "select"),
@@ -69,9 +105,9 @@ KEY_MAP_MRP = {
     24: ("audio", "volume_up"), 25: ("audio", "volume_down"),
     26: ("power", "turn_off"), 224: ("power", "turn_on"),
     165: ("remote_control", "guide"),
-}
+})
 
-KEY_MAP_COMPANION = {
+KEY_MAP_COMPANION = _filter_key_map({
     19: ("remote_control", "up"), 20: ("remote_control", "down"),
     21: ("remote_control", "left"), 22: ("remote_control", "right"),
     23: ("remote_control", "select"),
@@ -84,7 +120,7 @@ KEY_MAP_COMPANION = {
     223: ("remote_control", "screensaver"), 165: ("remote_control", "guide"),
     24: ("remote_control", "volume_up"), 25: ("remote_control", "volume_down"),
     26: ("power", "turn_off"), 224: ("power", "turn_on"),
-}
+})
 
 
 # ---------------- 调用时间线钩子 ----------------

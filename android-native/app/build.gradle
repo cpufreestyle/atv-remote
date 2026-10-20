@@ -76,8 +76,10 @@ tasks.matching { it.name ==~ /merge.*PythonSources/ }.configureEach {
 
 chaquopy {
     defaultConfig {
-        // 版本必须与 requirements.txt 一致：同一份 server.py/atv_backend.py 要能在
-        // 不 pin 的 0.13 与 0.18 之间表现一致，靠运气不行（atv_backend 的兼容分支已经踩到）。
+        // Android/chaquo 的 pyatv 版本与 requirements.txt（macOS/.venv 的 0.18.0）
+        // 刻意不同：同一份 server.py/atv_backend.py 要在 0.18 与 0.13 两端都正常，
+        // 靠 atv_backend 的版本兼容分支兜（_filter_key_map 能力过滤、
+        // ConnectionLostError 的 try/except 降级），不靠版本一致。
         pip {
             // 纯 Python 包（qrcode）没有平台原生 wheel，任何镜像都能提供；chaquo.com 挂掉
             // 时用可达镜像兜底（不影响需要 Android 原生 wheel 的包——那种只能在 chaquo 拿）。
@@ -90,7 +92,24 @@ chaquopy {
                 // 即优雅降级）。只为刷新内嵌的前后端，别当常规发布用。
                 install "qrcode==8.2"
             } else {
-                install "pyatv==0.18.0"
+                // pyatv 锁 0.13.0 而非 .venv 的 0.18.0，是 chaquo 的 Android wheel
+                // 天花板逼出来的，两个硬约束叠加、缺一不可：
+                //   1) cryptography：chaquo cp310/android 最高 42.0.8；pyatv 0.15+ 要
+                //      >=43/44，没有 Android wheel 可装。
+                //   2) zeroconf：PyPI 从 0.40 起只发平台 wheel（无 py3-none-any），chaquo
+                //      索引也不托管它，最后一个纯 wheel 是 0.39.4；而 pyatv 0.14.x 要
+                //      zeroconf>=0.72/0.129、0.14.0 还要 pydantic-settings（pydantic-core
+                //      是 Rust，无 Android wheel）——只能退到 0.13.0。
+                // 依赖一并 pin 死，避免解析器挑到装不上 / 运行时报错的组合：
+                //   - protobuf <5 是硬下限：0.13.0 的 *_pb2 是 protoc<3.19 老 gencode，
+                //     protobuf 5.x 运行时会抛「Descriptors cannot be created directly」。
+                //   - aiohttp <3.10：3.10+ 要 yarl>=1.17，chaquo cp310 只有 1.4.2。
+                install "pyatv==0.13.0"
+                install "cryptography==42.0.8"
+                install "aiohttp>=3.8.3,<3.10"
+                install "bitarray>=2.3.0,<3"
+                install "zeroconf==0.39.4"
+                install "protobuf>=4.22.0,<5"
                 install "qrcode==8.2"
             }
         }
