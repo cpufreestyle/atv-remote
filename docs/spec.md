@@ -4,7 +4,7 @@
 > 事实优先级：server.py / atv_backend.py / static/ 源码 > tests/ > 本文件 > README.md（仅作介绍）。
 > 任何行为变更必须同步更新本文件与 docs/harness.md；docs/harness.md 记录最近一次核验结论。
 >
-> 最近核验：2026-10-18 午轮（修 app.js:2116 顶层裸赋值中断整文件——「无法点到 Apple TV」根因；I24 能力门禁补登 + I25 顶层可执行性新不变式，见 harness.md 4.13）
+> 最近核验：2026-10-18 深夜轮（Android 原生 APK 打通 pyatv 0.13.0——Apple TV 控制不再限 Mac 服务端；I26 跨端版本一致新不变式 + 三星真机 logcat「pyatv 已就绪」，见 harness.md 4.15）
 
 ## 1. 目标与范围
 
@@ -140,7 +140,7 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 | I14 | 派发面冻结：32 条 (path, method, status, 视图函数指纹) 与冻结基线逐条相等，GET/HEAD 共用一条派发链，两条链都保留 404 兜底 | tests/test_route_contract.py |
 | I15 | pyatv 异常文案必须本地化：auth/credentials → 「需要配对」，keyboard → 「聚焦输入框」，认不出的原样透出；该映射不依赖 pyatv 安装（无 pyatv 时 `AppleTvManager._friendly` 整体不可达，故真身在模块级 `friendly_error()`） | tests/test_atv_fastfail.py::FriendlyErrorTest |
 | I16 | 宽屏双列布局有明确归属：主遥控卡、物理按键卡与正在播放（npCard）跨两列，高频卡归左列，低频与配置卡（含手机安装）归右列，无一卡落 auto-flow | tests/test_icons.py::WideLayoutTest |
-| I17 | 首次进入按使用频率给默认折叠（收起远程开机 / 调用时间线 / 一键宏 / 睡眠定时）；存过记录则完全以用户为准，「全部展开」也是记录 | tests/test_collapse.py::FirstRunDefaultTest |
+| I17 | 首次进入按使用频率给默认折叠（收手柄 / 工具 / 远程开机 / 调用时间线 / 一键宏 / 睡眠定时；键盘输入 / 快捷启动 / 应用留首屏）；存过记录则完全以用户为准，「全部展开」也是记录 | tests/test_collapse.py::FirstRunDefaultTest |
 | I18 | Apple TV 键盘聚焦态事件驱动：连接建立即注册 pyatv KeyboardListener，收到 focusstate_update 推送即更新缓存，轮询只在没有推送值时兜底；断开必须反注册并清缓存，旧推送值不得残留到新连接 | tests/test_atv_fastfail.py::KeyboardFocusPushTest |
 | I19 | Apple TV 文本输入默认追加：`/api/cmd` 的 `text` 命令 `mode` 缺省为 `append`（与 Android `input text` 一致），仅显式 `mode=set` 才整段替换；MRP 等不支持 `text_append` 的协议必须降级到 `text_set` 而非让整条发送失败 | tests/test_atv_text_mode.py |
 | I20 | Apple TV 配对 PIN 连续试错有节流：同一设备连续失败 5 次后拒绝 60 秒，成功配对或换设备会清零；参数是一组对节奏的配对，不得单边改 | tests/test_pair_throttle.py |
@@ -149,6 +149,8 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 | I23 | Apple TV 三档能力有键盘 / 语音入口：命令面板在 status.curType === "appletv" 门禁下推 8 条命令（追加 / 替换 / 双击 / 五键长按，与页面按钮 hidden 同判据），执行体只复用页面按钮与 holdSend、不另发请求；文本两条走「指定目标态」而非翻转（重复执行幂等）；语音层每个新命令至少两个别名，别名指向的 id 必须真在面板里存在，Android 用户（cmds 里无 atv: 命令）说了不执行 | tests/test_atv_palette_actions.py |
 | I24 | Apple TV 能力门禁把死路变成一句人话：native APK 走 -PnoAppletv 时 appletv.available 恒 false，🍎 页签不得照常渲染「扫描」按钮；判据单一（只认 available === true，truthy / 列表非空 / status 缺失都按不可用），显隐只走 .hidden，三要素（#atvScanBrow / #atvUnsupported / #atvList）一个不漏，调用点齐（renderStatus 与 🍎 页签点击都调 applyAtvGate） | tests/test_atv_gate.py |
 | I25 | 前端顶层整文件可执行：app.js 第 2 行保持 use strict，整文件在 DOM/fetch stub 下执行不抛异常且两个 .devtab 都注册 click；源码不得出现顶层裸赋值（行首标识符直接 = 且无声明关键字）——严格模式下裸赋值会 ReferenceError 当场中断整个脚本，吞掉其后所有初始化（点击全失效但页面照常滚动） | tests/test_top_level.py |
+| I26 | Apple TV 跨端版本一致：同一份 atv_backend.py 在 macOS 0.18.x 与 Android 0.13.0 两端行为一致——KEY_MAP 定义时按已装 pyatv 的接口能力裁剪（`_filter_key_map`），映射内不得残留当前 pyatv 不存在的方法（0.13.0 的 RemoteControl 无 guide / control_center，按到即「不支持键码」而非 getattr 抛 AttributeError 变 500）；pyatv 缺失时全保留（降级不变）。Android/chaquo pin `pyatv==0.13.0`（`cryptography==42.0.8` / `zeroconf==0.39.4` / `protobuf<5` / `aiohttp<3.10` / `bitarray<3`），Mac 的 requirements.txt 保持 `pyatv==0.18.0` | tests/test_atv_keymap_capability.py |
+| I27 | 断开态整卡隐藏：body.disc 下 [data-needs-device] 是 display:none 而非压暗；9 张设备相关卡带该属性，远程开机（wolCard）与正在播放（npCard）常驻；物理按键卡靠 :has(> .brow [data-key="4"]) 隐藏且保持无 id 的 section 标记（HtmlCoverageTest 认这串原文，加属性即失配） | tests/test_collapse.py::DisconnectedLayoutTest |
 
 ## 5. 验证矩阵（spec 与 harness 对应）
 
@@ -177,6 +179,8 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 | I23 | 同上 | tests/test_atv_palette_actions.py |
 | I24 | 同上 | tests/test_atv_gate.py |
 | I25 | 同上 | tests/test_top_level.py |
+| I26 | 同上 | tests/test_atv_keymap_capability.py |
+| I27 | 同上 | tests/test_collapse.py::DisconnectedLayoutTest |
 | 前端行为 | node harness，由 Python 测试经 subprocess 驱动 | 23 个 tests/*_harness.js |
 
 ### 5.1 一键验证基线
@@ -184,7 +188,7 @@ ime enable 对未安装的输入法返回 exit 255，所以 enable 分支先查 
 check.sh 依序执行：import server 与 atv_backend、node --check static/app.js、
 node --check static/sw.js、python3 -m unittest discover -s tests、
 ./sync-native.sh --check，有 .venv 时在 pyatv 分支复跑后两项。
-当前基线：.venv 702 项通过（skipped 7）；系统 python3 698 项通过、skipped 15。
+当前基线：.venv 713 项通过（skipped 7）；系统 python3 709 项通过、skipped 17。
 
 ## 6. 已知缺口（尚未由测试覆盖，后续 spec 候选）
 

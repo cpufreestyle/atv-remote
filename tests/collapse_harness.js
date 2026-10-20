@@ -102,9 +102,9 @@ t("collapseDefaults：首次进入收起低频卡，高频卡留在首屏", () =
   const ALL = ["kbCard", "favCard", "appsCard", "toolsCard", "gpCard",
                "wolCard", "perfCard", "macrosCard", "sleepCard"];
   const closed = H.collapseDefaults(ALL);
-  ok(JSON.stringify(closed) === JSON.stringify(["macrosCard", "perfCard", "sleepCard", "wolCard"]),
+  ok(JSON.stringify(closed) === JSON.stringify(["gpCard", "macrosCard", "perfCard", "sleepCard", "toolsCard", "wolCard"]),
      "默认折叠集合：" + JSON.stringify(closed));
-  for (const hot of ["kbCard", "favCard", "appsCard", "gpCard"]) {
+  for (const hot of ["kbCard", "favCard", "appsCard"]) {
     ok(closed.indexOf(hot) < 0, hot + " 是高频，不该默认折起");
   }
 });

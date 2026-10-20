@@ -3559,14 +3559,14 @@ function collapseDefaults(known) {
   /* 首次进入（localStorage 还没有记录）时默认收起哪些卡片。
 
      判据是使用频率，不是卡片大小：方向键 / 键盘输入 / 快捷启动 / 应用是天天点的，
-     必须摄在首屏；远程开机、调用时间线、一键宏、睡眠定时是「用一次要翻很久」的，
-     折起来只留一行标题，需要时点一下展开。全部展开是上一版的默认，实测首屏 13 张卡
-     全铺开，用户得滚三屏才够到「应用」——那正是「不够简洁高效」的由来。
+     必须摄在首屏；手柄、工具（截屏 / 音量精调 / 断开）与远程开机、调用时间线、一键宏、睡眠定时同属特定场景才用，
+     一起默认折起来，只留一行标题，需要时点一下展开，设置里也有「全部展开 / 全部折叠」一键复原。
+     全部展开是上一版的默认，实测首屏 13 张卡全铺开，用户得滚三屏才够到「应用」——那正是「不够简洁高效」的由来。
 
      只认 known 里的 id：未知 id（老版本遗留、别处写坏的）一律忽略，
      否则一条坏数据能让整页卡片集体消失。 */
   const allow = new Set(known || []);
-  const LOW_FREQ = ["wolCard", "perfCard", "macrosCard", "sleepCard"];
+  const LOW_FREQ = ["wolCard", "perfCard", "macrosCard", "sleepCard", "gpCard", "toolsCard"];
   return LOW_FREQ.filter((id) => allow.has(id)).sort();
 }
 
