@@ -19,6 +19,8 @@ Collapsible / Accordion 的「状态即属性」方法论：data-state 是 CSS �
      .ctog + aria-controls + cbody-cinner 双层包裹；主遥控卡不许被折叠；
   5) 设置弹窗有「全部展开 / 全部折叠」入口；
   6) DOM 胶水在段外：restore 先于 bind，持久化只走 COLLAPSE_KEY + serialize/parse。
+  7) 断开态整卡隐藏（不是压暗）：9 张设备相关卡带 data-needs-device，远程开机与
+     正在播放常驻；物理按键卡靠 :has() 隐藏且保持无 id 的 section 标记。
 """
 
 import re
@@ -235,7 +237,7 @@ class FirstRunDefaultTest(unittest.TestCase):
         s = self.js.find("const LOW_FREQ = ")
         self.assertGreater(s, 0, "缺 LOW_FREQ 常量")
         seg = self.js[s:s + 200]
-        for low in ("wolCard", "perfCard", "macrosCard", "sleepCard"):
+        for low in ("wolCard", "perfCard", "macrosCard", "sleepCard", "gpCard", "toolsCard"):
             self.assertIn(low, seg, low + " 应置于默认折叠集")
         for hot in ("kbCard", "favCard", "appsCard"):
             self.assertNotIn(hot, seg, hot + " 是高频，不该默认折起")
@@ -293,5 +295,67 @@ class GlueTest(unittest.TestCase):
         )
 
 
+NEEDS_DEVICE = [
+    "remoteCard", "gpCard", "kbCard", "favCard", "appsCard",
+    "toolsCard", "perfCard", "macrosCard", "sleepCard",
+]
+# 断开态必须常驻：远程开机（为离线设备而生）与正在播放（本来就只在播放时出现）
+ALWAYS_VISIBLE = ["wolCard", "npCard"]
+
+
+def _section_any(html, cid):
+    for m in re.finditer(r"<section[^>]*>", html):
+        if 'id="%s"' % cid in m.group(0):
+            return m.group(0)
+    return None
+
+
+class DisconnectedLayoutTest(unittest.TestCase):
+    """断开态整卡隐藏，不再是一面墙按不动的灰卡片。
+
+    动机：body.disc 下 [data-needs-device] 原来只压暗（opacity .68 + saturate .8），
+    三星真机断开态截图显示首屏仍是 9 张灰卡，「先连设备」被埋在功能墙里。
+    现在整卡 display:none，断开态只剩连接区、空状态、远程开机与装机卡。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.css = (STATIC / "style.css").read_text(encoding="utf-8")
+        cls.html = (STATIC / "index.html").read_text(encoding="utf-8")
+
+    def test_disc_hides_instead_of_dimming(self):
+        m = re.search(r"body\.disc \[data-needs-device\] \{([^}]*)\}", self.css)
+        self.assertIsNotNone(m, "body.disc [data-needs-device] 规则缺失")
+        self.assertIn("display: none", m.group(1), "断开态要整卡隐藏")
+        self.assertNotIn("opacity", m.group(1), "早就从压暗改成隐藏了，别回退")
+
+    def test_keypad_card_hidden_by_structure(self):
+        # 按键卡不能加 id / data-needs-device：test_keypad_card_not_collapsible 认
+        # `<section class="card">` 这串原文。所以断开态靠 :has() 从结构上隐藏它。
+        self.assertRegex(
+            self.css,
+            r'body\.disc main > section\.card:has\(> \.brow \[data-key="4"\]\) \{[^}]*display: none',
+        )
+
+    def test_every_device_card_marked(self):
+        for cid in NEEDS_DEVICE:
+            tag = _section_any(self.html, cid)
+            self.assertIsNotNone(tag, cid + " section 缺失")
+            self.assertIn("data-needs-device", tag, cid + " 断开时应整卡隐藏")
+
+    def test_offline_cards_stay_visible(self):
+        for cid in ALWAYS_VISIBLE:
+            tag = _section_any(self.html, cid)
+            self.assertIsNotNone(tag, cid + " section 缺失")
+            self.assertNotIn("data-needs-device", tag, cid + " 断开态应常驻")
+
+    def test_keypad_card_keeps_bare_section_tag(self):
+        # :has() 选择器命中依赖这张卡仍是无 id 的 <section class="card">
+        i = self.html.find('data-key="4"')
+        self.assertGreater(i, 0, "按键卡缺失")
+        j = self.html.rfind("<section", 0, i)
+        seg = self.html[j:self.html.index(">", j) + 1]
+        self.assertEqual(seg, '<section class="card">',
+                         "按键卡 section 标记被改过，断开态的 :has() 会失配")
 if __name__ == "__main__":
     unittest.main()

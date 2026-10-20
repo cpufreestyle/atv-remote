@@ -236,7 +236,7 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
          「最近使用」滚动消失。固定入口在下方预设列表与 Apple TV 应用列表的星标；
          纯前端 localStorage（键 atv.favApps），不进 state.json——后者会被打进 bundle.tgz
          分发给局域网任何设备。 -->
-    <section class="card" id="favCard" data-collapsible data-state="open" data-collapse-name="快捷启动">
+    <section class="card" id="favCard" data-needs-device data-collapsible data-state="open" data-collapse-name="快捷启动">
       <h2 class="chead">⭐ 快捷启动 <span id="favCount" class="badge">—</span><button class="ctog" type="button" aria-expanded="true" aria-controls="cbody-favCard" title="折叠「快捷启动」"><span class="chev" aria-hidden="true"></span></button></h2>
       <div class="cbody" id="cbody-favCard">
         <div class="cinner">
@@ -247,7 +247,7 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
       </div>
     </section>
 
-    <section class="card" id="appsCard" data-collapsible data-state="open" data-collapse-name="应用">
+    <section class="card" id="appsCard" data-needs-device data-collapsible data-state="open" data-collapse-name="应用">
       <h2 class="chead">📦 应用<button class="ctog" type="button" aria-expanded="true" aria-controls="cbody-appsCard" title="折叠「应用」"><span class="chev" aria-hidden="true"></span></button></h2>
       <div class="cbody" id="cbody-appsCard">
         <div class="cinner">
@@ -269,7 +269,7 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
       </div>
     </section>
 
-    <section class="card" id="toolsCard" data-collapsible data-state="open" data-collapse-name="工具">
+    <section class="card" id="toolsCard" data-needs-device data-collapsible data-state="open" data-collapse-name="工具">
       <h2 class="chead">🛠 工具<button class="ctog" type="button" aria-expanded="true" aria-controls="cbody-toolsCard" title="折叠「工具」"><span class="chev" aria-hidden="true"></span></button></h2>
       <div class="cbody" id="cbody-toolsCard">
         <div class="cinner">
@@ -376,7 +376,7 @@ try { var t = localStorage.getItem("atv.theme"); if (t) document.documentElement
       </div>
     </section>
 
-    <section class="card" id="sleepCard" data-collapsible data-state="open" data-collapse-name="睡眠定时">
+    <section class="card" id="sleepCard" data-needs-device data-collapsible data-state="open" data-collapse-name="睡眠定时">
       <h2 class="chead">🌙 睡眠定时<button class="ctog" type="button" aria-expanded="true" aria-controls="cbody-sleepCard" title="折叠「睡眠定时」"><span class="chev" aria-hidden="true"></span></button></h2>
       <div class="cbody" id="cbody-sleepCard">
         <div class="cinner">

@@ -907,10 +907,17 @@ code {
   font-family: ui-monospace, Menlo, monospace; font-size: 12px; resize: vertical;
 }
 
-/* ---------- 未连接电视：遥控区压暗，把注意力引向顶部的连接操作 ---------- */
-[data-needs-device] { transition: opacity var(--dur) var(--ease), filter var(--dur) var(--ease); }
-body.disc [data-needs-device] { opacity: .68; filter: saturate(.8); }
-/* 不置 pointer-events:none：点了让服务端回「未连接电视」比完全没反应更能引导用户 */
+/* ---------- 未连接电视：遥控区整卡隐藏，把注意力引向顶部的连接操作 ----------
+   断开时这些卡里没有一个按钮能用（服务端一律回「未连接电视」），留一面墙的灰卡片
+   只会把「先连设备」这件事埋掉。所以整卡 display:none，断开态只留下：
+   连接区、空状态、远程开机卡、装机卡（后两者为「当前离线」与「新用户」准备，应常驻）。
+   呈现契约见 docs/spec.md 的「断开态」小节，改这里记得同步。 */
+body.disc [data-needs-device] { display: none; }
+/* 物理按键卡（返回/主页/菜单/电源）没有 id，也不能给它加属性：
+   test_collapse.py 靠 section class=card 这串原文定位「第一张无 id 卡」
+   并断言它就是按键卡，加 id 或 data-needs-device 会让那条断言失配。
+   所以这里用 :has() 从结构上认它；装机卡是另一张无 id 卡，断开时仍可见。 */
+body.disc main > section.card:has(> .brow [data-key="4"]) { display: none; }
 
 /* ---------- 宽屏 / 横屏：单列长滚动改双列，遥控主区保持一屏可见 ---------- */
 @media (min-width: 760px), (min-aspect-ratio: 3/2) and (min-width: 600px) {
