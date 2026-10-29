@@ -4,7 +4,7 @@
 > 事实优先级：server.py / atv_backend.py / static/ 源码 > tests/ > 本文件 > README.md（仅作介绍）。
 > 任何行为变更必须同步更新本文件与 docs/harness.md；docs/harness.md 记录最近一次核验结论。
 >
-> 最近核验：2026-10-18 深夜轮（Android 原生 APK 打通 pyatv 0.13.0——Apple TV 控制不再限 Mac 服务端；I26 跨端版本一致新不变式 + 三星真机 logcat「pyatv 已就绪」，见 harness.md 4.15）
+> 最近核验：2026-10-29（账目审计：VERSION 1.34.0/35 与轮次台账交叉核对相符，1.33.0 台账在 remediation-plan.md；./check.sh 全绿 709/713；GitHub 推送已恢复双推，见 harness.md 4.4 收敛行）
 
 ## 1. 目标与范围
 

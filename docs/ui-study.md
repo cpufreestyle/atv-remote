@@ -1606,6 +1606,12 @@ Playwright 程序化审计（双视口 390×844 / 1280×800）的量化证据，
   /tmp/atv_sheet_recent.png、/tmp/atv_sheet_atv.png，PIL 像素校验：底部菜单区
   着墨 73.9% / 76.8%（遮罩压暗后底色 142,146,156），两图互不相同。
 
+> 账目说明：versionCode 33（1.32.0）= 第二十九轮；versionCode 34（1.33.0）
+> 是输入校验加固轮（Lumi bug 修复 + tests/test_input_validation.py 20 例），
+> 台账在 docs/remediation-plan.md「Lumi bug 处置」一节，不在本文件；
+> versionCode 35（1.34.0）= 本轮（iOS 27 风格观感，commit f13edf0）。
+> 三轮均已在 git 历史与测试断言中留痕，账实相符。
+
 ## 第三十轮：iOS 27 风格 UI 观感（2026-09-29）
 
 ### 学习源
