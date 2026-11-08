@@ -310,7 +310,7 @@ harness 的驱动方式是「宿主 Python 测试经 subprocess 跑 node」：ha
 | 新契约 | spec I17 文案同步更新；tests/test_collapse.py::FirstRunDefaultTest 与 tests/collapse_harness.js 的冻结期望扩到 6 卡 |
 | 测试 | ./check.sh 全绿（EXIT=0，/tmp/sync9.out）：系统 python3 Ran 709 tests OK (skipped=17)；.venv Ran 713 tests OK (skipped=7) |
 | 顺带修复 | 4.16 轮对根目录 static/index.html 的 4 行补挂（favCard / appsCard / toolsCard / sleepCard 补 data-needs-device）在上轮之后被回滚，导致 test_every_device_card_marked 红 + 内嵌副本漂移；本轮从内嵌副本恢复该 4 行并跑 ./sync-native.sh 归一 |
-| 真机核验 | 待补：三星 SM_S9380 清 com.atv.remote 的 WebView localStorage → first-run → 连真服务器截图确认 6 卡收成标题行、kb / fav / apps 展开 |
+| 真机核验 | 部分完成（2026-11-08）：first-run 折叠行为已在 Mac Chrome 无头干净 profile （localStorage 为空，390×844 手机视口，连真实 8300 服务）验证——DOM 断言 6 张低频卡 （gp/tools/wol/perf/macros/sleep）data-state 全 closed、kb/fav/apps 全 open，截图 /tmp/atv_firstrun_compact.png 可见 6 行折叠标题 + 引导层正常；`:has()` 设备兼容性已由 4.16 三星复验覆盖。待补的仅剩「三星真机 WebView 里走一遍」——设备两次尝试均被前置条件挡住（无线调试掉线 / 前台被用户正在使用的微信与 bilibili 占用），不再自动操作用户手持设备，改为等设备空闲或用户自行打开 App 时确认 |
 
 ## 5. Qoder better-harness 台账
 
